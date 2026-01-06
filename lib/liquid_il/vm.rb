@@ -90,7 +90,7 @@ module LiquidIL
         when IL::LOOKUP_KEY
           key = @stack.pop
           obj = @stack.pop
-          @stack.push(lookup_property(obj, key))
+          @stack.push(lookup_key_only(obj, key))
           @pc += 1
 
         when IL::LOOKUP_CONST_KEY
@@ -551,7 +551,55 @@ module LiquidIL
       end
     end
 
-    # Property lookup
+    # Pure key lookup for bracket notation (no first/last commands for arrays)
+    def lookup_key_only(obj, key)
+      return nil if obj.nil?
+
+      # Convert drop keys to their value
+      key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
+
+      case obj
+      when Hash
+        key_str = key.to_s
+        # Try string key first, then symbol
+        result = obj[key_str]
+        return result unless result.nil?
+        result = obj[key.to_sym] if key.is_a?(String)
+        return result unless result.nil?
+        # For hashes, size/length are accessible via bracket notation
+        case key_str
+        when "size", "length"
+          obj.length
+        else
+          nil
+        end
+      when Array
+        # Only integer keys for bracket notation - no first/last commands
+        if key.is_a?(Integer)
+          obj[key]
+        elsif key.to_s =~ /\A-?\d+\z/
+          obj[key.to_i]
+        else
+          nil
+        end
+      when ForloopDrop, Drop
+        obj[key]
+      when String
+        # Only integer keys for strings in bracket notation
+        if key.is_a?(Integer)
+          obj[key]
+        elsif key.to_s =~ /\A-?\d+\z/
+          obj[key.to_i]
+        else
+          nil
+        end
+      else
+        # For any object with [] method
+        obj[key] if obj.respond_to?(:[])
+      end
+    end
+
+    # Property lookup (dot notation - includes first/last/size commands)
     def lookup_property(obj, key)
       return nil if obj.nil?
 
@@ -561,7 +609,7 @@ module LiquidIL
       case obj
       when Hash
         key_str = key.to_s
-        # Try string key first, then symbol (for strings only)
+        # Try string key first, then symbol
         result = obj[key_str]
         return result unless result.nil?
         result = obj[key.to_sym] if key.is_a?(String)
@@ -571,13 +619,10 @@ module LiquidIL
         when "first"
           pair = obj.first
           pair ? "#{pair[0]}#{pair[1]}" : nil
-        when "last"
-          pair = obj.to_a.last
-          pair ? "#{pair[0]}#{pair[1]}" : nil
         when "size", "length"
           obj.length
         else
-          obj[key]
+          nil
         end
       when Array
         if key.is_a?(Integer)
