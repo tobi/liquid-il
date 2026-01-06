@@ -888,15 +888,14 @@ module LiquidIL
       if for_expr
         # Render once per item in the collection
         collection = eval_expression(for_expr)
-        # Use to_iterable for proper enumeration, but fall back to single item if empty
-        items = to_iterable(collection)
-        if items.empty? && !collection.nil? && !collection.is_a?(Array)
-          # Non-iterable single item - render once with it
-          render_partial_once(name, source, args, collection, as_alias, isolated: isolated)
-        else
-          items.each do |item|
+        # For include/render "for", arrays iterate but hashes/single items render once
+        if collection.is_a?(Array)
+          collection.each do |item|
             render_partial_once(name, source, args, item, as_alias, isolated: isolated)
           end
+        else
+          # Single item (including hashes, ranges, etc.) - render once with it
+          render_partial_once(name, source, args, collection, as_alias, isolated: isolated)
         end
       elsif with_expr
         # Render once with the variable
