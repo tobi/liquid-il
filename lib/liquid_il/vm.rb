@@ -781,14 +781,17 @@ module LiquidIL
     def create_tablerow_iterator(collection, loop_name, has_limit, limit, has_offset, offset, cols)
       items = to_iterable(collection)
 
-      if has_offset
+      # For strings, limit and offset are ignored (string is always treated as single item)
+      is_string_collection = collection.is_a?(String)
+
+      if has_offset && !is_string_collection
         start_offset = offset.nil? ? 0 : to_integer(offset)
         start_offset = [start_offset, 0].max
         items = items.drop(start_offset) if start_offset > 0
       end
 
-      # For tablerow, nil limit means 0 items
-      if has_limit
+      # For tablerow, nil limit means 0 items (but not for strings)
+      if has_limit && !is_string_collection
         limit_val = limit.nil? ? 0 : to_integer(limit)
         limit_val = 0 if limit_val < 0
         items = items.take(limit_val)
