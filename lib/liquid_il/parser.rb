@@ -703,10 +703,13 @@ module LiquidIL
       rescue SyntaxError
         # Invalid case expression - skip the entire case block
         # Parse until endcase but don't execute any branches
+        skip_end_tag = nil
         loop do
-          end_tag, _body_blank, _body_raws = parse_block_body(%w[when else endcase])
-          break if end_tag == 'endcase'
+          skip_end_tag, _body_blank, _body_raws = parse_block_body(%w[when else endcase])
+          break if skip_end_tag == 'endcase' || skip_end_tag.nil?
+          advance_template # Skip past when/else tags to avoid infinite loop
         end
+        advance_template if skip_end_tag == 'endcase' # Skip endcase tag
         return true # Tag is blank since nothing renders
       end
 
