@@ -891,13 +891,16 @@ module LiquidIL
         # For include/render "for": Arrays and enumerable drops iterate,
         # but hashes and simple values render once as a single item
         if collection.is_a?(Array)
-          collection.each do |item|
-            render_partial_once(name, source, args, item, as_alias, isolated: isolated)
+          collection.each_with_index do |item, idx|
+            render_partial_once(name, source, args, item, as_alias, isolated: isolated,
+                               forloop_index: idx, forloop_length: collection.length)
           end
         elsif !collection.is_a?(Hash) && collection.respond_to?(:each) && collection.respond_to?(:to_a)
           # Enumerable drop - iterate over it
-          collection.to_a.each do |item|
-            render_partial_once(name, source, args, item, as_alias, isolated: isolated)
+          items = collection.to_a
+          items.each_with_index do |item, idx|
+            render_partial_once(name, source, args, item, as_alias, isolated: isolated,
+                               forloop_index: idx, forloop_length: items.length)
           end
         else
           # Single item (including hashes) - render once with it
@@ -912,7 +915,7 @@ module LiquidIL
       end
     end
 
-    def render_partial_once(name, source, args, item, as_alias, isolated:)
+    def render_partial_once(name, source, args, item, as_alias, isolated:, forloop_index: nil, forloop_length: nil)
       if isolated
         partial_context = @context.isolated
       else
@@ -934,6 +937,13 @@ module LiquidIL
       if item
         var_name = as_alias || name
         partial_context.assign(var_name, item)
+      end
+
+      # Set up forloop variable if we're iterating
+      if forloop_index
+        forloop = ForloopDrop.new('forloop', forloop_length)
+        forloop.index0 = forloop_index
+        partial_context.assign('forloop', forloop)
       end
 
       template = Template.parse(source)
