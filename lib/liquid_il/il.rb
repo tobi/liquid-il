@@ -58,7 +58,7 @@ module LiquidIL
     CALL_FILTER = :CALL_FILTER       # [:CALL_FILTER, name, argc]
 
     # Loop and interrupt opcodes
-    FOR_INIT = :FOR_INIT             # [:FOR_INIT, var_name, loop_name]
+    FOR_INIT = :FOR_INIT             # [:FOR_INIT, var_name, loop_name, has_limit, has_offset, offset_continue, reversed]
     FOR_NEXT = :FOR_NEXT             # [:FOR_NEXT, label_continue, label_break]
     FOR_END = :FOR_END               # [:FOR_END]
     PUSH_FORLOOP = :PUSH_FORLOOP     # [:PUSH_FORLOOP]
@@ -70,12 +70,18 @@ module LiquidIL
     INCREMENT = :INCREMENT           # [:INCREMENT, name]
     DECREMENT = :DECREMENT           # [:DECREMENT, name]
 
-    # Cycle opcode
+    # Cycle opcodes
     CYCLE_STEP = :CYCLE_STEP         # [:CYCLE_STEP, identity, values]
+    CYCLE_STEP_VAR = :CYCLE_STEP_VAR # [:CYCLE_STEP_VAR, var_name, values] - group from variable
 
     # Partial opcodes
     RENDER_PARTIAL = :RENDER_PARTIAL # [:RENDER_PARTIAL, name, args_map]
     INCLUDE_PARTIAL = :INCLUDE_PARTIAL  # [:INCLUDE_PARTIAL, name, args_map]
+
+    # Tablerow opcodes
+    TABLEROW_INIT = :TABLEROW_INIT   # [:TABLEROW_INIT, var_name, loop_name, has_limit, has_offset, cols]
+    TABLEROW_NEXT = :TABLEROW_NEXT   # [:TABLEROW_NEXT, label_continue, label_break]
+    TABLEROW_END = :TABLEROW_END     # [:TABLEROW_END]
 
     # Stack operations
     DUP = :DUP                       # [:DUP]
@@ -88,9 +94,13 @@ module LiquidIL
 
     # Instruction builder - creates instructions with minimal allocation
     class Builder
+      attr_reader :spans
+
       def initialize
         @instructions = []
+        @spans = []  # Parallel array: [start_pos, end_pos] or nil
         @label_counter = 0
+        @current_span = nil
       end
 
       def instructions
@@ -101,17 +111,30 @@ module LiquidIL
         @label_counter += 1
       end
 
+      # Set span for subsequent emits until cleared
+      def with_span(start_pos, end_pos)
+        @current_span = [start_pos, end_pos]
+        self
+      end
+
+      def clear_span
+        @current_span = nil
+        self
+      end
+
       def emit(opcode, *args)
         if args.empty?
           @instructions << [opcode]
         else
           @instructions << [opcode, *args]
         end
+        @spans << @current_span
         self
       end
 
       def emit_label(id)
         @instructions << [LABEL, id]
+        @spans << nil  # Labels don't have source spans
         self
       end
 
@@ -252,8 +275,8 @@ module LiquidIL
         emit(CALL_FILTER, name, argc)
       end
 
-      def for_init(var_name, loop_name)
-        emit(FOR_INIT, var_name, loop_name)
+      def for_init(var_name, loop_name, has_limit = false, has_offset = false, offset_continue = false, reversed = false)
+        emit(FOR_INIT, var_name, loop_name, has_limit, has_offset, offset_continue, reversed)
       end
 
       def for_next(label_continue, label_break)
@@ -292,12 +315,28 @@ module LiquidIL
         emit(CYCLE_STEP, identity, values)
       end
 
+      def cycle_step_var(var_name, values)
+        emit(CYCLE_STEP_VAR, var_name, values)
+      end
+
       def render_partial(name, args)
         emit(RENDER_PARTIAL, name, args)
       end
 
       def include_partial(name, args)
         emit(INCLUDE_PARTIAL, name, args)
+      end
+
+      def tablerow_init(var_name, loop_name, has_limit, has_offset, cols)
+        emit(TABLEROW_INIT, var_name, loop_name, has_limit, has_offset, cols)
+      end
+
+      def tablerow_next(label_continue, label_break)
+        emit(TABLEROW_NEXT, label_continue, label_break)
+      end
+
+      def tablerow_end
+        emit(TABLEROW_END)
       end
 
       def dup
@@ -337,7 +376,7 @@ module LiquidIL
         when JUMP, JUMP_IF_FALSE, JUMP_IF_TRUE, JUMP_IF_EMPTY, JUMP_IF_INTERRUPT
           label_id = inst[1]
           inst[1] = label_positions[label_id] || raise("Unknown label: #{label_id}")
-        when FOR_NEXT
+        when FOR_NEXT, TABLEROW_NEXT
           inst[1] = label_positions[inst[1]] || raise("Unknown label: #{inst[1]}")
           inst[2] = label_positions[inst[2]] || raise("Unknown label: #{inst[2]}")
         end

@@ -20,6 +20,9 @@ module LiquidIL
     # Combined pattern to find next delimiter
     NEXT_DELIM = /\{[{%]-?/
 
+    # Pattern to find endraw (with optional whitespace and trim)
+    ENDRAW_PATTERN = /\{%-?\s*endraw\s*-?%\}/
+
     def initialize(source)
       @source = source
       @scanner = StringScanner.new(source)
@@ -31,10 +34,37 @@ module LiquidIL
       @trim_next = false
     end
 
-    # Returns [type, content, trim_left, trim_right]
+    # Scan raw content until {% endraw %}
+    # Returns [content, trim_left, trim_right] or nil if no endraw found
+    # Note: trim_next from {% raw -%} is intentionally NOT applied to raw content
+    def scan_raw_body
+      start_pos = @scanner.pos
+      # Reset trim_next - it shouldn't affect raw content
+      @trim_next = false
+
+      # Find {% endraw %}
+      if @scanner.skip_until(ENDRAW_PATTERN)
+        match = @scanner.matched
+        content_end = @scanner.pos - match.length
+        content = @source.byteslice(start_pos, content_end - start_pos)
+
+        # Check for trim markers on endraw
+        trim_left = match.include?("{%-")
+        trim_right = match.include?("-%}")
+
+        # Set trim_next for the token after endraw
+        @trim_next = trim_right
+
+        [content, trim_left, trim_right]
+      else
+        nil
+      end
+    end
+
+    # Returns [type, content, trim_left, trim_right, start_pos, end_pos]
     # Uses lazy extraction - only extracts content when needed
     def next_token
-      return [EOF, nil, false, false] if @scanner.eos?
+      return [EOF, nil, false, false, @scanner.pos, @scanner.pos] if @scanner.eos?
 
       # Try to find next delimiter
       if @scanner.check(NEXT_DELIM)
@@ -81,7 +111,7 @@ module LiquidIL
         @trim_next = false
       end
 
-      [RAW, content, false, false]
+      [RAW, content, false, false, start_pos, end_pos]
     end
 
     def scan_liquid_token
@@ -114,12 +144,13 @@ module LiquidIL
         match = @scanner.matched
         content_end = @scanner.pos - match.length
         content = @source.byteslice(content_start, content_end - content_start)
+        end_pos = @scanner.pos
 
         # Determine trim_right
         trim_right = match.start_with?("-")
         @trim_next = trim_right
 
-        [type, content.strip, trim_left, trim_right]
+        [type, content.strip, trim_left, trim_right, start_pos, end_pos]
       else
         raise SyntaxError, "Unterminated #{type == VAR ? 'variable' : 'tag'} at position #{start_pos}"
       end
@@ -289,17 +320,32 @@ module LiquidIL
 
     def scan_punctuation(punct)
       if punct == :DOT_OR_DOTDOT
-        @scanner.pos += 1
-        if @source.getbyte(@scanner.pos) == 46  # another .
-          @scanner.pos += 1
+        next_byte = @source.getbyte(@scanner.pos + 1)
+        if next_byte == 46 # another . -> DOTDOT
+          @scanner.pos += 2
           @current_token = DOTDOT
+        elsif next_byte && next_byte >= 48 && next_byte <= 57 # digit -> float like .5
+          scan_leading_decimal_number
         else
+          @scanner.pos += 1
           @current_token = DOT
         end
       else
         @scanner.pos += 1
         @current_token = punct
       end
+    end
+
+    # Scan number starting with decimal like .5
+    def scan_leading_decimal_number
+      start = @scanner.pos
+      @scanner.pos += 1 # skip .
+      # Consume digits
+      while (byte = @source.getbyte(@scanner.pos)) && byte >= 48 && byte <= 57
+        @scanner.pos += 1
+      end
+      @current_value = @source.byteslice(start, @scanner.pos - start)
+      @current_token = NUMBER
     end
 
     def scan_comparison(comp)

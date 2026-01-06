@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "utils"
+
 module LiquidIL
   # Virtual Machine - executes IL instructions
   class VM
@@ -146,7 +148,12 @@ module LiquidIL
 
         when IL::JUMP_IF_INTERRUPT
           if @context.has_interrupt?
-            @pc = inst[1]
+            interrupt = @context.pop_interrupt
+            if interrupt == :continue
+              @pc += 1
+            else
+              @pc = inst[1]
+            end
           else
             @pc += 1
           end
@@ -206,8 +213,14 @@ module LiquidIL
         when IL::FOR_INIT
           var_name = inst[1]
           loop_name = inst[2]
+          has_limit = inst[3]
+          has_offset = inst[4]
+          offset_continue = inst[5]
+          reversed = inst[6]
+          offset = has_offset ? @stack.pop : nil
+          limit = has_limit ? @stack.pop : nil
           collection = @stack.pop
-          iterator = create_iterator(collection, loop_name)
+          iterator = create_iterator(collection, loop_name, limit, offset, offset_continue, reversed)
           @for_iterators.push(iterator)
           @pc += 1
 
@@ -227,7 +240,8 @@ module LiquidIL
           end
 
         when IL::FOR_END
-          @for_iterators.pop
+          iterator = @for_iterators.pop
+          @context.set_for_offset(iterator.name, iterator.next_offset) if iterator
           @pc += 1
 
         when IL::PUSH_FORLOOP
@@ -266,7 +280,21 @@ module LiquidIL
         when IL::CYCLE_STEP
           identity = inst[1]
           values = inst[2]
-          result = @context.cycle_step(identity, values)
+          # Resolve tagged values: [:lit, val] or [:var, name]
+          resolved = resolve_cycle_values(values)
+          result = @context.cycle_step(identity, resolved)
+          @stack.push(result)
+          @pc += 1
+
+        when IL::CYCLE_STEP_VAR
+          var_name = inst[1]
+          values = inst[2]
+          # Look up the variable value to use as the identity
+          identity = @context.lookup(var_name)
+          identity = to_output(identity)
+          # Resolve tagged values
+          resolved = resolve_cycle_values(values)
+          result = @context.cycle_step(identity, resolved)
           @stack.push(result)
           @pc += 1
 
@@ -288,6 +316,66 @@ module LiquidIL
 
         when IL::POP
           @stack.pop
+          @pc += 1
+
+        when IL::TABLEROW_INIT
+          var_name = inst[1]
+          loop_name = inst[2]
+          has_limit = inst[3]
+          has_offset = inst[4]
+          cols = inst[5]
+          offset = has_offset ? @stack.pop : nil
+          limit = has_limit ? @stack.pop : nil
+          collection = @stack.pop
+          iterator = create_tablerow_iterator(collection, loop_name, has_limit, limit, has_offset, offset, cols)
+          @for_iterators.push(iterator)
+          @pc += 1
+
+        when IL::TABLEROW_NEXT
+          label_continue = inst[1]
+          label_break = inst[2]
+          iterator = @for_iterators.last
+          if iterator && iterator.has_next?
+            # Close previous cell/row if not first iteration
+            if iterator.index0 > 0
+              write_output("</td>")
+              if iterator.at_row_end?
+                write_output("</tr>\n")
+              end
+            end
+
+            # Open new row if at start of row
+            if iterator.at_row_start?
+              write_output("<tr class=\"row#{iterator.row}\">\n")
+            end
+            write_output("<td class=\"col#{iterator.col}\">")
+
+            value = iterator.next_value
+            @stack.push(value)
+            # Update forloop
+            forloop = @context.current_forloop
+            forloop.index0 = iterator.index0 - 1 if forloop
+            @pc += 1
+          else
+            # Output empty row if no items
+            if iterator && iterator.index0 == 0
+              write_output("<tr class=\"row1\">\n")
+            end
+            @pc = label_break
+          end
+
+        when IL::TABLEROW_END
+          iterator = @for_iterators.pop
+          if iterator
+            if iterator.index0 > 0
+              # Close the last cell and row if we rendered items
+              write_output("</td>")
+              write_output("</tr>\n")
+            elsif iterator.index0 == 0
+              # Close empty row
+              write_output("</tr>\n")
+            end
+          end
           @pc += 1
 
         when IL::STORE_TEMP
@@ -337,30 +425,24 @@ module LiquidIL
 
     # Convert any value to output string
     def to_output(value)
-      # Handle to_liquid first
-      value = value.to_liquid if value.respond_to?(:to_liquid)
+      Utils.output_string(value)
+    end
 
-      case value
-      when nil
-        ""
-      when true
-        "true"
-      when false
-        "false"
-      when Integer, Float
-        value.to_s
-      when String
-        value
-      when RangeValue
-        value.to_s
-      when Array
-        value.map { |v| to_output(v) }.join
-      when Hash
-        value.to_s
-      when EmptyLiteral, BlankLiteral
-        ""
-      else
-        value.to_s
+    # Resolve cycle values - handles tagged [:lit, val] or [:var, name]
+    def resolve_cycle_values(values)
+      values.map do |v|
+        if v.is_a?(Array) && v.length == 2
+          type, val = v
+          if type == :lit
+            val
+          elsif type == :var
+            @context.lookup(val)
+          else
+            val
+          end
+        else
+          v
+        end
       end
     end
 
@@ -382,8 +464,15 @@ module LiquidIL
       when Hash
         value.map { |k, v| [k, v] }
       else
-        if value.respond_to?(:each)
-          value.to_a
+        # Try to_a first if available
+        if value.respond_to?(:to_a)
+          begin
+            value.to_a
+          rescue
+            value.respond_to?(:each) ? value.to_enum.to_a : []
+          end
+        elsif value.respond_to?(:each)
+          value.to_enum.to_a
         else
           []
         end
@@ -505,9 +594,18 @@ module LiquidIL
         end
       when ForloopDrop, Drop
         obj[key]
-      when Liquid::Drop
-        # Liquid gem drops use [] for property access
-        obj[key.to_s]
+      when RangeValue
+        key_str = key.to_s
+        case key_str
+        when "first"
+          obj.first
+        when "last"
+          obj.last
+        when "size", "length"
+          obj.length
+        else
+          nil
+        end
       when String
         if key.to_s == "size" || key.to_s == "length"
           obj.length
@@ -571,11 +669,14 @@ module LiquidIL
       right = RangeValue.new(right.begin, right.end) if right.is_a?(Range) && !right.exclude_end?
 
       # Handle empty/blank comparisons
+      # Note: blank == blank and empty == empty are always false
       if right.is_a?(EmptyLiteral)
+        return false if left.is_a?(EmptyLiteral) || left.is_a?(BlankLiteral)
         return is_empty(left) if op == :eq
         return !is_empty(left) if op == :ne
       end
       if right.is_a?(BlankLiteral)
+        return false if left.is_a?(EmptyLiteral) || left.is_a?(BlankLiteral)
         return is_blank(left) if op == :eq
         return !is_blank(left) if op == :ne
       end
@@ -632,6 +733,11 @@ module LiquidIL
       end
     end
 
+    def to_integer(value)
+      number = to_number(value)
+      number ? number.to_i : 0
+    end
+
     # Contains check
     def contains(left, right)
       case left
@@ -647,9 +753,47 @@ module LiquidIL
     end
 
     # Create iterator for for loop
-    def create_iterator(collection, loop_name)
+    def create_iterator(collection, loop_name, limit, offset, offset_continue, reversed)
       items = to_iterable(collection)
-      ForIterator.new(items, loop_name)
+
+      start_offset = 0
+      if offset_continue
+        start_offset = @context.for_offset(loop_name)
+      elsif !offset.nil?
+        start_offset = to_integer(offset)
+      end
+
+      start_offset = [start_offset, 0].max
+      items = items.drop(start_offset) if start_offset > 0
+
+      if !limit.nil?
+        limit = to_integer(limit)
+        limit = 0 if limit < 0
+        items = items.take(limit)
+      end
+
+      items = items.reverse if reversed
+      ForIterator.new(items, loop_name, start_offset: start_offset, offset_continue: offset_continue)
+    end
+
+    # Create iterator for tablerow
+    def create_tablerow_iterator(collection, loop_name, has_limit, limit, has_offset, offset, cols)
+      items = to_iterable(collection)
+
+      if has_offset
+        start_offset = offset.nil? ? 0 : to_integer(offset)
+        start_offset = [start_offset, 0].max
+        items = items.drop(start_offset) if start_offset > 0
+      end
+
+      # For tablerow, nil limit means 0 items
+      if has_limit
+        limit_val = limit.nil? ? 0 : to_integer(limit)
+        limit_val = 0 if limit_val < 0
+        items = items.take(limit_val)
+      end
+
+      TablerowIterator.new(items, loop_name, cols: cols)
     end
 
     # Evaluate a simple expression like "foo", "foo.bar", or "foo[0]"
@@ -741,13 +885,23 @@ module LiquidIL
 
   # Iterator for for loops
   class ForIterator
-    attr_reader :name, :length, :index0
+    attr_reader :name, :length, :index0, :start_offset
 
-    def initialize(items, name)
+    def initialize(items, name, start_offset: 0, offset_continue: false)
       @items = items
       @name = name
       @length = items.length
       @index0 = 0
+      @start_offset = start_offset
+      @offset_continue = offset_continue
+    end
+
+    def offset_continue?
+      @offset_continue
+    end
+
+    def next_offset
+      @start_offset + @index0
     end
 
     def has_next?
@@ -762,6 +916,49 @@ module LiquidIL
 
     def current_index
       @index0 - 1
+    end
+  end
+
+  # Iterator for tablerow loops
+  class TablerowIterator
+    attr_reader :name, :length, :index0, :cols
+
+    def initialize(items, name, cols: nil)
+      @items = items
+      @name = name
+      @length = items.length
+      @index0 = 0
+      @cols = cols || @length  # default: all items in one row
+    end
+
+    def has_next?
+      @index0 < @length
+    end
+
+    def next_value
+      value = @items[@index0]
+      @index0 += 1
+      value
+    end
+
+    # Current row number (1-based)
+    def row
+      ((@index0) / @cols) + 1
+    end
+
+    # Current column number (1-based)
+    def col
+      ((@index0) % @cols) + 1
+    end
+
+    # Are we at the start of a row?
+    def at_row_start?
+      (@index0 % @cols) == 0
+    end
+
+    # Are we at the end of a row (just finished the last column)?
+    def at_row_end?
+      (@index0 % @cols) == 0
     end
   end
 end
