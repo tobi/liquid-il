@@ -888,13 +888,19 @@ module LiquidIL
       if for_expr
         # Render once per item in the collection
         collection = eval_expression(for_expr)
-        # For include/render "for", arrays iterate but hashes/single items render once
+        # For include/render "for": Arrays and enumerable drops iterate,
+        # but hashes and simple values render once as a single item
         if collection.is_a?(Array)
           collection.each do |item|
             render_partial_once(name, source, args, item, as_alias, isolated: isolated)
           end
+        elsif !collection.is_a?(Hash) && collection.respond_to?(:each) && collection.respond_to?(:to_a)
+          # Enumerable drop - iterate over it
+          collection.to_a.each do |item|
+            render_partial_once(name, source, args, item, as_alias, isolated: isolated)
+          end
         else
-          # Single item (including hashes, ranges, etc.) - render once with it
+          # Single item (including hashes) - render once with it
           render_partial_once(name, source, args, collection, as_alias, isolated: isolated)
         end
       elsif with_expr
