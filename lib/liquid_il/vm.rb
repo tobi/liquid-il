@@ -346,7 +346,8 @@ module LiquidIL
 
             # Open new row if at start of row
             if iterator.at_row_start?
-              write_output("<tr class=\"row#{iterator.row}\">\n")
+              write_output("<tr class=\"row#{iterator.row}\">\n") if iterator.row == 1
+              write_output("<tr class=\"row#{iterator.row}\">") if iterator.row > 1
             end
             write_output("<td class=\"col#{iterator.col}\">")
 

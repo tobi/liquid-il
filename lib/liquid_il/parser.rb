@@ -65,6 +65,9 @@ module LiquidIL
       raw_indices = push_blank_raw_indices
       begin
         until template_eos?
+          # Safety: track position to detect infinite loops
+          prev_pos = current_template_start_pos
+
           case current_template_type
           when TemplateLexer::RAW
             blank = parse_raw && blank
@@ -81,6 +84,11 @@ module LiquidIL
 
             tag_blank = parse_tag
             blank = tag_blank && blank
+          end
+
+          # Safety: raise if we didn't advance (indicates infinite loop bug)
+          if current_template_start_pos == prev_pos && !template_eos?
+            raise "Parser bug: infinite loop detected at position #{prev_pos}"
           end
         end
         [nil, blank, raw_indices]
