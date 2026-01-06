@@ -12,53 +12,41 @@ class FileSystemAdapter
 
   def read(name)
     if @fs.respond_to?(:read_template_file)
-      # Liquid-spec SimpleFileSystem
       @fs.read_template_file(name) rescue nil
     elsif @fs.respond_to?(:read)
       @fs.read(name)
     elsif @fs.is_a?(Hash)
       @fs[name] || @fs["#{name}.liquid"] || @fs[name.to_s.sub(/\.liquid$/, "")]
-    else
-      nil
     end
   end
 end
 
 LiquidSpec.setup do |ctx|
-  # Context setup runs once before all tests
-  # Load liquid gem for test infrastructure (drops, etc.)
   require "liquid"
 end
 
 LiquidSpec.configure do |config|
   config.suite = :liquid_ruby
-  config.features = []  # Start with minimal features, expand as we pass tests
+  config.features = [:core]
 end
 
 LiquidSpec.compile do |ctx, source, options|
-  # Compile returns an opaque template object
-  LiquidIL::Template.parse(source)
+  LiquidIL.parse(source)
 end
 
 LiquidSpec.render do |ctx, template, assigns, options|
-  # Get registers from options
   registers = options[:registers] || options["registers"] || {}
-
-  # File system is passed via registers[:file_system] by liquid-spec
-  file_system = nil
   fs_obj = registers[:file_system] || registers["file_system"]
-  if fs_obj
-    file_system = FileSystemAdapter.new(fs_obj)
-  end
+  file_system = fs_obj ? FileSystemAdapter.new(fs_obj) : nil
+  strict = options[:strict_errors] || options["strict_errors"] || false
 
-  # Create context with file system
-  context = LiquidIL::Context.new(
-    assigns,
+  # Create a context with the file system and render
+  liquid_ctx = LiquidIL::Context.new(
+    file_system: file_system,
     registers: registers,
-    strict_errors: options[:strict_errors] || options["strict_errors"] || false
+    strict_errors: strict
   )
-  context.file_system = file_system
 
-  # Execute
-  LiquidIL::VM.execute(template.instructions, context)
+  # Re-bind the template to this context for rendering
+  LiquidIL::Template.new(template.source, template.instructions, template.spans, liquid_ctx).render(assigns)
 end

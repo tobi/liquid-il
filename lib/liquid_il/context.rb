@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
 module LiquidIL
-  # Execution context with scope stack and registers
-  class Context
+  # Internal execution state with scope stack and registers
+  # (Public API uses Context - this is the VM's internal state)
+  class Scope
     attr_reader :registers, :scopes, :interrupts, :strict_errors
     attr_accessor :file_system
 
@@ -37,11 +38,15 @@ module LiquidIL
       @scopes.each do |scope|
         return scope[key] if scope.key?(key)
       end
+      # Fall back to increment/decrement counters
+      counters = @registers["counters"]
+      return counters[key] if counters&.key?(key)
       nil
     end
 
     def assign(key, value)
-      @scopes.first[key.to_s] = value
+      # Liquid assigns to the root/environment scope, not the current scope
+      @scopes.last[key.to_s] = value
     end
 
     def [](key)
@@ -161,7 +166,7 @@ module LiquidIL
     # --- Isolation for render ---
 
     def isolated
-      iso = Context.new({}, registers: {}, strict_errors: @strict_errors)
+      iso = Scope.new({}, registers: {}, strict_errors: @strict_errors)
       iso.file_system = @file_system
       # Copy environment but not registers
       iso.scopes[0] = @scopes.last.dup
@@ -250,6 +255,14 @@ module LiquidIL
     end
 
     alias_method :size, :length
+
+    def first
+      @start_val
+    end
+
+    def last
+      @end_val
+    end
 
     def ==(other)
       case other

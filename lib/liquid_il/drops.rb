@@ -43,6 +43,7 @@ module LiquidIL
     # Property access for lookups
     def [](key)
       case key.to_s
+      when "name" then @name
       when "index" then index
       when "index0" then @index0
       when "rindex" then rindex
@@ -56,7 +57,7 @@ module LiquidIL
     end
 
     def key?(key)
-      %w[index index0 rindex rindex0 first last length parentloop].include?(key.to_s)
+      %w[name index index0 rindex rindex0 first last length parentloop].include?(key.to_s)
     end
 
     def to_s

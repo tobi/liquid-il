@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../lib/liquid_il"
+
+def usage
+  puts <<~USAGE
+    Usage: liquidil <command> [options]
+
+    Commands:
+      render <template>     Render a template string
+      parse <template>      Parse and show IL instructions
+      file <path>           Parse file and show IL instructions
+      eval <template>       Parse, show IL, then render
+
+    Options:
+      -e, --env KEY=VALUE   Set environment variable (can be repeated)
+      --no-color            Disable colored output
+      -h, --help            Show this help
+
+    Examples:
+      liquidil render "Hello {{ name }}" -e name=World
+      liquidil parse "{% for i in (1..3) %}{{ i }}{% endfor %}"
+      liquidil file template.liquid
+      liquidil eval "{{ x | plus: y }}" -e x=2 -e y=3
+  USAGE
+end
+
+def parse_args(args)
+  options = { env: {}, color: true }
+  positional = []
+
+  i = 0
+  while i < args.length
+    arg = args[i]
+    case arg
+    when "-e", "--env"
+      i += 1
+      if args[i] && args[i].include?("=")
+        key, value = args[i].split("=", 2)
+        # Try to parse as JSON for arrays/hashes, otherwise use string
+        options[:env][key] = parse_value(value)
+      end
+    when "--no-color"
+      options[:color] = false
+    when "-h", "--help"
+      options[:help] = true
+    else
+      positional << arg
+    end
+    i += 1
+  end
+
+  options[:command] = positional[0]
+  options[:input] = positional[1]
+  options
+end
+
+def parse_value(str)
+  return str.to_i if str =~ /\A-?\d+\z/
+  return str.to_f if str =~ /\A-?\d+\.\d+\z/
+  return true if str == "true"
+  return false if str == "false"
+  return nil if str == "nil" || str == "null"
+
+  # Try JSON parse for arrays/hashes
+  if str.start_with?("[") || str.start_with?("{")
+    require "json"
+    return JSON.parse(str) rescue str
+  end
+
+  str
+end
+
+def cmd_render(input, env, _color)
+  puts LiquidIL.render(input, env)
+end
+
+def cmd_parse(input, _env, color)
+  template = LiquidIL.parse(input)
+  template.dump_il(color: color)
+end
+
+def cmd_file(path, _env, color)
+  source = File.read(path)
+  template = LiquidIL.parse(source)
+  puts "Source: #{path}"
+  puts "=" * 60
+  template.dump_il(color: color)
+end
+
+def cmd_eval(input, env, color)
+  template = LiquidIL.parse(input)
+
+  puts "Template: #{input}"
+  puts "=" * 60
+  template.dump_il(color: color)
+  puts "=" * 60
+  puts "Output: #{template.render(env)}"
+end
+
+# Main
+options = parse_args(ARGV)
+
+if options[:help] || options[:command].nil?
+  usage
+  exit options[:help] ? 0 : 1
+end
+
+case options[:command]
+when "render"
+  cmd_render(options[:input], options[:env], options[:color])
+when "parse"
+  cmd_parse(options[:input], options[:env], options[:color])
+when "file"
+  cmd_file(options[:input], options[:env], options[:color])
+when "eval"
+  cmd_eval(options[:input], options[:env], options[:color])
+else
+  puts "Unknown command: #{options[:command]}"
+  usage
+  exit 1
+end

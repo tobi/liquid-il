@@ -105,6 +105,28 @@ module LiquidIL
       content.split(/\s+/, 2).first&.downcase
     end
 
+    # Skip to a specific end tag without emitting IL (for error recovery)
+    def skip_to_end_tag(end_tag_name)
+      depth = 1
+      while !template_eos? && depth > 0
+        if current_template_type == TemplateLexer::TAG
+          tag_name = tag_name_from_content(current_template_content)
+          # Track nesting for tags that can nest
+          case tag_name
+          when 'if', 'unless', 'case', 'for', 'tablerow', 'capture', 'comment'
+            depth += 1
+          when 'endif', 'endunless', 'endcase', 'endfor', 'endtablerow', 'endcapture', 'endcomment'
+            if tag_name == end_tag_name && depth == 1
+              advance_template
+              return
+            end
+            depth -= 1
+          end
+        end
+        advance_template
+      end
+    end
+
     def parse_raw
       content = current_template_content
       emit_raw(content) unless content.empty?
@@ -709,15 +731,8 @@ module LiquidIL
 
         @builder.store_temp(0) # Store case value
       rescue SyntaxError
-        # Invalid case expression - skip the entire case block
-        # Parse until endcase but don't execute any branches
-        skip_end_tag = nil
-        loop do
-          skip_end_tag, _body_blank, _body_raws = parse_block_body(%w[when else endcase])
-          break if skip_end_tag == 'endcase' || skip_end_tag.nil?
-          advance_template # Skip past when/else tags to avoid infinite loop
-        end
-        advance_template if skip_end_tag == 'endcase' # Skip endcase tag
+        # Invalid case expression - skip the entire case block without emitting IL
+        skip_to_end_tag('endcase')
         return true # Tag is blank since nothing renders
       end
 

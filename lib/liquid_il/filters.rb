@@ -4,19 +4,38 @@ require "cgi"
 require "uri"
 require "date"
 require "json"
+require "base64"
+
+require_relative "utils"
 
 module LiquidIL
   module Filters
+    STRIP_HTML_BLOCKS = Regexp.union(
+      %r{<script.*?</script>}m,
+      /<!--.*?-->/m,
+      %r{<style.*?</style>}m
+    )
+    STRIP_HTML_TAGS = /<.*?>/m
+    MIN_I64 = -(1 << 63)
+    MAX_I64 = (1 << 63) - 1
+    I64_RANGE = MIN_I64..MAX_I64
+
     class << self
+      # Private methods that shouldn't be callable as filters
+      INTERNAL_METHODS = %w[to_number to_integer to_safe_integer clamp_i64 strftime_filter apply].freeze
+
       def apply(name, input, args, context)
+        @context = context
         method_name = name.to_s.downcase
-        if respond_to?(method_name, true)
+        if respond_to?(method_name, true) && !INTERNAL_METHODS.include?(method_name)
           send(method_name, input, *args)
         else
           input  # Unknown filter, return input unchanged
         end
       rescue => e
         context.strict_errors ? raise(e) : input
+      ensure
+        @context = nil
       end
 
       private
@@ -24,75 +43,74 @@ module LiquidIL
       # --- String filters ---
 
       def append(input, str)
-        "#{input}#{str}"
+        Utils.to_s(input) + Utils.to_s(str)
       end
 
       def prepend(input, str)
-        "#{str}#{input}"
+        Utils.to_s(str) + Utils.to_s(input)
       end
 
       def capitalize(input)
-        input.to_s.capitalize
+        Utils.to_s(input).capitalize
       end
 
       def downcase(input)
-        input.to_s.downcase
+        Utils.to_s(input).downcase
       end
 
       def upcase(input)
-        input.to_s.upcase
+        Utils.to_s(input).upcase
       end
 
       def strip(input)
-        input.to_s.strip
+        Utils.to_s(input).strip
       end
 
       def lstrip(input)
-        input.to_s.lstrip
+        Utils.to_s(input).lstrip
       end
 
       def rstrip(input)
-        input.to_s.rstrip
+        Utils.to_s(input).rstrip
       end
 
       def strip_html(input)
-        str = input.to_s
-        # Remove script and style tags with their content
-        str = str.gsub(/<script[^>]*>.*?<\/script>/mi, "")
-        str = str.gsub(/<style[^>]*>.*?<\/style>/mi, "")
-        # Remove all other HTML tags
-        str.gsub(/<[^>]*>/, "")
+        str = Utils.to_s(input)
+        empty = ""
+        result = str.gsub(STRIP_HTML_BLOCKS, empty)
+        result.gsub(STRIP_HTML_TAGS, empty)
       end
 
       def strip_newlines(input)
-        input.to_s.gsub(/\r?\n/, "")
+        Utils.to_s(input).gsub(/\r?\n/, "")
       end
 
       def newline_to_br(input)
-        input.to_s.gsub(/\r?\n/, "<br />\n")
+        Utils.to_s(input).gsub(/\r?\n/, "<br />\n")
       end
 
       def replace(input, search, replace_str = "")
-        input.to_s.gsub(search.to_s, replace_str.to_s)
+        Utils.to_s(input).gsub(Utils.to_s(search), Utils.to_s(replace_str))
       end
 
       def replace_first(input, search, replace_str = "")
-        input.to_s.sub(search.to_s, replace_str.to_s)
+        Utils.to_s(input).sub(Utils.to_s(search), Utils.to_s(replace_str))
       end
 
       def replace_last(input, search, replace_str = "")
-        str = input.to_s
-        idx = str.rindex(search.to_s)
+        str = Utils.to_s(input)
+        search_str = Utils.to_s(search)
+        idx = str.rindex(search_str)
         return str unless idx
-        str[0...idx] + replace_str.to_s + str[(idx + search.to_s.length)..-1]
+        str[0...idx] + Utils.to_s(replace_str) + str[(idx + search_str.length)..-1]
       end
 
       def remove(input, search)
-        input.to_s.gsub(search.to_s, "")
+        Utils.to_s(input).gsub(Utils.to_s(search), "")
       end
 
       def remove_first(input, search)
-        input.to_s.sub(search.to_s, "")
+        Utils.to_s(input).sub(Utils.to_s(search), "")
       end
 
       def remove_last(input, search)
@@ -100,70 +118,78 @@ module LiquidIL
       end
 
       def truncate(input, length = 50, ellipsis = "...")
-        str = input.to_s
+        str = Utils.to_s(input)
         length = length.to_i
-        ellipsis = ellipsis.to_s
+        ellipsis = Utils.to_s(ellipsis)
         return str if str.length <= length
         str[0, [length - ellipsis.length, 0].max] + ellipsis
       end
 
       def truncatewords(input, words = 15, ellipsis = "...")
         words = [words.to_i, 1].max  # At least 1 word
-        ellipsis = ellipsis.to_s
-        word_list = input.to_s.split
-        return input.to_s if word_list.length <= words
+        ellipsis = Utils.to_s(ellipsis)
+        input_str = Utils.to_s(input)
+        word_list = input_str.split
+        return input_str if word_list.length <= words
         word_list[0, words].join(" ") + ellipsis
       end
 
       def split(input, delimiter = " ")
-        input.to_s.split(delimiter.to_s)
+        Utils.to_s(input).split(Utils.to_s(delimiter))
       end
 
-      def slice(input, start, length = 1)
-        str = input.to_s
-        start = start.to_i rescue 0
-        length = length.to_i rescue str.length
-        str[start, length] || ""
-      rescue RangeError
-        ""
+      def slice(input, start, length = nil)
+        start = to_integer(start)
+        length = length ? to_integer(length) : 1
+
+        begin
+          if input.is_a?(Array)
+            input.slice(start, length) || []
+          else
+            Utils.to_s(input).slice(start, length) || ""
+          end
+        rescue RangeError
+          if I64_RANGE.cover?(length) && I64_RANGE.cover?(start)
+            raise
+          end
+          start = start.clamp(I64_RANGE)
+          length = length.clamp(I64_RANGE)
+          retry
+        end
       end
 
       def escape(input)
-        CGI.escapeHTML(input.to_s)
+        CGI.escapeHTML(Utils.to_s(input))
       end
 
       def escape_once(input)
-        CGI.escapeHTML(CGI.unescapeHTML(input.to_s))
+        CGI.escapeHTML(CGI.unescapeHTML(Utils.to_s(input)))
       end
 
       def url_encode(input)
-        URI.encode_www_form_component(input.to_s)
+        URI.encode_www_form_component(Utils.to_s(input))
       end
 
       def url_decode(input)
-        URI.decode_www_form_component(input.to_s)
+        URI.decode_www_form_component(Utils.to_s(input))
       end
 
       def base64_encode(input)
-        [input.to_s].pack("m0")
+        Base64.strict_encode64(Utils.to_s(input))
       end
 
       def base64_decode(input)
-        input.to_s.unpack1("m0").force_encoding("UTF-8")
-      rescue ArgumentError
-        input.to_s
+        input = Utils.to_s(input)
+        try_coerce_encoding(Base64.strict_decode64(input), encoding: input.encoding)
       end
 
       def base64_url_safe_encode(input)
-        [input.to_s].pack("m0").tr("+/", "-_")
+        Base64.urlsafe_encode64(Utils.to_s(input))
       end
 
       def base64_url_safe_decode(input)
-        str = input.to_s.tr("-_", "+/")
-        str += "=" * (4 - str.length % 4) % 4
-        str.unpack1("m0").force_encoding("UTF-8")
-      rescue ArgumentError
-        input.to_s
+        input = Utils.to_s(input)
+        try_coerce_encoding(Base64.urlsafe_decode64(input), encoding: input.encoding)
       end
 
       # --- Math filters ---
@@ -222,123 +248,162 @@ module LiquidIL
       # --- Array filters ---
 
       def size(input)
-        case input
-        when Array, Hash, String
-          input.length
-        else
-          0
-        end
+        input.respond_to?(:size) ? input.size : 0
       end
 
       def first(input)
-        case input
-        when Array then input.first
-        when Hash
-          pair = input.first
-          pair ? "#{pair[0]}#{pair[1]}" : nil
-        when String then input.empty? ? nil : input[0]
-        else nil
-        end
+        return input[0] || "" if input.is_a?(String)
+        input.first if input.respond_to?(:first)
       end
 
       def last(input)
-        case input
-        when Array then input.last
-        when Hash then nil  # Hashes don't support last filter
-        when String then input.empty? ? nil : input[-1]
-        else nil
-        end
+        return input[-1] || "" if input.is_a?(String)
+        input.last if input.respond_to?(:last)
       end
 
       def join(input, separator = " ")
-        return input.to_s unless input.is_a?(Array)
-        input.map { |item| liquidize(item).to_s }.join(separator.to_s)
+        glue = Utils.to_s(separator)
+        InputIterator.new(input, context).join(glue)
       end
 
       def reverse(input)
-        input.is_a?(Array) ? input.reverse : input.to_s.reverse
+        InputIterator.new(input, context).reverse
       end
 
       def sort(input, property = nil)
-        return [] unless input.is_a?(Array)
-        if property
-          input.sort_by { |item| lookup_property(item, property).to_s }
-        else
-          input.sort_by(&:to_s)
+        ary = InputIterator.new(input, context)
+        return [] if ary.empty?
+
+        if property.nil?
+          ary.sort { |a, b| nil_safe_compare(a, b) }
+        elsif ary.all? { |el| el.respond_to?(:[]) }
+          begin
+            ary.sort { |a, b| nil_safe_compare(a[property], b[property]) }
+          rescue TypeError
+            raise_property_error(property)
+          end
         end
       end
 
       def sort_natural(input, property = nil)
-        return [] unless input.is_a?(Array)
-        if property
-          input.sort_by { |item| lookup_property(item, property).to_s.downcase }
-        else
-          input.sort_by { |item| item.to_s.downcase }
+        ary = InputIterator.new(input, context)
+        return [] if ary.empty?
+
+        if property.nil?
+          ary.sort { |a, b| nil_safe_casecmp(a, b) }
+        elsif ary.all? { |el| el.respond_to?(:[]) }
+          begin
+            ary.sort { |a, b| nil_safe_casecmp(a[property], b[property]) }
+          rescue TypeError
+            raise_property_error(property)
+          end
         end
       end
 
+      def where(input, property, value = nil)
+        filter_array(input, property, value) { |ary, &block| ary.select(&block) }
+      end
+
+      def reject(input, property, value = nil)
+        filter_array(input, property, value) { |ary, &block| ary.reject(&block) }
+      end
+
+      def has(input, property, value = nil)
+        filter_array(input, property, value, false) { |ary, &block| ary.any?(&block) }
+      end
+
+      def find(input, property, value = nil)
+        filter_array(input, property, value, nil) { |ary, &block| ary.find(&block) }
+      end
+
+      def find_index(input, property, value = nil)
+        filter_array(input, property, value, nil) { |ary, &block| ary.find_index(&block) }
+      end
+
       def uniq(input, property = nil)
-        return [] unless input.is_a?(Array)
-        if property
-          input.uniq { |item| lookup_property(item, property) }
+        ary = InputIterator.new(input, context)
+
+        if property.nil?
+          ary.uniq
+        elsif ary.empty?
+          []
         else
-          input.uniq
+          ary.uniq do |item|
+            item[property]
+          rescue TypeError
+            raise_property_error(property)
+          rescue NoMethodError
+            return nil unless item.respond_to?(:[])
+            raise
+          end
         end
       end
 
       def compact(input, property = nil)
-        return input unless input.is_a?(Array)
-        if property
-          input.reject { |item| lookup_property(item, property).nil? }
+        ary = InputIterator.new(input, context)
+
+        if property.nil?
+          ary.compact
+        elsif ary.empty?
+          []
         else
-          input.compact
+          ary.reject do |item|
+            item[property].nil?
+          rescue TypeError
+            raise_property_error(property)
+          rescue NoMethodError
+            return nil unless item.respond_to?(:[])
+            raise
+          end
         end
       end
 
       def concat(input, other)
-        return [] unless input.is_a?(Array)
-        other_arr = other.is_a?(Array) ? other : [other]
-        input + other_arr
+        unless other.respond_to?(:to_ary)
+          raise ArgumentError, "concat filter requires an array argument"
+        end
+        InputIterator.new(input, context).concat(other)
       end
 
       def map(input, property)
-        return [] unless input.is_a?(Array)
-        input.map { |item| lookup_property(item, property) }
-      end
+        InputIterator.new(input, context).map do |item|
+          item = item.call if item.is_a?(Proc)
 
-      def where(input, property, value = nil)
-        return [] unless input.is_a?(Array)
-        if value.nil?
-          input.select { |item| truthy?(lookup_property(item, property)) }
-        else
-          input.select { |item| lookup_property(item, property) == value }
+          if property == "to_liquid"
+            item
+          elsif item.respond_to?(:[])
+            result = item[property]
+            result.is_a?(Proc) ? result.call : result
+          end
         end
+      rescue TypeError
+        raise_property_error(property)
       end
 
       def sum(input, property = nil)
-        return 0 unless input.is_a?(Array)
-        if property
-          input.sum { |item| to_number(lookup_property(item, property)) }
-        else
-          input.sum { |item| to_number(item) }
-        end
-      end
+        ary = InputIterator.new(input, context)
+        return 0 if ary.empty?
 
-      def has(input, property, value = nil)
-        return false unless input.is_a?(Array)
-        if value.nil?
-          input.any? { |item| truthy?(lookup_property(item, property)) }
-        else
-          input.any? { |item| lookup_property(item, property) == value }
+        values = ary.map do |item|
+          if property.nil?
+            item
+          elsif item.respond_to?(:[])
+            item[property]
+          else
+            0
+          end
         end
+
+        result = InputIterator.new(values, context).sum { |item| to_number(item) }
+        result.is_a?(BigDecimal) ? result.to_f : result
       end
 
       # --- Date filters ---
 
       def date(input, format)
         return "" if input.nil?
-        strftime_format = format.to_s
-        return input.to_s if strftime_format.empty?
+        strftime_format = Utils.to_s(format)
+        return Utils.to_s(input) if strftime_format.empty?
         time = parse_date(input)
         return input unless time
         time.strftime(strftime_format)
@@ -361,17 +426,15 @@ module LiquidIL
           end
         end
 
-        if allow_false
-          input.nil? ? default_value : input
-        else
-          default_truthy?(input) ? input : default_value
-        end
+        liquid_value = input.respond_to?(:to_liquid_value) ? input.to_liquid_value : input
+        false_check = allow_false ? input.nil? : !liquid_truthy?(liquid_value)
+        false_check || (input.respond_to?(:empty?) && input.empty?) ? default_value : input
       end
 
       def json(input)
         JSON.generate(input)
       rescue
-        input.to_s
+        Utils.to_s(input)
       end
 
       # --- Utility ---
@@ -392,15 +455,21 @@ module LiquidIL
         end
 
         case value
-        when Integer, Float
+        when BigDecimal
           value
+        when Integer
+          value
+        when Float
+          BigDecimal(value.to_s)
         when String
-          if value =~ /\A-?\d+\z/
-            value.to_i
-          elsif value =~ /\A-?\d+\.\d+\z/
-            value.to_f
-          else
+          # Parse leading numeric part like Ruby's to_i/to_f
+          if value.empty?
             0
+          elsif value.include?(".")
+            # Try to parse as float - handles "6.3", "6-3" (becomes 6.0)
+            BigDecimal(value.to_f.to_s)
+          else
+            value.to_i
           end
         when nil
           0
@@ -409,29 +478,75 @@ module LiquidIL
         end
       end
 
-      def lookup_property(obj, key)
-        case obj
-        when Hash
-          result = obj[key.to_s]
-          return result unless result.nil?
-          key.is_a?(String) ? obj[key.to_sym] : nil
-        when Array
-          obj[key.to_i] if key.to_s =~ /\A\d+\z/
-        else
-          obj.respond_to?(:[]) ? (obj[key.to_s] rescue nil) : nil
-        end
+      def to_integer(value)
+        return value if value.is_a?(Integer)
+
+        value = Utils.to_s(value)
+        Integer(value)
+      rescue ArgumentError
+        raise ArgumentError, "invalid integer"
       end
 
-      def truthy?(value)
+      def liquid_truthy?(value)
         !value.nil? && value != false
       end
 
-      # For default filter - also treats empty strings/arrays as falsy
-      def default_truthy?(value)
-        return false if value.nil? || value == false
-        return false if value == ""
-        return false if value.respond_to?(:empty?) && value.empty?
-        true
+      def try_coerce_encoding(input, encoding:)
+        original_encoding = input.encoding
+        if input.encoding != encoding
+          input.force_encoding(encoding)
+          input.force_encoding(original_encoding) unless input.valid_encoding?
+        end
+        input
+      end
+
+      def context
+        @context
+      end
+
+      def nil_safe_compare(a, b)
+        result = a <=> b
+        if result
+          result
+        elsif a.nil?
+          1
+        elsif b.nil?
+          -1
+        else
+          raise ArgumentError, "cannot sort values of incompatible types"
+        end
+      end
+
+      def nil_safe_casecmp(a, b)
+        if !a.nil? && !b.nil?
+          a.to_s.casecmp(b.to_s)
+        elsif a.nil? && b.nil?
+          0
+        else
+          a.nil? ? 1 : -1
+        end
+      end
+
+      def raise_property_error(property)
+        raise ArgumentError, "cannot select the property '#{Utils.to_s(property)}'"
+      end
+
+      def filter_array(input, property, target_value, default_value = [], &block)
+        ary = InputIterator.new(input, context)
+        return default_value if ary.empty?
+
+        block.call(ary) do |item|
+          if target_value.nil?
+            item[property]
+          else
+            item[property] == target_value
+          end
+        rescue TypeError
+          raise_property_error(property)
+        rescue NoMethodError
+          return nil unless item.respond_to?(:[])
+          raise
+        end
       end
 
       def parse_date(input)
@@ -457,6 +572,70 @@ module LiquidIL
         end
       rescue
         nil
+      end
+    end
+
+    class InputIterator
+      include Enumerable
+
+      def initialize(input, context)
+        @context = context
+        @input = if input.is_a?(Array)
+          input.flatten
+        elsif input.is_a?(Hash)
+          [input]
+        elsif input.is_a?(Enumerable)
+          input
+        else
+          Array(input)
+        end
+      end
+
+      def join(glue)
+        first = true
+        output = +""
+        each do |item|
+          if first
+            first = false
+          else
+            output << glue
+          end
+
+          output << Utils.to_s(item)
+        end
+        output
+      end
+
+      def concat(args)
+        to_a.concat(args)
+      end
+
+      def reverse
+        reverse_each.to_a
+      end
+
+      def uniq(&block)
+        to_a.uniq do |item|
+          item = Utils.to_liquid_value(item)
+          block ? yield(item) : item
+        end
+      end
+
+      def compact
+        to_a.compact
+      end
+
+      def empty?
+        @input.each { return false }
+        true
+      end
+
+      def each
+        @input.each do |e|
+          e = e.to_liquid if e.respond_to?(:to_liquid)
+          e.context = @context if @context && e.respond_to?(:context=)
+          yield(e)
+        end
       end
     end
   end

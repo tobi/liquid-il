@@ -13,39 +13,43 @@ module LiquidIL
     def compile
       parser = Parser.new(@source)
       instructions = parser.parse
+      spans = parser.builder.spans
 
       # Optional optimization passes
-      optimize(instructions) if @options[:optimize]
+      if @options[:optimize]
+        optimize(instructions, spans)
+      end
 
-      instructions
+      { instructions: instructions, spans: spans }
     end
 
     private
 
-    def optimize(instructions)
+    def optimize(instructions, spans)
       # Optimization pass 1: Merge consecutive WRITE_RAW
-      merge_raw_writes(instructions)
+      merge_raw_writes(instructions, spans)
 
       # Optimization pass 2: Remove unreachable code after unconditional jumps
-      remove_unreachable(instructions)
+      remove_unreachable(instructions, spans)
 
       instructions
     end
 
-    def merge_raw_writes(instructions)
+    def merge_raw_writes(instructions, spans)
       i = 0
       while i < instructions.length - 1
         if instructions[i][0] == IL::WRITE_RAW && instructions[i + 1][0] == IL::WRITE_RAW
           # Merge the two writes
           instructions[i] = [IL::WRITE_RAW, instructions[i][1] + instructions[i + 1][1]]
           instructions.delete_at(i + 1)
+          spans.delete_at(i + 1)
         else
           i += 1
         end
       end
     end
 
-    def remove_unreachable(instructions)
+    def remove_unreachable(instructions, spans)
       # Remove instructions after unconditional jumps until we hit a label
       i = 0
       while i < instructions.length - 1
@@ -54,6 +58,7 @@ module LiquidIL
           j = i + 1
           while j < instructions.length && instructions[j][0] != IL::LABEL
             instructions.delete_at(j)
+            spans.delete_at(j)
           end
         end
         i += 1

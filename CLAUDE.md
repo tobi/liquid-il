@@ -1,6 +1,8 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Instructions for AI coding agents working on this repository.
+
+**Architecture:** See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed pipeline documentation.
 
 ## Project Overview
 
@@ -29,57 +31,13 @@ bundle exec liquid-spec run adapter.rb --list
 
 ## Architecture
 
-The compilation pipeline flows: **Source → Lexer → Parser → IL → Linker → VM**
+Pipeline: **Source → Lexer → Parser → IL → Linker → VM**
 
-### Two-Stage Lexing
-
-1. **TemplateLexer** (`lexer.rb`) - Stage 1: Splits template into RAW, TAG, VAR tokens with whitespace trim tracking
-2. **ExpressionLexer** (`lexer.rb`) - Stage 2: Tokenizes tag/variable markup with byte lookup tables for O(1) punctuation dispatch
-
-### Direct IL Emission
-
-The **Parser** (`parser.rb`) is a recursive descent parser that emits IL directly—no AST intermediate. It uses `IL::Builder` to construct instruction sequences with symbolic labels.
-
-### IL Instruction Set
-
-Instructions in `il.rb` are simple arrays (`[:OPCODE, arg1, arg2]`) for minimal allocation. Key categories:
-- **Output**: `WRITE_RAW`, `WRITE_VALUE`
-- **Constants**: `CONST_NIL`, `CONST_INT`, `CONST_STRING`, etc.
-- **Lookups**: `FIND_VAR`, `LOOKUP_KEY`, `LOOKUP_CONST_KEY`, `LOOKUP_COMMAND`
-- **Control flow**: `LABEL`, `JUMP`, `JUMP_IF_FALSE`, `JUMP_IF_TRUE`, `JUMP_IF_EMPTY`
-- **Loops**: `FOR_INIT`, `FOR_NEXT`, `FOR_END`, `PUSH_FORLOOP`, `POP_FORLOOP`
-- **Interrupts**: `PUSH_INTERRUPT`, `POP_INTERRUPT`, `JUMP_IF_INTERRUPT`
-
-`IL.link()` resolves symbolic labels to instruction indices after parsing.
-
-### Compiler Optimization Passes
-
-The **Compiler** (`compiler.rb`) wraps the parser and can run optimization passes:
-- Merge consecutive `WRITE_RAW` instructions
-- Remove unreachable code after unconditional jumps
-- (Future: constant folding, filter inlining, loop unrolling)
-
-### Stack-Based VM
-
-The **VM** (`vm.rb`) executes IL with:
-- Value stack for expression evaluation
-- Program counter for control flow
-- Iterator stack for nested loops
-- Interrupt stack for break/continue propagation
-
-### Core Abstractions (from liquid-spec)
-
-- **to_output**: Convert any value to output string (handles `to_liquid`)
-- **to_iterable**: Convert value to array for for loops
-- **is_truthy**: Liquid semantics—only `nil` and `false` are falsy
-- **is_empty/is_blank**: For `== empty` and `== blank` comparisons
-
-### Drop Protocol
-
-Objects can implement:
-- `to_liquid` - Called before output rendering
-- `to_liquid_value` - Called for truthiness checks and comparisons
-- `[]` - Property access
+See [ARCHITECTURE.md](ARCHITECTURE.md) for complete details on:
+- Two-stage lexing (TemplateLexer + ExpressionLexer)
+- IL instruction set and encoding
+- VM execution model
+- Drop protocol
 
 ## Performance Patterns
 
