@@ -671,13 +671,16 @@ module LiquidIL
         else
           nil
         end
-      when Integer, Float
-        # Integers/floats only respond to size
+      when Integer
+        # Integers only respond to size (returns byte size)
         if key.to_s == "size"
           obj.size
         else
           nil
         end
+      when Float
+        # Floats don't respond to any properties
+        nil
       else
         # Try method call first if key is a valid method name
         if key.is_a?(String) && obj.respond_to?(key.to_sym)
