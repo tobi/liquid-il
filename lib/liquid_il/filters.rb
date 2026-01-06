@@ -252,12 +252,10 @@ module LiquidIL
       end
 
       def first(input)
-        return input[0] || "" if input.is_a?(String)
         input.first if input.respond_to?(:first)
       end
 
       def last(input)
-        return input[-1] || "" if input.is_a?(String)
         input.last if input.respond_to?(:last)
       end
 
