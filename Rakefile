@@ -33,13 +33,33 @@ task :inspect, [:name] do |_t, args|
   puts
 
   # Extract template from spec output and run through liquidil eval
-  require "yaml"
   spec_output = `bundle exec liquid-spec inspect adapter.rb -n #{name.shellescape} 2>/dev/null`
-  if spec_output =~ /Template:\s*\n(.*?)(?=\n\s*Environment:|\n\s*Expected:|\Z)/m
-    template = $1.strip
+  # Strip ANSI color codes
+  spec_output = spec_output.gsub(/\e\[[0-9;]*m/, '')
+
+  # Parse the template between "Template:" and "Environment:" or "Expected:"
+  template = nil
+  in_template = false
+  lines = []
+  spec_output.each_line do |line|
+    if line =~ /^Template:/
+      in_template = true
+      next
+    elsif in_template && line =~ /^(Environment|Expected):/
+      break
+    elsif in_template
+      lines << line
+    end
+  end
+
+  if lines.any?
+    # Remove leading whitespace that's common to all lines
+    template = lines.map { |l| l.rstrip }.join("\n").strip
     puts "=" * 60
-    puts "LiquidIL eval:"
+    puts "LiquidIL IL output:"
     puts "=" * 60
     system "bin/liquidil eval #{template.shellescape}"
+  else
+    puts "Could not extract template from spec"
   end
 end
