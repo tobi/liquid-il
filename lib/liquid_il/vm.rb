@@ -391,6 +391,16 @@ module LiquidIL
           @stack.push(value)
           @pc += 1
 
+        when IL::IFCHANGED_CHECK
+          tag_id = inst[1]
+          captured = @stack.pop
+          prev_value = @context.get_ifchanged_state(tag_id)
+          if captured != prev_value
+            @context.set_ifchanged_state(tag_id, captured)
+            write_output(captured)
+          end
+          @pc += 1
+
         when IL::NOOP
           @pc += 1
 

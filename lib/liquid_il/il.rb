@@ -89,6 +89,9 @@ module LiquidIL
     STORE_TEMP = :STORE_TEMP         # [:STORE_TEMP, index]
     LOAD_TEMP = :LOAD_TEMP           # [:LOAD_TEMP, index]
 
+    # Ifchanged opcode
+    IFCHANGED_CHECK = :IFCHANGED_CHECK  # [:IFCHANGED_CHECK, tag_id] - pops captured, outputs if changed
+
     # No-op (for comments, etc.)
     NOOP = :NOOP                     # [:NOOP]
 
@@ -337,6 +340,10 @@ module LiquidIL
 
       def tablerow_end
         emit(TABLEROW_END)
+      end
+
+      def ifchanged_check(tag_id)
+        emit(IFCHANGED_CHECK, tag_id)
       end
 
       def dup

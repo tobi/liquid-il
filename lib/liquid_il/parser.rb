@@ -221,6 +221,9 @@ module LiquidIL
       when 'include'
         advance_template
         parse_include_tag(tag_args)
+      when 'ifchanged'
+        advance_template
+        parse_ifchanged_tag
       when '#'
         # Inline comment, skip
         advance_template
@@ -1070,6 +1073,23 @@ module LiquidIL
       @builder.pop_capture
       @builder.assign(var_name)
       true
+    end
+
+    def parse_ifchanged_tag
+      # Generate unique tag ID based on position
+      @ifchanged_counter ||= 0
+      @ifchanged_counter += 1
+      tag_id = "ifchanged_#{@ifchanged_counter}"
+
+      # Capture the body content
+      @builder.push_capture
+
+      _end_tag, _body_blank, _body_raws = parse_block_body(%w[endifchanged])
+      advance_template
+
+      @builder.pop_capture
+      @builder.ifchanged_check(tag_id)
+      false
     end
 
     def parse_increment_tag(tag_args)

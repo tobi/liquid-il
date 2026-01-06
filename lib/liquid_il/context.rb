@@ -145,6 +145,18 @@ module LiquidIL
       @registers["temps"][index]
     end
 
+    # --- Ifchanged state ---
+
+    def get_ifchanged_state(tag_id)
+      @registers["ifchanged"] ||= {}
+      @registers["ifchanged"][tag_id]
+    end
+
+    def set_ifchanged_state(tag_id, value)
+      @registers["ifchanged"] ||= {}
+      @registers["ifchanged"][tag_id] = value
+    end
+
     # --- Capture ---
 
     def push_capture
