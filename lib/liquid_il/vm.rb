@@ -560,8 +560,11 @@ module LiquidIL
 
       case obj
       when Hash
+        # Try the key directly first (handles integer keys)
+        result = obj[key]
+        return result unless result.nil?
+        # Then try string key
         key_str = key.to_s
-        # Try string key first, then symbol
         result = obj[key_str]
         return result unless result.nil?
         result = obj[key.to_sym] if key.is_a?(String)
@@ -883,15 +886,17 @@ module LiquidIL
       as_alias = args["__as__"]
 
       if for_expr
-        # Render once per item in the collection (only arrays iterate, others are single item)
+        # Render once per item in the collection
         collection = eval_expression(for_expr)
-        if collection.is_a?(Array)
-          collection.each do |item|
+        # Use to_iterable for proper enumeration, but fall back to single item if empty
+        items = to_iterable(collection)
+        if items.empty? && !collection.nil? && !collection.is_a?(Array)
+          # Non-iterable single item - render once with it
+          render_partial_once(name, source, args, collection, as_alias, isolated: isolated)
+        else
+          items.each do |item|
             render_partial_once(name, source, args, item, as_alias, isolated: isolated)
           end
-        else
-          # Single item - render once
-          render_partial_once(name, source, args, collection, as_alias, isolated: isolated)
         end
       elsif with_expr
         # Render once with the variable
