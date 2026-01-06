@@ -356,6 +356,10 @@ module LiquidIL
             # Update forloop
             forloop = @context.current_forloop
             forloop.index0 = iterator.index0 - 1 if forloop
+            # Set up tablerowloop variable with col info
+            tablerowloop = TablerowloopDrop.new(iterator.name, iterator.length, iterator.cols)
+            tablerowloop.index0 = iterator.index0 - 1
+            @context.assign('tablerowloop', tablerowloop)
             @pc += 1
           else
             # Output empty row if no items
