@@ -179,6 +179,7 @@ module LiquidIL
     LE = :LE
     GT = :GT
     GE = :GE
+    FAT_ARROW = :FAT_ARROW  # => (for lax parsing: foo=>bar = foo['bar'])
     CONTAINS = :CONTAINS
     AND = :AND
     OR = :OR
@@ -352,9 +353,13 @@ module LiquidIL
       case comp
       when :EQ_START
         @scanner.pos += 1
-        if @source.getbyte(@scanner.pos) == 61  # =
+        next_byte = @source.getbyte(@scanner.pos)
+        if next_byte == 61  # =
           @scanner.pos += 1
           @current_token = EQ
+        elsif next_byte == 62  # > (fat arrow for lax parsing)
+          @scanner.pos += 1
+          @current_token = FAT_ARROW
         else
           raise SyntaxError, "Expected '==' at position #{@scanner.pos - 1}"
         end

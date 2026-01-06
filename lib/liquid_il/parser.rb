@@ -453,6 +453,16 @@ module LiquidIL
           parse_expression(lexer)
           lexer.expect(ExpressionLexer::RBRACKET)
           @builder.lookup_key
+
+        when ExpressionLexer::FAT_ARROW
+          # Lax parsing: foo=>bar is equivalent to foo['bar']
+          lexer.advance
+          raise SyntaxError, "Expected property name after '=>'" unless lexer.current == ExpressionLexer::IDENTIFIER
+
+          prop_name = lexer.value
+          lexer.advance
+          @builder.const_string(prop_name)
+          @builder.lookup_key
         else
           break
         end
