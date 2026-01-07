@@ -223,12 +223,25 @@ module LiquidIL
     # --- Isolation for render ---
 
     def isolated
-      # Create isolated context - no parent variables visible EXCEPT static_environments
-      # static_environments (initial environment data) IS shared with render
-      iso = Scope.new({}, registers: {}, strict_errors: @strict_errors, static_environments: @static_environments)
-      iso.file_system = @file_system
-      iso.disable_include = true  # Include is not allowed inside render
-      iso.instance_variable_set(:@render_depth, @render_depth)  # Copy render depth for tracking
+      # Fast path: create isolated context without redundant initialization
+      # static_environments is already stringified, no need to re-process
+      iso = Scope.allocate
+      iso.instance_variable_set(:@static_environments, @static_environments)
+      iso.instance_variable_set(:@scopes, [{}])
+      iso.instance_variable_set(:@registers, {
+        "for" => {},
+        "for_stack" => [],
+        "counters" => {},
+        "cycles" => {},
+        "temps" => [],
+        "capture_stack" => []
+      })
+      iso.instance_variable_set(:@interrupts, [])
+      iso.instance_variable_set(:@strict_errors, @strict_errors)
+      iso.instance_variable_set(:@file_system, @file_system)
+      iso.instance_variable_set(:@disable_include, true)
+      iso.instance_variable_set(:@assigned_vars, {})
+      iso.instance_variable_set(:@render_depth, @render_depth)
       iso
     end
 
