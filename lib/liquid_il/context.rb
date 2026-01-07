@@ -1,6 +1,114 @@
 # frozen_string_literal: true
 
 module LiquidIL
+  # Lightweight scope for isolated render - avoids full Scope overhead
+  class RenderScope
+    attr_accessor :file_system
+    attr_reader :registers
+
+    def initialize(static_environments, render_depth, file_system)
+      @static_environments = static_environments
+      @locals = {}
+      @render_depth = render_depth
+      @file_system = file_system
+      @registers = {
+        "for" => {},
+        "for_stack" => [],
+        "counters" => {},
+        "cycles" => {},
+        "temps" => [],
+        "capture_stack" => []
+      }
+      @interrupts = []
+    end
+
+    def disable_include = true
+
+    def lookup(key)
+      key = key.to_s
+      return @locals[key] if @locals.key?(key)
+      @static_environments&.[](key)
+    end
+
+    def assign(key, value)
+      @locals[key.to_s] = value
+    end
+
+    def assign_local(key, value)
+      @locals[key.to_s] = value
+    end
+
+    def push_scope(scope = {}) = nil
+    def pop_scope = nil
+
+    def push_render_depth
+      @render_depth += 1
+    end
+
+    def pop_render_depth
+      @render_depth -= 1 if @render_depth > 0
+    end
+
+    def render_depth_exceeded?(strict: false)
+      strict ? @render_depth >= 100 : @render_depth > 100
+    end
+
+    def render_depth = @render_depth
+
+    def isolated
+      RenderScope.new(@static_environments, @render_depth, @file_system)
+    end
+
+    # Interrupt handling
+    def push_interrupt(type) = @interrupts.push(type)
+    def pop_interrupt = @interrupts.pop
+    def has_interrupt? = !@interrupts.empty?
+    def peek_interrupt = @interrupts.last
+
+    # Forloop stack
+    def for_stack = @registers["for_stack"]
+    def push_forloop(f) = for_stack.push(f)
+    def pop_forloop = for_stack.pop
+    def current_forloop = for_stack.last
+    def parent_forloop = for_stack.length < 2 ? nil : for_stack[-2]
+
+    # Counters
+    def increment(name)
+      @registers["counters"][name] ||= 0
+      r = @registers["counters"][name]
+      @registers["counters"][name] += 1
+      r
+    end
+
+    def decrement(name)
+      @registers["counters"][name] ||= 0
+      @registers["counters"][name] -= 1
+    end
+
+    # Cycles
+    def cycle_step(identity, values)
+      return nil if values.empty?
+      @registers["cycles"][identity] ||= 0
+      idx = @registers["cycles"][identity] % values.length
+      @registers["cycles"][identity] += 1
+      values[idx]
+    end
+
+    # For offset tracking
+    def for_offset(name) = @registers["for"][name] || 0
+    def set_for_offset(name, offset) = @registers["for"][name] = offset
+
+    # Temps
+    def store_temp(i, v) = @registers["temps"][i] = v
+    def load_temp(i) = @registers["temps"][i]
+
+    # Capture
+    def push_capture = @registers["capture_stack"].push(String.new)
+    def pop_capture = @registers["capture_stack"].pop || ""
+    def current_capture = @registers["capture_stack"].last
+    def capturing? = !@registers["capture_stack"].empty?
+  end
+
   # Internal execution state with scope stack and registers
   # (Public API uses Context - this is the VM's internal state)
   class Scope
@@ -223,26 +331,7 @@ module LiquidIL
     # --- Isolation for render ---
 
     def isolated
-      # Fast path: create isolated context without redundant initialization
-      # static_environments is already stringified, no need to re-process
-      iso = Scope.allocate
-      iso.instance_variable_set(:@static_environments, @static_environments)
-      iso.instance_variable_set(:@scopes, [{}])
-      iso.instance_variable_set(:@registers, {
-        "for" => {},
-        "for_stack" => [],
-        "counters" => {},
-        "cycles" => {},
-        "temps" => [],
-        "capture_stack" => []
-      })
-      iso.instance_variable_set(:@interrupts, [])
-      iso.instance_variable_set(:@strict_errors, @strict_errors)
-      iso.instance_variable_set(:@file_system, @file_system)
-      iso.instance_variable_set(:@disable_include, true)
-      iso.instance_variable_set(:@assigned_vars, {})
-      iso.instance_variable_set(:@render_depth, @render_depth)
-      iso
+      RenderScope.new(@static_environments, @render_depth, @file_system)
     end
 
     private
