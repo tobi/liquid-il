@@ -100,7 +100,7 @@ module LiquidIL
       else
         # No more delimiters, consume rest
         @scanner.terminate
-        end_pos = @source.length
+        end_pos = @source.bytesize  # Use bytesize since byteslice uses byte positions
       end
 
       content = @source.byteslice(start_pos, end_pos - start_pos)
@@ -118,7 +118,19 @@ module LiquidIL
       start_pos = @scanner.pos
 
       # Determine token type and trim_left
-      if @scanner.skip(/\{\{-/)
+      # Note: Don't be greedy about `-` if it would make the content empty
+      # e.g., `{{-}}` should be `{{` + empty + `-}}` not `{{-` + empty + `}}`
+      if @scanner.check(/\{\{-\}\}/)
+        # Special case: {{-}} - the single `-` acts as both trim_left and trim_right
+        @scanner.skip(/\{\{/)
+        type = VAR
+        trim_left = true
+      elsif @scanner.check(/\{%--?%\}/)
+        # Special case: {%--%} or {%-%} - the `-` acts as both trim_left and trim_right
+        @scanner.skip(/\{%/)
+        type = TAG
+        trim_left = true
+      elsif @scanner.skip(/\{\{-/)
         type = VAR
         trim_left = true
       elsif @scanner.skip(/\{\{/)
@@ -152,7 +164,14 @@ module LiquidIL
 
         [type, content.strip, trim_left, trim_right, start_pos, end_pos]
       else
-        raise SyntaxError, "Unterminated #{type == VAR ? 'variable' : 'tag'} at position #{start_pos}"
+        # Format message to match Liquid's error format
+        # Note: Don't include position in message for Liquid compatibility
+        if type == VAR
+          err = SyntaxError.new("Variable '{{' was not properly terminated with regexp: /\\}\\}/", position: start_pos, source: @source)
+        else
+          err = SyntaxError.new("Tag '{%' was not properly terminated with regexp: /%\\}/", position: start_pos, source: @source)
+        end
+        raise err
       end
     end
   end
@@ -243,6 +262,19 @@ module LiquidIL
       @current_token = nil
       @current_value = nil
       @peeked = false
+    end
+
+    # Save current lexer state for backtracking
+    def save_state
+      { pos: @scanner.pos, token: @current_token, value: @current_value, peeked: @peeked }
+    end
+
+    # Restore lexer state from saved state
+    def restore_state(state)
+      @scanner.pos = state[:pos]
+      @current_token = state[:token]
+      @current_value = state[:value]
+      @peeked = state[:peeked]
     end
 
     # Get current token type (no allocation if already peeked)

@@ -42,6 +42,7 @@ module LiquidIL
 
     # Comparison and logic
     COMPARE = :COMPARE               # [:COMPARE, op] where op is :eq/:ne/:lt/:le/:gt/:ge
+    CASE_COMPARE = :CASE_COMPARE     # [:CASE_COMPARE] - case/when comparison (stricter blank/empty handling)
     CONTAINS = :CONTAINS             # [:CONTAINS]
     BOOL_NOT = :BOOL_NOT             # [:BOOL_NOT] - logical negation
     IS_TRUTHY = :IS_TRUTHY           # [:IS_TRUTHY] - convert to boolean
@@ -50,6 +51,7 @@ module LiquidIL
     PUSH_SCOPE = :PUSH_SCOPE         # [:PUSH_SCOPE]
     POP_SCOPE = :POP_SCOPE           # [:POP_SCOPE]
     ASSIGN = :ASSIGN                 # [:ASSIGN, name]
+    ASSIGN_LOCAL = :ASSIGN_LOCAL     # [:ASSIGN_LOCAL, name] - assign to current scope (for loop vars)
 
     # Range opcodes
     NEW_RANGE = :NEW_RANGE           # [:NEW_RANGE] - pops end, start
@@ -86,6 +88,7 @@ module LiquidIL
     # Stack operations
     DUP = :DUP                       # [:DUP]
     POP = :POP                       # [:POP]
+    BUILD_HASH = :BUILD_HASH         # [:BUILD_HASH, count] - pops count*2 items and pushes a Hash
     STORE_TEMP = :STORE_TEMP         # [:STORE_TEMP, index]
     LOAD_TEMP = :LOAD_TEMP           # [:LOAD_TEMP, index]
 
@@ -138,6 +141,13 @@ module LiquidIL
       def emit_label(id)
         @instructions << [LABEL, id]
         @spans << nil  # Labels don't have source spans
+        self
+      end
+
+      # Merge instructions and spans from another builder
+      def emit_from(other)
+        @instructions.concat(other.instructions)
+        @spans.concat(other.spans)
         self
       end
 
@@ -246,6 +256,10 @@ module LiquidIL
         emit(COMPARE, op)
       end
 
+      def case_compare
+        emit(CASE_COMPARE)
+      end
+
       def contains
         emit(CONTAINS)
       end
@@ -270,6 +284,10 @@ module LiquidIL
         emit(ASSIGN, name)
       end
 
+      def assign_local(name)
+        emit(ASSIGN_LOCAL, name)
+      end
+
       def new_range
         emit(NEW_RANGE)
       end
@@ -278,8 +296,8 @@ module LiquidIL
         emit(CALL_FILTER, name, argc)
       end
 
-      def for_init(var_name, loop_name, has_limit = false, has_offset = false, offset_continue = false, reversed = false)
-        emit(FOR_INIT, var_name, loop_name, has_limit, has_offset, offset_continue, reversed)
+      def for_init(var_name, loop_name, has_limit = false, has_offset = false, offset_continue = false, reversed = false, recovery_label = nil)
+        emit(FOR_INIT, var_name, loop_name, has_limit, has_offset, offset_continue, reversed, recovery_label)
       end
 
       def for_next(label_continue, label_break)
@@ -352,6 +370,10 @@ module LiquidIL
 
       def pop
         emit(POP)
+      end
+
+      def build_hash(count)
+        emit(BUILD_HASH, count)
       end
 
       def store_temp(index)

@@ -4,6 +4,7 @@ require_relative "liquid_il/lexer"
 require_relative "liquid_il/parser"
 require_relative "liquid_il/il"
 require_relative "liquid_il/compiler"
+require_relative "liquid_il/optimizer"
 require_relative "liquid_il/utils"
 require_relative "liquid_il/vm"
 require_relative "liquid_il/context"
@@ -13,8 +14,28 @@ require_relative "liquid_il/pretty_printer"
 
 module LiquidIL
   class Error < StandardError; end
-  class SyntaxError < Error; end
-  class RuntimeError < Error; end
+  class SyntaxError < Error
+    attr_accessor :position, :source
+    def initialize(message, position: nil, source: nil)
+      super(message)
+      @position = position
+      @source = source
+    end
+
+    def line
+      return 1 unless @position && @source
+      @source[0, @position].count("\n") + 1
+    end
+  end
+  class RuntimeError < Error
+    attr_accessor :file, :line, :partial_output
+    def initialize(message, file: nil, line: 1, partial_output: nil)
+      super(message)
+      @file = file
+      @line = line
+      @partial_output = partial_output
+    end
+  end
 
   # Context is the main entry point for rendering Liquid templates.
   # It holds configuration like file_system and can parse/render templates.
@@ -90,7 +111,13 @@ module LiquidIL
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       scope = Scope.new(assigns, registers: @context&.registers&.dup || {}, strict_errors: @context&.strict_errors || false)
       scope.file_system = @context&.file_system
-      VM.execute(@instructions, scope)
+      begin
+        VM.execute(@instructions, scope, spans: @spans, source: @source)
+      rescue LiquidIL::RuntimeError => e
+        output = e.partial_output || ""
+        location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
+        output + "Liquid error (#{location}): #{e.message}"
+      end
     end
 
     class << self

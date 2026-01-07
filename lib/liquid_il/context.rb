@@ -4,15 +4,21 @@ module LiquidIL
   # Internal execution state with scope stack and registers
   # (Public API uses Context - this is the VM's internal state)
   class Scope
-    attr_reader :registers, :scopes, :interrupts, :strict_errors
-    attr_accessor :file_system
+    attr_reader :registers, :scopes, :interrupts, :strict_errors, :static_environments
+    attr_accessor :file_system, :disable_include
 
-    def initialize(assigns = {}, registers: {}, strict_errors: false)
+    MAX_RENDER_DEPTH = 100
+
+    def initialize(assigns = {}, registers: {}, strict_errors: false, static_environments: nil)
+      @static_environments = stringify_keys(static_environments || assigns)
       @scopes = [stringify_keys(assigns)]
       @registers = registers.dup
       @interrupts = []
       @strict_errors = strict_errors
       @file_system = nil
+      @disable_include = false  # Set to true inside render tag to disallow include
+      @assigned_vars = {}  # Track explicitly assigned variables (take precedence over counters)
+      @render_depth = 0  # Track render/include nesting depth
 
       # Initialize special registers
       @registers["for"] ||= {}      # offset:continue tracking
@@ -21,6 +27,26 @@ module LiquidIL
       @registers["cycles"] ||= {}   # cycle state
       @registers["temps"] ||= []    # temporary storage
       @registers["capture_stack"] ||= [] # capture buffers
+    end
+
+    # --- Render depth tracking ---
+
+    def push_render_depth
+      @render_depth += 1
+      @render_depth
+    end
+
+    def render_depth_exceeded?(strict: false)
+      # include uses >= (strict), render uses > (allows one more level)
+      strict ? @render_depth >= MAX_RENDER_DEPTH : @render_depth > MAX_RENDER_DEPTH
+    end
+
+    def pop_render_depth
+      @render_depth -= 1 if @render_depth > 0
+    end
+
+    def render_depth
+      @render_depth
     end
 
     # --- Scope management ---
@@ -35,18 +61,36 @@ module LiquidIL
 
     def lookup(key)
       key = key.to_s
+      # Check if this was explicitly assigned - assigned vars take precedence over counters
+      if @assigned_vars[key]
+        @scopes.each do |scope|
+          return scope[key] if scope.key?(key)
+        end
+      end
+      # Check counters - they shadow environment variables (but not assigned ones)
+      counters = @registers["counters"]
+      return counters[key] if counters&.key?(key)
+      # Check scope chain for environment variables
       @scopes.each do |scope|
         return scope[key] if scope.key?(key)
       end
-      # Fall back to increment/decrement counters
-      counters = @registers["counters"]
-      return counters[key] if counters&.key?(key)
+      # Check static_environments (shared with render)
+      return @static_environments[key] if @static_environments&.key?(key)
       nil
     end
 
     def assign(key, value)
+      key = key.to_s
+      # Track that this was explicitly assigned (takes precedence over counters)
+      @assigned_vars[key] = true
       # Liquid assigns to the root/environment scope, not the current scope
-      @scopes.last[key.to_s] = value
+      @scopes.last[key] = value
+    end
+
+    # Assign to current (top) scope - used for loop variables that should be local
+    def assign_local(key, value)
+      key = key.to_s
+      @scopes.first[key] = value
     end
 
     def [](key)
@@ -118,6 +162,7 @@ module LiquidIL
     # --- Cycle management ---
 
     def cycle_step(identity, values)
+      return nil if values.empty?
       cycles = @registers["cycles"]
       cycles[identity] ||= 0
       idx = cycles[identity] % values.length
@@ -178,10 +223,12 @@ module LiquidIL
     # --- Isolation for render ---
 
     def isolated
-      iso = Scope.new({}, registers: {}, strict_errors: @strict_errors)
+      # Create isolated context - no parent variables visible EXCEPT static_environments
+      # static_environments (initial environment data) IS shared with render
+      iso = Scope.new({}, registers: {}, strict_errors: @strict_errors, static_environments: @static_environments)
       iso.file_system = @file_system
-      # Copy environment but not registers
-      iso.scopes[0] = @scopes.last.dup
+      iso.disable_include = true  # Include is not allowed inside render
+      iso.instance_variable_set(:@render_depth, @render_depth)  # Copy render depth for tracking
       iso
     end
 

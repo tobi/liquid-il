@@ -1,6 +1,6 @@
 # LiquidIL Architecture
 
-LiquidIL compiles Liquid templates to an intermediate language (IL) for high-performance execution. This document describes the compilation pipeline and key data structures.
+LiquidIL compiles Liquid templates to an intermediate language (IL) for execution on a stack-based virtual machine. This document describes the compilation pipeline and key data structures.
 
 ## Pipeline Overview
 
@@ -43,7 +43,7 @@ Recursive descent parser that emits IL directly—no AST intermediate. Uses `IL:
 Key parsing methods:
 - `parse_expression` → `parse_or_expression` → `parse_and_expression` → `parse_comparison_expression` → `parse_primary_expression`
 - `parse_filters` - Filter chain processing
-- `parse_if_tag`, `parse_for_tag`, etc. - Control flow tags
+- `parse_if_tag`, `parse_for_tag`, `parse_case_tag`, etc. - Control flow tags
 
 ## Stage 4: IL Instruction Set
 
@@ -51,22 +51,83 @@ Key parsing methods:
 
 Instructions are simple arrays (`[:OPCODE, arg1, arg2]`) for minimal allocation.
 
-### Instruction Categories
+### Complete Instruction Reference
 
-| Category | Instructions | Purpose |
-|----------|-------------|---------|
-| **Output** | `WRITE_RAW`, `WRITE_VALUE` | Emit to output buffer |
-| **Constants** | `CONST_NIL`, `CONST_TRUE`, `CONST_FALSE`, `CONST_INT`, `CONST_FLOAT`, `CONST_STRING`, `CONST_RANGE`, `CONST_EMPTY`, `CONST_BLANK` | Push literals to stack |
-| **Lookups** | `FIND_VAR`, `FIND_VAR_DYNAMIC`, `LOOKUP_KEY`, `LOOKUP_CONST_KEY`, `LOOKUP_COMMAND` | Variable and property access |
-| **Control Flow** | `LABEL`, `JUMP`, `JUMP_IF_FALSE`, `JUMP_IF_TRUE`, `JUMP_IF_EMPTY`, `JUMP_IF_INTERRUPT`, `HALT` | Branching and jumps |
-| **Comparison** | `COMPARE`, `CONTAINS`, `BOOL_NOT`, `IS_TRUTHY` | Boolean operations |
-| **Scope** | `PUSH_SCOPE`, `POP_SCOPE`, `ASSIGN` | Variable assignment |
-| **Loops** | `FOR_INIT`, `FOR_NEXT`, `FOR_END`, `PUSH_FORLOOP`, `POP_FORLOOP` | Iteration |
-| **Interrupts** | `PUSH_INTERRUPT`, `POP_INTERRUPT` | Break/continue handling |
-| **Filters** | `CALL_FILTER` | Apply filter functions |
-| **Capture** | `PUSH_CAPTURE`, `POP_CAPTURE` | String capture blocks |
-| **Partials** | `RENDER_PARTIAL`, `INCLUDE_PARTIAL` | Template inclusion |
-| **Stack** | `DUP`, `POP`, `STORE_TEMP`, `LOAD_TEMP` | Stack manipulation |
+| Instruction | Format | Description |
+|-------------|--------|-------------|
+| **Output** |||
+| `WRITE_RAW` | `[:WRITE_RAW, string]` | Write literal string to output |
+| `WRITE_VALUE` | `[:WRITE_VALUE]` | Pop stack, convert to string, write to output |
+| **Constants** |||
+| `CONST_NIL` | `[:CONST_NIL]` | Push nil |
+| `CONST_TRUE` | `[:CONST_TRUE]` | Push true |
+| `CONST_FALSE` | `[:CONST_FALSE]` | Push false |
+| `CONST_INT` | `[:CONST_INT, value]` | Push integer |
+| `CONST_FLOAT` | `[:CONST_FLOAT, value]` | Push float |
+| `CONST_STRING` | `[:CONST_STRING, value]` | Push string |
+| `CONST_RANGE` | `[:CONST_RANGE, start, end]` | Push range literal |
+| `CONST_EMPTY` | `[:CONST_EMPTY]` | Push empty literal (for `== empty`) |
+| `CONST_BLANK` | `[:CONST_BLANK]` | Push blank literal (for `== blank`) |
+| **Variable Access** |||
+| `FIND_VAR` | `[:FIND_VAR, name]` | Look up variable by name, push to stack |
+| `FIND_VAR_DYNAMIC` | `[:FIND_VAR_DYNAMIC]` | Pop name from stack, look up, push result |
+| `LOOKUP_KEY` | `[:LOOKUP_KEY]` | Pop key, pop object, push object[key] |
+| `LOOKUP_CONST_KEY` | `[:LOOKUP_CONST_KEY, name]` | Pop object, push object[name] |
+| `LOOKUP_COMMAND` | `[:LOOKUP_COMMAND, name]` | Optimized lookup for size/first/last |
+| **Control Flow** |||
+| `LABEL` | `[:LABEL, id]` | Define jump target (removed by linker) |
+| `JUMP` | `[:JUMP, target]` | Unconditional jump |
+| `JUMP_IF_FALSE` | `[:JUMP_IF_FALSE, target]` | Pop, jump if falsy |
+| `JUMP_IF_TRUE` | `[:JUMP_IF_TRUE, target]` | Pop, jump if truthy |
+| `JUMP_IF_EMPTY` | `[:JUMP_IF_EMPTY, target]` | Peek, jump if empty (for else in for) |
+| `JUMP_IF_INTERRUPT` | `[:JUMP_IF_INTERRUPT, target]` | Jump if break/continue pending |
+| `HALT` | `[:HALT]` | End execution |
+| **Comparison** |||
+| `COMPARE` | `[:COMPARE, op]` | Pop b, a, push a op b (eq/ne/lt/le/gt/ge) |
+| `CASE_COMPARE` | `[:CASE_COMPARE]` | Stricter comparison for case/when |
+| `CONTAINS` | `[:CONTAINS]` | Pop b, a, push a.include?(b) |
+| `BOOL_NOT` | `[:BOOL_NOT]` | Pop, push logical negation |
+| `IS_TRUTHY` | `[:IS_TRUTHY]` | Pop, push boolean (only nil/false are falsy) |
+| **Scope & Assignment** |||
+| `PUSH_SCOPE` | `[:PUSH_SCOPE]` | Push new variable scope |
+| `POP_SCOPE` | `[:POP_SCOPE]` | Pop variable scope |
+| `ASSIGN` | `[:ASSIGN, name]` | Pop value, assign to root scope |
+| `ASSIGN_LOCAL` | `[:ASSIGN_LOCAL, name]` | Pop value, assign to current scope |
+| **Loops (for)** |||
+| `FOR_INIT` | `[:FOR_INIT, var, loop_name, limit?, offset?, continue?, reversed?]` | Initialize for loop |
+| `FOR_NEXT` | `[:FOR_NEXT, continue_label, break_label]` | Advance iterator or exit |
+| `FOR_END` | `[:FOR_END]` | Clean up for loop |
+| `PUSH_FORLOOP` | `[:PUSH_FORLOOP]` | Push forloop to stack (for parentloop) |
+| `POP_FORLOOP` | `[:POP_FORLOOP]` | Pop forloop from stack |
+| **Loops (tablerow)** |||
+| `TABLEROW_INIT` | `[:TABLEROW_INIT, var, loop_name, limit?, offset?, cols]` | Initialize tablerow |
+| `TABLEROW_NEXT` | `[:TABLEROW_NEXT, continue_label, break_label]` | Advance with `<tr>`/`<td>` output |
+| `TABLEROW_END` | `[:TABLEROW_END]` | Clean up tablerow |
+| **Interrupts** |||
+| `PUSH_INTERRUPT` | `[:PUSH_INTERRUPT, type]` | Signal break or continue |
+| `POP_INTERRUPT` | `[:POP_INTERRUPT]` | Clear interrupt |
+| **Filters** |||
+| `CALL_FILTER` | `[:CALL_FILTER, name, argc]` | Pop args and value, push filter result |
+| **Capture** |||
+| `PUSH_CAPTURE` | `[:PUSH_CAPTURE]` | Start capturing output |
+| `POP_CAPTURE` | `[:POP_CAPTURE]` | Stop capture, push captured string |
+| **Partials** |||
+| `RENDER_PARTIAL` | `[:RENDER_PARTIAL, name, args]` | Render with isolated scope |
+| `INCLUDE_PARTIAL` | `[:INCLUDE_PARTIAL, name, args]` | Include with shared scope |
+| **Special Tags** |||
+| `INCREMENT` | `[:INCREMENT, name]` | Increment counter, push old value |
+| `DECREMENT` | `[:DECREMENT, name]` | Decrement counter, push new value |
+| `CYCLE_STEP` | `[:CYCLE_STEP, identity, values]` | Cycle through values |
+| `CYCLE_STEP_VAR` | `[:CYCLE_STEP_VAR, var, values]` | Cycle with variable group |
+| `IFCHANGED_CHECK` | `[:IFCHANGED_CHECK, tag_id]` | Output if value changed |
+| **Stack** |||
+| `DUP` | `[:DUP]` | Duplicate top of stack |
+| `POP` | `[:POP]` | Discard top of stack |
+| `BUILD_HASH` | `[:BUILD_HASH, count]` | Pop count*2 items, push hash |
+| `STORE_TEMP` | `[:STORE_TEMP, index]` | Store top in temp slot |
+| `LOAD_TEMP` | `[:LOAD_TEMP, index]` | Load from temp slot |
+| `NEW_RANGE` | `[:NEW_RANGE]` | Pop end, start, push range |
+| `NOOP` | `[:NOOP]` | No operation |
 
 ### Example IL
 
@@ -116,13 +177,18 @@ Stack-based virtual machine with:
 ## Supporting Components
 
 ### Context (`lib/liquid_il/context.rb`)
-Manages variable scopes, forloop state, interrupts, and captures.
+Manages variable scopes, forloop state, interrupts, captures, and render depth tracking.
 
 ### Filters (`lib/liquid_il/filters.rb`)
-Standard Liquid filter implementations.
+Standard Liquid filter implementations (50+ filters including string, array, math, date).
 
 ### Drops (`lib/liquid_il/drops.rb`)
-Drop protocol support: `ForloopDrop`, `RangeValue`, `EmptyLiteral`, `BlankLiteral`.
+Drop protocol support: `ForloopDrop`, `TablerowloopDrop` for loop metadata.
+
+### Context Types (`lib/liquid_il/context.rb`)
+- `RangeValue` - Lazy range representation
+- `EmptyLiteral` - The `empty` keyword
+- `BlankLiteral` - The `blank` keyword
 
 ### Utils (`lib/liquid_il/utils.rb`)
 Shared utilities for value coercion and output formatting.
@@ -131,6 +197,9 @@ Shared utilities for value coercion and output formatting.
 Wraps parser with optional optimization passes:
 - Merge consecutive `WRITE_RAW` instructions
 - Remove unreachable code after unconditional jumps
+
+### Pretty Printer (`lib/liquid_il/pretty_printer.rb`)
+Human-readable IL output for debugging.
 
 ## Data Flow Example
 

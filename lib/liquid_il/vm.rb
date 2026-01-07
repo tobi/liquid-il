@@ -3,22 +3,53 @@
 require_relative "utils"
 
 module LiquidIL
+  class ErrorMarker
+    attr_reader :message, :location
+    def initialize(message, location)
+      @message = message
+      @location = location
+    end
+    def to_s
+      "Liquid error (#{@location}): #{@message}"
+    end
+  end
+
   # Virtual Machine - executes IL instructions
   class VM
     class << self
-      def execute(instructions, context)
-        vm = new(instructions, context)
+      def execute(instructions, context, current_file: nil, spans: nil, source: nil)
+        vm = new(instructions, context, current_file: current_file, spans: spans, source: source)
         vm.run
       end
     end
 
-    def initialize(instructions, context)
+    def initialize(instructions, context, current_file: nil, spans: nil, source: nil)
       @instructions = instructions
       @context = context
       @stack = []
       @output = String.new
       @pc = 0  # Program counter
       @for_iterators = []  # Stack of iterators for FOR_NEXT
+      @current_file = current_file  # Current file name for error messages
+      @spans = spans  # Source spans for line tracking
+      @source = source  # Source code for line counting
+    end
+
+    # Raise a runtime error with the current file context and line number
+    def raise_error(message)
+      line = current_line
+      err = LiquidIL::RuntimeError.new(message, file: @current_file, line: line)
+      raise err
+    end
+
+    # Get the current line number based on PC and spans
+    def current_line
+      return 1 unless @spans && @source
+      span = @spans[@pc]
+      return 1 unless span
+      # Count newlines before the span start position
+      pos = span[0]
+      @source[0, pos].count("\n") + 1
     end
 
     def run
@@ -36,7 +67,11 @@ module LiquidIL
 
         when IL::WRITE_VALUE
           value = @stack.pop
-          write_output(to_output(value))
+          if value.is_a?(ErrorMarker)
+            write_output(value.to_s)
+          else
+            write_output(to_output(value))
+          end
           @pc += 1
 
         when IL::CONST_NIL
@@ -162,7 +197,21 @@ module LiquidIL
           op = inst[1]
           right = @stack.pop
           left = @stack.pop
-          @stack.push(compare(left, right, op))
+          begin
+            @stack.push(compare(left, right, op))
+          rescue ArgumentError => e
+            # Output comparison error and push false
+            location = @current_file ? "#{@current_file} line #{current_line}" : "line #{current_line}"
+            write_output("Liquid error (#{location}): #{e.message}")
+            @stack.push(false)
+          end
+          @pc += 1
+
+        when IL::CASE_COMPARE
+          # Case/when comparison with stricter blank/empty handling
+          right = @stack.pop  # when value
+          left = @stack.pop   # case value
+          @stack.push(case_compare(left, right))
           @pc += 1
 
         when IL::CONTAINS
@@ -192,12 +241,22 @@ module LiquidIL
         when IL::ASSIGN
           name = inst[1]
           value = @stack.pop
-          @context.assign(name, value)
+          @context.assign(name, value) unless value.is_a?(ErrorMarker)
+          @pc += 1
+
+        when IL::ASSIGN_LOCAL
+          name = inst[1]
+          value = @stack.pop
+          @context.assign_local(name, value) unless value.is_a?(ErrorMarker)
           @pc += 1
 
         when IL::NEW_RANGE
           end_val = @stack.pop
           start_val = @stack.pop
+          # Validate range bounds - floats are not allowed
+          if start_val.is_a?(Float) || end_val.is_a?(Float)
+            raise_error "invalid integer"
+          end
           @stack.push(RangeValue.new(start_val, end_val))
           @pc += 1
 
@@ -206,8 +265,17 @@ module LiquidIL
           argc = inst[2]
           args = @stack.pop(argc)
           input = @stack.pop
-          result = Filters.apply(name, input, args, @context)
-          @stack.push(result)
+          begin
+            result = Filters.apply(name, input, args, @context)
+            @stack.push(result)
+          rescue FilterError
+            # Filter error in non-strict mode - push nil so ASSIGN assigns nil
+            @stack.push(nil)
+          rescue FilterRuntimeError => e
+            # Filter runtime error - push ErrorMarker
+            location = @current_file ? "#{@current_file} line #{current_line}" : "line #{current_line}"
+            @stack.push(ErrorMarker.new(e.message, location))
+          end
           @pc += 1
 
         when IL::FOR_INIT
@@ -217,23 +285,34 @@ module LiquidIL
           has_offset = inst[4]
           offset_continue = inst[5]
           reversed = inst[6]
+          recovery_label = inst[7]
           offset = has_offset ? @stack.pop : nil
           limit = has_limit ? @stack.pop : nil
           collection = @stack.pop
-          iterator = create_iterator(collection, loop_name, limit, offset, offset_continue, reversed)
-          @for_iterators.push(iterator)
-          @pc += 1
+          begin
+            iterator = create_iterator(collection, loop_name, has_limit, limit, has_offset, offset, offset_continue, reversed)
+            @for_iterators.push(iterator)
+            @pc += 1
+          rescue LiquidIL::RuntimeError => e
+            # Error recovery: output error message and jump to recovery point
+            location = @current_file ? "#{@current_file} line #{e.line}" : "line #{e.line}"
+            @output << "Liquid error (#{location}): #{e.message}"
+            @pc = recovery_label || (@instructions.length - 1)
+          end
 
         when IL::FOR_NEXT
           label_continue = inst[1]
           label_break = inst[2]
           iterator = @for_iterators.last
+          forloop = @context.current_forloop
+          # Update forloop.index0 to reflect completed iterations BEFORE checking has_next
+          # This ensures escaped forloop references show the final index after loop ends
+          if forloop && iterator
+            forloop.index0 = iterator.index0
+          end
           if iterator && iterator.has_next?
             value = iterator.next_value
             @stack.push(value)
-            # Update forloop if present
-            forloop = @context.current_forloop
-            forloop.index0 = iterator.index0 - 1 if forloop
             @pc += 1
           else
             @pc = label_break
@@ -249,7 +328,7 @@ module LiquidIL
           parent = @context.current_forloop
           forloop = ForloopDrop.new(iterator&.name || "", iterator&.length || 0, parent)
           @context.push_forloop(forloop)
-          @context.assign("forloop", forloop)
+          @context.assign_local("forloop", forloop)
           @pc += 1
 
         when IL::POP_FORLOOP
@@ -307,8 +386,22 @@ module LiquidIL
         when IL::INCLUDE_PARTIAL
           name = inst[1]
           args = inst[2]
-          render_partial(name, args, isolated: false)
+          if @context.disable_include
+            # Include is not allowed inside render tag
+            write_output("Liquid error (#{@current_file || 'line'} line 1): include usage is not allowed in this context")
+          else
+            render_partial(name, args, isolated: false)
+          end
           @pc += 1
+          # If include set an interrupt, skip to the next JUMP_IF_INTERRUPT
+          # This allows break/continue to propagate through include
+          if @context.has_interrupt?
+            while @pc < @instructions.length
+              break if @instructions[@pc][0] == IL::JUMP_IF_INTERRUPT
+              @pc += 1
+            end
+            next  # Re-enter the loop to process JUMP_IF_INTERRUPT without hitting the break check
+          end
 
         when IL::DUP
           @stack.push(@stack.last)
@@ -318,12 +411,42 @@ module LiquidIL
           @stack.pop
           @pc += 1
 
+        when IL::BUILD_HASH
+          count = inst[1]
+          pairs = @stack.pop(count * 2)
+          hash = {}
+          i = 0
+          while i < pairs.length
+            key = pairs[i]
+            value = pairs[i + 1]
+            hash[key.to_s] = value
+            i += 2
+          end
+          @stack.push(hash)
+          @pc += 1
+
         when IL::TABLEROW_INIT
           var_name = inst[1]
           loop_name = inst[2]
           has_limit = inst[3]
           has_offset = inst[4]
           cols = inst[5]
+          # Pop dynamic cols from stack if needed (pushed after offset)
+          if cols == :dynamic
+            cols_value = @stack.pop
+            # Convert to integer if numeric, validate otherwise
+            cols = if cols_value.nil?
+                     :explicit_nil  # Variable evaluates to nil -> col_last always false
+                   elsif cols_value.is_a?(Integer)
+                     cols_value
+                   elsif cols_value.is_a?(Float)
+                     cols_value.to_i
+                   elsif cols_value.is_a?(String) && cols_value =~ /\A-?\d+(?:\.\d+)?\z/
+                     cols_value.to_i
+                   else
+                     :invalid  # Mark as invalid for validation
+                   end
+          end
           offset = has_offset ? @stack.pop : nil
           limit = has_limit ? @stack.pop : nil
           collection = @stack.pop
@@ -336,34 +459,36 @@ module LiquidIL
           label_break = inst[2]
           iterator = @for_iterators.last
           if iterator && iterator.has_next?
-            # Close previous cell/row if not first iteration
-            if iterator.index0 > 0
-              write_output("</td>")
-              if iterator.at_row_end?
-                write_output("</tr>\n")
+            # Skip all output if collection was nil/false
+            unless iterator.skip_output
+              # Close previous cell/row if not first iteration
+              if iterator.index0 > 0
+                write_output("</td>")
+                if iterator.at_row_end?
+                  write_output("</tr>\n")
+                end
               end
-            end
 
-            # Open new row if at start of row
-            if iterator.at_row_start?
-              write_output("<tr class=\"row#{iterator.row}\">\n") if iterator.row == 1
-              write_output("<tr class=\"row#{iterator.row}\">") if iterator.row > 1
+              # Open new row if at start of row
+              if iterator.at_row_start?
+                write_output("<tr class=\"row#{iterator.row}\">\n") if iterator.row == 1
+                write_output("<tr class=\"row#{iterator.row}\">") if iterator.row > 1
+              end
+              write_output("<td class=\"col#{iterator.col}\">")
             end
-            write_output("<td class=\"col#{iterator.col}\">")
 
             value = iterator.next_value
             @stack.push(value)
-            # Update forloop
-            forloop = @context.current_forloop
-            forloop.index0 = iterator.index0 - 1 if forloop
+            # NOTE: tablerow does NOT update forloop - it has its own tablerowloop variable
+            # forloop.index0 should remain the enclosing for loop's index
             # Set up tablerowloop variable with col info
-            tablerowloop = TablerowloopDrop.new(iterator.name, iterator.length, iterator.cols)
+            tablerowloop = TablerowloopDrop.new(iterator.name, iterator.length, iterator.cols, nil, iterator.cols_explicit_nil)
             tablerowloop.index0 = iterator.index0 - 1
-            @context.assign('tablerowloop', tablerowloop)
+            @context.assign_local('tablerowloop', tablerowloop)
             @pc += 1
           else
-            # Output empty row if no items
-            if iterator && iterator.index0 == 0
+            # Output empty row if no items (but only for real empty arrays, not nil/false)
+            if iterator && iterator.index0 == 0 && !iterator.skip_output
               write_output("<tr class=\"row1\">\n")
             end
             @pc = label_break
@@ -371,7 +496,7 @@ module LiquidIL
 
         when IL::TABLEROW_END
           iterator = @for_iterators.pop
-          if iterator
+          if iterator && !iterator.skip_output
             if iterator.index0 > 0
               # Close the last cell and row if we rendered items
               write_output("</td>")
@@ -412,28 +537,29 @@ module LiquidIL
           raise RuntimeError, "Unknown opcode: #{opcode}"
         end
 
-        # Check for interrupts after each instruction if in block body
-        break if @context.has_interrupt? && should_propagate_interrupt?
+        # Don't break immediately on interrupt - let JUMP_IF_INTERRUPT handle it
+        # This allows capture blocks to complete before the interrupt propagates
       end
 
       @output
+    rescue LiquidIL::RuntimeError => e
+      # Attach partial output to the error so callers can use it
+      e.partial_output = @output
+      raise
     end
 
     private
 
     def write_output(str)
       return unless str
+      # Skip output when there's a pending interrupt (break/continue)
+      # This allows capture blocks to complete while suppressing further output
+      return if @context.has_interrupt?
       if @context.capturing?
         @context.current_capture << str.to_s
       else
         @output << str.to_s
       end
-    end
-
-    def should_propagate_interrupt?
-      # In a simple VM, we always propagate
-      # More sophisticated implementations might track block nesting
-      true
     end
 
     # --- Core abstractions ---
@@ -565,12 +691,36 @@ module LiquidIL
       end
     end
 
+    # Stricter blank check - only nil, false, empty string (NOT whitespace-only)
+    # Used for "blank == value" comparisons where blank is the subject
+    def is_blank_strict(value)
+      case value
+      when BlankLiteral
+        true
+      when nil
+        true
+      when false
+        true
+      when String
+        value.empty?  # Only empty string, not whitespace-only
+      when Array
+        value.empty?
+      when Hash
+        value.empty?
+      else
+        false
+      end
+    end
+
     # Pure key lookup for bracket notation (no first/last commands for arrays)
     def lookup_key_only(obj, key)
       return nil if obj.nil?
 
       # Convert drop keys to their value
       key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
+
+      # Ranges cannot be used as hash keys - return nil directly
+      return nil if key.is_a?(RangeValue) || key.is_a?(Range)
 
       case obj
       when Hash
@@ -582,14 +732,8 @@ module LiquidIL
         result = obj[key_str]
         return result unless result.nil?
         result = obj[key.to_sym] if key.is_a?(String)
-        return result unless result.nil?
-        # For hashes, size/length are accessible via bracket notation
-        case key_str
-        when "size", "length"
-          obj.length
-        else
-          nil
-        end
+        # Bracket notation only does key lookup - no size/length methods
+        result
       when Array
         # Only integer keys for bracket notation - no first/last commands
         if key.is_a?(Integer)
@@ -670,8 +814,14 @@ module LiquidIL
           nil
         end
       when String
-        if key.to_s == "size" || key.to_s == "length"
+        key_str = key.to_s
+        case key_str
+        when "size", "length"
           obj.length
+        when "first"
+          obj[0]
+        when "last"
+          obj[-1]
         else
           nil
         end
@@ -688,9 +838,9 @@ module LiquidIL
       else
         # Try method call first if key is a valid method name
         if key.is_a?(String) && obj.respond_to?(key.to_sym)
-          obj.send(key.to_sym) rescue nil
+          obj.send(key.to_sym)
         elsif obj.respond_to?(:[])
-          obj[key.to_s] rescue nil
+          obj[key.to_s]
         else
           nil
         end
@@ -743,6 +893,7 @@ module LiquidIL
       right = RangeValue.new(right.begin, right.end) if right.is_a?(Range) && !right.exclude_end?
 
       # Handle empty/blank comparisons
+      # For "value == blank/empty" comparisons, check if value is blank/empty
       # Note: blank == blank and empty == empty are always false
       if right.is_a?(EmptyLiteral)
         return false if left.is_a?(EmptyLiteral) || left.is_a?(BlankLiteral)
@@ -781,13 +932,52 @@ module LiquidIL
       end
     end
 
+    # Case/when comparison - asymmetric blank/empty handling
+    # - Case value is blank/empty: only match nil/false/empty (strict)
+    # - When value is blank/empty: check if case value is blank (inclusive)
+    def case_compare(left, right)
+      # Handle drops with to_liquid_value for comparisons
+      left = left.to_liquid_value if left.respond_to?(:to_liquid_value)
+      right = right.to_liquid_value if right.respond_to?(:to_liquid_value)
+
+      # Normalize Ruby Range to RangeValue for comparison
+      left = RangeValue.new(left.begin, left.end) if left.is_a?(Range) && !left.exclude_end?
+      right = RangeValue.new(right.begin, right.end) if right.is_a?(Range) && !right.exclude_end?
+
+      # Case value (left) is blank/empty: use stricter matching
+      # {% case blank %}{% when ' ' %} should NOT match
+      if left.is_a?(BlankLiteral) || left.is_a?(EmptyLiteral)
+        return is_blank_strict(right) if left.is_a?(BlankLiteral)
+        return is_empty(right) if left.is_a?(EmptyLiteral)
+      end
+
+      # When value (right) is blank/empty: use inclusive matching
+      # {% case ' ' %}{% when blank %} SHOULD match (space is blank)
+      if right.is_a?(BlankLiteral) || right.is_a?(EmptyLiteral)
+        return is_blank(left) if right.is_a?(BlankLiteral)
+        return is_empty(left) if right.is_a?(EmptyLiteral)
+      end
+
+      # Regular comparison
+      left == right
+    end
+
     def compare_numeric(left, right)
+      # nil, true, false, Array, Hash, Range comparisons are always silently false
+      return false if left.nil? || right.nil?
+      return false if left == true || left == false || right == true || right == false
+      return false if left.is_a?(Array) || left.is_a?(Hash) || right.is_a?(Array) || right.is_a?(Hash)
+      return false if left.is_a?(RangeValue) || right.is_a?(RangeValue)
+
       left_num = to_number(left)
       right_num = to_number(right)
-      return false if left_num.nil? || right_num.nil?
+      if left_num.nil? || right_num.nil?
+        # Format: "comparison of LeftClass with right_value_or_class failed"
+        # Show value for numbers, class for other types (like String)
+        right_str = right.is_a?(Numeric) ? right.to_s : right.class.to_s
+        raise ArgumentError, "comparison of #{left.class} with #{right_str} failed"
+      end
       yield(left_num, right_num)
-    rescue
-      false
     end
 
     def to_number(value)
@@ -812,11 +1002,36 @@ module LiquidIL
       number ? number.to_i : 0
     end
 
+    # Check if value is a valid integer (for error throwing)
+    def valid_integer?(value)
+      return true if value.nil?  # nil is treated as 0
+      return true if value.is_a?(Integer)
+      return true if value.is_a?(Float)  # floats are truncated
+      # Strings starting with optional minus and digit are valid (to_i extracts leading number)
+      # "0x10" → valid (to_i = 0), "limit" → invalid (doesn't start with digit)
+      return true if value.is_a?(String) && value =~ /\A-?\d/
+      false
+    end
+
     # Contains check
     def contains(left, right)
+      # contains cannot find nil values
+      return false if right.nil?
+
       case left
       when String
-        left.include?(right.to_s)
+        right_str = right.to_s
+        # Handle encoding mismatches gracefully
+        if left.encoding != right_str.encoding
+          # Try to convert both to UTF-8
+          begin
+            left = left.dup.force_encoding(Encoding::UTF_8)
+            right_str = right_str.dup.force_encoding(Encoding::UTF_8)
+          rescue
+            return false
+          end
+        end
+        left.include?(right_str) rescue false
       when Array
         left.include?(right)
       when Hash
@@ -827,35 +1042,95 @@ module LiquidIL
     end
 
     # Create iterator for for loop
-    def create_iterator(collection, loop_name, limit, offset, offset_continue, reversed)
+    def create_iterator(collection, loop_name, has_limit, limit, has_offset, offset, offset_continue, reversed)
+      # Track if collection was nil/false - these skip validation
+      is_nil_collection = collection.nil? || collection == false
+      # Track if collection is a string - strings ignore offset/limit
+      is_string_collection = collection.is_a?(String)
       items = to_iterable(collection)
 
-      start_offset = 0
+      # Validate limit/offset only if collection is defined (not nil/false)
+      unless is_nil_collection
+        if has_limit && !valid_integer?(limit)
+          raise_error "invalid integer"
+        end
+        if has_offset && !valid_integer?(offset)
+          raise_error "invalid integer"
+        end
+      end
+
+      # Calculate 'from' (offset)
+      from = 0
       if offset_continue
-        start_offset = @context.for_offset(loop_name)
+        from = @context.for_offset(loop_name)
       elsif !offset.nil?
-        start_offset = to_integer(offset)
+        from = to_integer(offset)
       end
 
-      start_offset = [start_offset, 0].max
-      items = items.drop(start_offset) if start_offset > 0
-
+      # Calculate 'to' (from + limit) - this is how Liquid handles it
+      # With negative offset, to is also reduced, resulting in fewer items
+      to = nil
       if !limit.nil?
-        limit = to_integer(limit)
-        limit = 0 if limit < 0
-        items = items.take(limit)
+        limit_val = to_integer(limit)
+        to = from + limit_val
       end
+
+      # Slice collection using Liquid's algorithm
+      # Strings ignore offset and limit
+      items = slice_collection(items, from, to, is_string: is_string_collection)
 
       items = items.reverse if reversed
-      ForIterator.new(items, loop_name, start_offset: start_offset, offset_continue: offset_continue)
+      # Store the clamped offset for forloop tracking (must be >= 0)
+      actual_offset = [from, 0].max
+      ForIterator.new(items, loop_name, start_offset: actual_offset, offset_continue: offset_continue)
+    end
+
+    # Slice collection like Liquid does: collect items where from <= index < to
+    # Strings are special: always return [string] regardless of from/to
+    def slice_collection(collection, from, to, is_string: false)
+      # Strings ignore offset and limit, always iterate once
+      return collection if is_string
+
+      segments = []
+      index = 0
+
+      collection.each do |item|
+        break if to && to <= index
+
+        if from <= index
+          segments << item
+        end
+
+        index += 1
+      end
+
+      segments
     end
 
     # Create iterator for tablerow
     def create_tablerow_iterator(collection, loop_name, has_limit, limit, has_offset, offset, cols)
+      # Track if collection was nil/false - these should produce no output at all
+      is_nil_collection = collection.nil? || collection == false
+
       items = to_iterable(collection)
 
       # For strings, limit and offset are ignored (string is always treated as single item)
       is_string_collection = collection.is_a?(String)
+
+      # Validate limit/offset/cols only if collection is defined (not nil/false)
+      # "Tablerow doesn't throw error when limit isn't a number and lookup is undefined"
+      unless is_nil_collection
+        if has_limit && !valid_integer?(limit)
+          raise_error "invalid integer"
+        end
+        if has_offset && !valid_integer?(offset)
+          raise_error "invalid integer"
+        end
+        # Validate cols (check for :invalid marker or non-integer value)
+        if cols == :invalid || (cols && !cols.is_a?(Symbol) && !valid_integer?(cols))
+          raise_error "invalid integer"
+        end
+      end
 
       if has_offset && !is_string_collection
         start_offset = offset.nil? ? 0 : to_integer(offset)
@@ -870,13 +1145,29 @@ module LiquidIL
         items = items.take(limit_val)
       end
 
-      TablerowIterator.new(items, loop_name, cols: cols)
+      # Handle explicit nil cols (cols:nil in template)
+      cols_explicit_nil = (cols == :explicit_nil)
+      actual_cols = cols_explicit_nil ? nil : cols
+
+      TablerowIterator.new(items, loop_name, cols: actual_cols, skip_output: is_nil_collection, cols_explicit_nil: cols_explicit_nil)
     end
 
-    # Evaluate a simple expression like "foo", "foo.bar", or "foo[0]"
+    # Evaluate a simple expression like "foo", "foo.bar", "foo[0]", or "'literal'"
     def eval_expression(expr)
       return nil unless expr
-      parts = expr.to_s.scan(/(\w+)|\[(\d+)\]|\[['"](\w+)['"]\]/)
+      expr_str = expr.to_s
+
+      # Handle string literals (quoted strings)
+      if expr_str =~ /\A'(.*)'\z/ || expr_str =~ /\A"(.*)"\z/
+        return Regexp.last_match(1)
+      end
+
+      # Handle range literals (1..10)
+      if expr_str =~ /\A\((-?\d+)\.\.(-?\d+)\)\z/
+        return RangeValue.new(Regexp.last_match(1).to_i, Regexp.last_match(2).to_i)
+      end
+
+      parts = expr_str.scan(/(\w+)|\[(\d+)\]|\[['"](\w+)['"]\]/)
       return nil if parts.empty?
 
       result = nil
@@ -895,15 +1186,29 @@ module LiquidIL
 
     # Render partial
     def render_partial(name, args, isolated:)
+      # Check for invalid template name (nil, number, etc.)
+      if args["__invalid_name__"]
+        tag_type = isolated ? "render" : "include"
+        raise_error "Argument error in tag '#{tag_type}' - Illegal template name"
+      end
+
       return unless @context.file_system
 
       # Handle dynamic template name
       if args["__dynamic_name__"]
-        name = eval_expression(args["__dynamic_name__"]).to_s
+        resolved_name = eval_expression(args["__dynamic_name__"])
+        # Validate template name - must be a non-nil string
+        if resolved_name.nil? || !resolved_name.is_a?(String)
+          tag_type = isolated ? "render" : "include"
+          raise_error "Argument error in tag '#{tag_type}' - Illegal template name"
+        end
+        name = resolved_name
       end
 
       source = @context.file_system.read(name)
-      return unless source
+      unless source
+        raise_error "Could not find asset #{name}"
+      end
 
       # Handle with/for
       with_expr = args["__with__"]
@@ -913,34 +1218,65 @@ module LiquidIL
       if for_expr
         # Render once per item in the collection
         collection = eval_expression(for_expr)
-        # For include/render "for": Arrays and enumerable drops iterate,
-        # but hashes and simple values render once as a single item
+        # For include/render "for": Arrays, ranges, and enumerable drops iterate,
+        # but hashes, strings, and simple values render once as a single item
         if collection.is_a?(Array)
+          # Empty array = don't render at all
           collection.each_with_index do |item, idx|
             render_partial_once(name, source, args, item, as_alias, isolated: isolated,
-                               forloop_index: idx, forloop_length: collection.length)
+                               forloop_index: idx, forloop_length: collection.length, has_item: true)
           end
-        elsif !collection.is_a?(Hash) && collection.respond_to?(:each) && collection.respond_to?(:to_a)
-          # Enumerable drop - iterate over it
+        elsif (collection.is_a?(RangeValue) || collection.is_a?(Range)) && isolated
+          # Ranges iterate over their values ONLY for render (isolated)
+          # For include (non-isolated), ranges render as a single item
           items = collection.to_a
           items.each_with_index do |item, idx|
             render_partial_once(name, source, args, item, as_alias, isolated: isolated,
-                               forloop_index: idx, forloop_length: items.length)
+                               forloop_index: idx, forloop_length: items.length, has_item: true)
           end
+        elsif !collection.is_a?(Hash) && !collection.is_a?(String) && !collection.is_a?(Range) && !collection.is_a?(RangeValue) && collection.respond_to?(:each) && collection.respond_to?(:to_a)
+          # Enumerable drop - iterate over it (but not strings, hashes, or ranges for include)
+          items = collection.to_a
+          items.each_with_index do |item, idx|
+            render_partial_once(name, source, args, item, as_alias, isolated: isolated,
+                               forloop_index: idx, forloop_length: items.length, has_item: true)
+          end
+        elsif collection.nil?
+          # Nil collection = render once with keyword args only (no item from for loop)
+          render_partial_once(name, source, args, nil, as_alias, isolated: isolated, has_item: false)
         else
-          # Single item (including hashes) - render once with it
-          render_partial_once(name, source, args, collection, as_alias, isolated: isolated)
+          # Single item (including hashes and strings) - render once with it
+          render_partial_once(name, source, args, collection, as_alias, isolated: isolated, has_item: true)
         end
       elsif with_expr
-        # Render once with the variable
+        # Render with the variable
         item = eval_expression(with_expr)
-        render_partial_once(name, source, args, item, as_alias, isolated: isolated)
+        # For include (non-isolated) with arrays: iterate over array items
+        # For render (isolated) with arrays: render once with array as single item
+        if item.is_a?(Array) && !isolated
+          # Include with array - iterate like "for"
+          item.each do |array_item|
+            render_partial_once(name, source, args, array_item, as_alias, isolated: isolated, has_item: true)
+          end
+        else
+          # For render (isolated), nil/undefined with expr lets keyword arg take precedence
+          # For include (non-isolated), nil with expr still overrides keyword arg
+          has_item = isolated ? !item.nil? : true
+          render_partial_once(name, source, args, item, as_alias, isolated: isolated, has_item: has_item)
+        end
       else
-        render_partial_once(name, source, args, nil, nil, isolated: isolated)
+        render_partial_once(name, source, args, nil, nil, isolated: isolated, has_item: false)
       end
     end
 
-    def render_partial_once(name, source, args, item, as_alias, isolated:, forloop_index: nil, forloop_length: nil)
+    def render_partial_once(name, source, args, item, as_alias, isolated:, forloop_index: nil, forloop_length: nil, has_item: false)
+      # Track render depth to prevent infinite recursion
+      @context.push_render_depth
+      # include uses stricter limit (>= 100), render allows one more level (> 100)
+      if @context.render_depth_exceeded?(strict: !isolated)
+        raise LiquidIL::RuntimeError.new("Nesting too deep", file: name, line: current_line)
+      end
+
       if isolated
         partial_context = @context.isolated
       else
@@ -959,21 +1295,57 @@ module LiquidIL
       end
 
       # Assign the item to the alias or partial name variable
-      if item
+      # When has_item is true, we always assign (even if item is nil/false)
+      # This ensures "with" clause values override keyword args with the same name
+      if has_item
         var_name = as_alias || name
         partial_context.assign(var_name, item)
       end
 
-      # Set up forloop variable if we're iterating
-      if forloop_index
+      # Set up forloop variable if we're iterating (render only, not include)
+      # IMPORTANT: include with 'for' does NOT provide a forloop object
+      if forloop_index && isolated
         forloop = ForloopDrop.new('forloop', forloop_length)
         forloop.index0 = forloop_index
         partial_context.assign('forloop', forloop)
       end
 
-      template = Template.parse(source)
-      result = VM.execute(template.instructions, partial_context)
-      write_output(result)
+      template = begin
+                   Template.parse(source)
+                 rescue LiquidIL::SyntaxError => e
+                   # Use line from exception if available (computed from position/source)
+                   # Otherwise try to extract position from message for backward compatibility
+                   line = if e.respond_to?(:line) && e.position
+                            e.line
+                          elsif e.message =~ /at position (\d+)/
+                            pos = $1.to_i
+                            source[0, pos].count("\n") + 1
+                          else
+                            1
+                          end
+                   write_output("Liquid syntax error (#{name} line #{line}): #{e.message}")
+                   return
+                 rescue LiquidIL::Error => e
+                   write_output("Liquid error (#{name} line 1): #{e.message}")
+                   return
+                 end
+
+      begin
+        result = VM.execute(template.instructions, partial_context,
+                            current_file: name, spans: template.spans, source: source)
+        write_output(result)
+      rescue LiquidIL::RuntimeError => e
+        # Write any partial output before the error
+        write_output(e.partial_output) if e.partial_output
+        # Format error message with file and line info
+        location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
+        write_output("Liquid error (#{location}): #{e.message}")
+      rescue StandardError => e
+        # Catch errors from drops/filters and format as Liquid error
+        write_output("Liquid error (#{name} line 1): #{e.message}")
+      end
+    ensure
+      @context.pop_render_depth
     end
   end
 
@@ -1015,14 +1387,16 @@ module LiquidIL
 
   # Iterator for tablerow loops
   class TablerowIterator
-    attr_reader :name, :length, :index0, :cols
+    attr_reader :name, :length, :index0, :cols, :skip_output, :cols_explicit_nil
 
-    def initialize(items, name, cols: nil)
+    def initialize(items, name, cols: nil, skip_output: false, cols_explicit_nil: false)
       @items = items
       @name = name
       @length = items.length
       @index0 = 0
+      @cols_explicit_nil = cols_explicit_nil  # true when cols:nil was explicitly written
       @cols = cols || @length  # default: all items in one row
+      @skip_output = skip_output  # true for nil/false collections - no row tags output
     end
 
     def has_next?

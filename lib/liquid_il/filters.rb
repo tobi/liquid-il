@@ -9,6 +9,12 @@ require "base64"
 require_relative "utils"
 
 module LiquidIL
+  # Error raised when a filter fails silently (caught at CALL_FILTER level, returns nil)
+  class FilterError < StandardError; end
+
+  # Error raised when a filter fails and should show error in output
+  class FilterRuntimeError < StandardError; end
+
   module Filters
     STRIP_HTML_BLOCKS = Regexp.union(
       %r{<script.*?</script>}m,
@@ -27,18 +33,65 @@ module LiquidIL
       def apply(name, input, args, context)
         @context = context
         method_name = name.to_s.downcase
-        if respond_to?(method_name, true) && !INTERNAL_METHODS.include?(method_name)
+        # Only allow methods defined in this module, not inherited from Object/Kernel
+        if respond_to?(method_name, true) && method(method_name).owner == singleton_class && !INTERNAL_METHODS.include?(method_name)
           send(method_name, input, *args)
         else
           input  # Unknown filter, return input unchanged
         end
+      rescue ArgumentError => e
+        # Convert ArgumentError to FilterRuntimeError so it shows in output
+        raise context.strict_errors ? e : FilterRuntimeError.new(e.message)
       rescue => e
-        context.strict_errors ? raise(e) : input
+        # Re-raise in strict mode, raise FilterRuntimeError("internal") otherwise
+        raise e if context.strict_errors || e.is_a?(FilterRuntimeError)
+        raise FilterRuntimeError.new("internal")
       ensure
         @context = nil
       end
 
       private
+
+      def args_to_s(input, *args)
+        options = args.last.is_a?(Hash) ? args.pop : {}
+        res = +"primary: #{input}\n"
+        options.each do |k, v|
+          res << "\"#{k}\" => #{v}, "
+        end
+        res
+      end
+
+      def asset_url(input)
+        Utils.to_s(input)
+      end
+
+      def read_current_tags(_input)
+        context.lookup("current_tags")
+      end
+
+      def read_template(_input)
+        context.lookup("template")
+      end
+
+      def fakey(input)
+        "#{input} (fake)"
+      end
+
+      def raisy(_input)
+        raise FilterRuntimeError.new("internal")
+      end
+
+      def modify_case(input, *args)
+        options = args.last.is_a?(Hash) ? args.pop : {}
+        case options["case"]
+        when "upcase"
+          input.to_s.upcase
+        when "downcase"
+          input.to_s.downcase
+        else
+          input
+        end
+      end
 
       # --- String filters ---
 
@@ -60,6 +113,16 @@ module LiquidIL
 
       def upcase(input)
         Utils.to_s(input).upcase
+      end
+
+      # Translation filter - wraps string for testing
+      def t(input)
+        "translated-#{Utils.to_s(input)}-"
+      end
+
+      # Test filter that raises an error
+      def raisy(_input)
+        raise "raisy filter error"
       end
 
       def strip(input)
@@ -91,6 +154,9 @@ module LiquidIL
 
       def replace(input, search, replace_str = "")
         Utils.to_s(input).gsub(Utils.to_s(search), Utils.to_s(replace_str))
+      rescue RegexpError, IndexError => e
+        raise FilterRuntimeError, "internal" if e.message.include?("invalid group name") || e.message.include?("undefined group name")
+        raise
       end
 
       def replace_first(input, search, replace_str = "")
@@ -119,19 +185,27 @@ module LiquidIL
 
       def truncate(input, length = 50, ellipsis = "...")
         str = Utils.to_s(input)
-        length = length.to_i
+        length = to_integer(length)
         ellipsis = Utils.to_s(ellipsis)
         return str if str.length <= length
         str[0, [length - ellipsis.length, 0].max] + ellipsis
       end
 
       def truncatewords(input, words = 15, ellipsis = "...")
-        words = [words.to_i, 1].max  # At least 1 word
+        words = [to_integer(words), 1].max  # At least 1 word
         ellipsis = Utils.to_s(ellipsis)
         input_str = Utils.to_s(input)
         word_list = input_str.split
-        return input_str if word_list.length <= words
-        word_list[0, words].join(" ") + ellipsis
+
+        if word_list.length > words
+          # Truncate and add ellipsis
+          word_list[0, words].join(" ") + ellipsis
+        else
+          # Normalize whitespace (join words with single spaces)
+          result = word_list.join(" ")
+          # Add ellipsis if normalization changed the string (e.g., stripped trailing newlines)
+          result == input_str ? input_str : result + ellipsis
+        end
       end
 
       def split(input, delimiter = " ")
@@ -159,6 +233,7 @@ module LiquidIL
       end
 
       def escape(input)
+        return nil if input.nil?
         CGI.escapeHTML(Utils.to_s(input))
       end
 
@@ -208,12 +283,16 @@ module LiquidIL
 
       def divided_by(input, operand)
         divisor = to_number(operand)
-        return 0 if divisor == 0
         dividend = to_number(input)
+        # Float division by 0 returns Infinity/NaN, integer division returns 0
+        if divisor == 0
+          return 0 if dividend.is_a?(Integer) && !input.to_s.include?(".")
+          return dividend.to_f / 0.0  # Returns Infinity or NaN
+        end
         if dividend.is_a?(Integer) && divisor.is_a?(Integer)
           dividend / divisor
         else
-          dividend.to_f / divisor
+          dividend.to_f / divisor.to_f
         end
       end
 
@@ -252,11 +331,21 @@ module LiquidIL
       end
 
       def first(input)
-        input.first if input.respond_to?(:first)
+        case input
+        when String
+          input[0]
+        else
+          input.first if input.respond_to?(:first)
+        end
       end
 
       def last(input)
-        input.last if input.respond_to?(:last)
+        case input
+        when String
+          input[-1]
+        else
+          input.last if input.respond_to?(:last)
+        end
       end
 
       def join(input, separator = " ")
@@ -411,18 +500,9 @@ module LiquidIL
 
       # --- Type filters ---
 
-      def default(input, default_value = "", *extra_args)
-        # Handle keyword args passed as positional: "allow_false", true
-        allow_false = false
-        i = 0
-        while i < extra_args.length
-          if extra_args[i] == "allow_false" && i + 1 < extra_args.length
-            allow_false = extra_args[i + 1]
-            i += 2
-          else
-            i += 1
-          end
-        end
+      def default(input, default_value = "", *args)
+        options = args.last.is_a?(Hash) ? args.last : {}
+        allow_false = options["allow_false"]
 
         liquid_value = input.respond_to?(:to_liquid_value) ? input.to_liquid_value : input
         false_check = allow_false ? input.nil? : !liquid_truthy?(liquid_value)

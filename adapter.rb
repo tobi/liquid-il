@@ -4,49 +4,55 @@
 require "liquid/spec/cli/adapter_dsl"
 require_relative "lib/liquid_il"
 
-# File system adapter that wraps various file system implementations
+LiquidSpec.setup do |ctx|
+  require "liquid"
+end
+
+# Wrapper to adapt liquid-spec's file system to our expected interface
 class FileSystemAdapter
   def initialize(fs)
     @fs = fs
   end
 
   def read(name)
-    if @fs.respond_to?(:read_template_file)
-      @fs.read_template_file(name) rescue nil
-    elsif @fs.respond_to?(:read)
-      @fs.read(name)
-    elsif @fs.is_a?(Hash)
-      @fs[name] || @fs["#{name}.liquid"] || @fs[name.to_s.sub(/\.liquid$/, "")]
-    end
+    @fs.read_template_file(name)
+  rescue Liquid::FileSystemError
+    nil  # Return nil for missing files - VM will handle the error
   end
 end
 
-LiquidSpec.setup do |ctx|
-  require "liquid"
-end
-
 LiquidSpec.configure do |config|
-  config.suite = :liquid_ruby
-  config.features = [:core]
+  config.suite = :all
+  config.features = [:core, :runtime_drops]
 end
 
 LiquidSpec.compile do |ctx, source, options|
-  LiquidIL.parse(source)
+  ctx[:template] = LiquidIL::Template.parse(source)
 end
 
-LiquidSpec.render do |ctx, template, assigns, options|
-  registers = options[:registers] || options["registers"] || {}
-  fs_obj = registers[:file_system] || registers["file_system"]
-  file_system = fs_obj ? FileSystemAdapter.new(fs_obj) : nil
-  strict = options[:strict_errors] || options["strict_errors"] || false
+LiquidSpec.render do |ctx, assigns, options|
+  options ||= {}
+  template = ctx[:template]
 
-  # Create a context with the file system and render
+  registers = options[:registers] || {}
+  raw_fs = registers[:file_system]
+  file_system = raw_fs ? FileSystemAdapter.new(raw_fs) : nil
+  strict = options[:strict_errors]
+
+  # Create a context and bind it to the template for rendering
   liquid_ctx = LiquidIL::Context.new(
     file_system: file_system,
     registers: registers,
-    strict_errors: strict
+    strict_errors: strict || false
   )
 
-  # Re-bind the template to this context for rendering
-  LiquidIL::Template.new(template.source, template.instructions, template.spans, liquid_ctx).render(assigns)
+  # Create a new template bound to this context
+  bound_template = LiquidIL::Template.new(
+    template.source,
+    template.instructions,
+    template.spans,
+    liquid_ctx
+  )
+
+  bound_template.render(assigns || {})
 end

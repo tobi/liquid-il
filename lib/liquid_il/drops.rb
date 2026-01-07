@@ -73,9 +73,10 @@ module LiquidIL
   class TablerowloopDrop < ForloopDrop
     attr_reader :cols, :col, :row
 
-    def initialize(name, length, cols, parentloop = nil)
+    def initialize(name, length, cols, parentloop = nil, cols_explicit_nil = false)
       super(name, length, parentloop)
       @cols = cols
+      @cols_explicit_nil = cols_explicit_nil  # true when cols:nil was explicitly written
       @col = 0
       @row = 0
     end
@@ -97,6 +98,8 @@ module LiquidIL
     end
 
     def col_last
+      # When cols:nil is explicitly written, col_last is always false
+      return false if @cols_explicit_nil
       col0 == @cols - 1 || @index0 == @length - 1
     end
 

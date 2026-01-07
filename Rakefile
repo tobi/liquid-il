@@ -14,6 +14,11 @@ task :spec do
   system "bash -c 'bundle exec liquid-spec run adapter.rb 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
+desc "Run spec matrix comparing LiquidIL against reference implementations"
+task :matrix do
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,adapter.rb 2> >(grep -v \"missing extensions\" >&2)'"
+end
+
 desc "Run all tests"
 task all: [:test, :spec]
 

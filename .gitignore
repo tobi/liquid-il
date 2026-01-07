@@ -1,0 +1,40 @@
+*.gem
+*.rbc
+/.config
+/coverage/
+/InstalledFiles
+/pkg/
+/spec/reports/
+/spec/examples.txt
+/test/tmp/
+/test/version_tmp/
+/tmp/
+
+# Documentation cache and generated files
+/.yardoc/
+/_yardoc/
+/doc/
+/rdoc/
+
+# Environment normalization
+/.bundle/
+/vendor/bundle
+/lib/bundler/man/
+
+# Ruby version managers
+/.ruby-version
+/.ruby-gemset
+/.rvmrc
+
+# IDE
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Bundler lock (optional - remove if you want to track it)
+# Gemfile.lock
