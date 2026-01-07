@@ -196,11 +196,35 @@ This project demonstrates that:
 
 3. **AI coding agents are here.** Claude Code successfully navigated thousands of edge cases, error conditions, and semantic subtleties to achieve near-perfect compatibility.
 
+## Performance
+
+LiquidIL includes an ahead-of-time (AOT) Ruby compiler that compiles IL to native Ruby procs for maximum render performance.
+
+**Benchmark results** (geometric mean vs reference Ruby implementation):
+
+| Adapter | Render Speed |
+|---------|--------------|
+| `liquid_il` (VM interpreter) | 0.58x (slower) |
+| `liquid_il_compiled` (AOT) | **1.27x faster** |
+| `liquid_il_optimized_compiled` (AOT + optimizer) | **1.50x faster** |
+
+**Partials-heavy ecommerce workloads** show even larger gains:
+
+| Benchmark | Speedup |
+|-----------|---------|
+| Theme product page (15 partials) | **2.54x faster** |
+| Theme cart page (12 partials) | **2.25x faster** |
+| Theme collection page (12 products) | **5.20x faster** |
+| Notification center (15 notifications) | **1.92x faster** |
+
+Run benchmarks yourself:
+```bash
+rake bench              # Core benchmarks
+ruby bench_partials.rb  # Partials/ecommerce benchmarks
+```
+
 ## Limitations
 
-This is a proof of concept, not production software:
-
-- **No performance optimization** - The reference implementation has years of tuning
 - **Limited error messages** - Some error formats differ from reference
 - **No liquid-c compatibility** - Missing the C extension optimizations
 - **Incomplete edge cases** - 9 known differences in the matrix comparison

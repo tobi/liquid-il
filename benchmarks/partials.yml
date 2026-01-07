@@ -190,24 +190,109 @@ specs:
   complexity: 1000
 
 # =============================================================================
-# Render with Literal Values
+# Notification Center (many small partials with conditionals)
 # =============================================================================
 
-- name: bench_render_with_literal
+- name: bench_notification_center
   template: |
-    {% render 'badge' with 'New' as text %}
-    {% render 'badge' with 'Sale' as text %}
-    {% render 'badge' with 'Popular' as text %}
-    {% render 'badge' with 'Limited' as text %}
-    {% render 'badge' with 'Exclusive' as text %}
+    <div class="notifications">
+      {% for notification in notifications %}
+        {% case notification.type %}
+          {% when 'order' %}
+            {% render 'notif_order', notif: notification %}
+          {% when 'shipping' %}
+            {% render 'notif_shipping', notif: notification %}
+          {% when 'review' %}
+            {% render 'notif_review', notif: notification %}
+          {% when 'promo' %}
+            {% render 'notif_promo', notif: notification %}
+          {% when 'stock' %}
+            {% render 'notif_stock', notif: notification %}
+        {% endcase %}
+      {% endfor %}
+    </div>
+  environment: >
+    {
+      "notifications": [
+        {"type": "order", "order_id": "ORD-001", "status": "confirmed", "total": 149.99, "items": 3, "date": "2024-01-15"},
+        {"type": "shipping", "order_id": "ORD-002", "carrier": "FedEx", "tracking": "1234567890", "eta": "Jan 18"},
+        {"type": "review", "product": "Leather Jacket", "customer": "Alice", "rating": 5, "snippet": "Amazing quality!"},
+        {"type": "promo", "code": "SAVE20", "discount": "20%", "expires": "Jan 31", "min_purchase": 50},
+        {"type": "stock", "product": "Blue Widget", "sku": "BW-001", "status": "back_in_stock", "quantity": 25},
+        {"type": "order", "order_id": "ORD-003", "status": "processing", "total": 89.50, "items": 2, "date": "2024-01-16"},
+        {"type": "shipping", "order_id": "ORD-001", "carrier": "UPS", "tracking": "9876543210", "eta": "Jan 17"},
+        {"type": "review", "product": "Cotton T-Shirt", "customer": "Bob", "rating": 4, "snippet": "Great fit"},
+        {"type": "promo", "code": "FREESHIP", "discount": "Free Shipping", "expires": "Feb 1", "min_purchase": 75},
+        {"type": "stock", "product": "Red Scarf", "sku": "RS-002", "status": "low_stock", "quantity": 3},
+        {"type": "order", "order_id": "ORD-004", "status": "shipped", "total": 299.00, "items": 1, "date": "2024-01-14"},
+        {"type": "shipping", "order_id": "ORD-004", "carrier": "USPS", "tracking": "5555555555", "eta": "Jan 19"},
+        {"type": "review", "product": "Wool Sweater", "customer": "Carol", "rating": 5, "snippet": "Perfect for winter"},
+        {"type": "promo", "code": "VIP25", "discount": "25%", "expires": "Jan 20", "min_purchase": 100},
+        {"type": "stock", "product": "Green Hat", "sku": "GH-003", "status": "back_in_stock", "quantity": 50}
+      ]
+    }
   filesystem:
-    badge: "<span class=\"badge\">{{ text }}</span>"
-  expected: |
-    <span class="badge">New</span>
-    <span class="badge">Sale</span>
-    <span class="badge">Popular</span>
-    <span class="badge">Limited</span>
-    <span class="badge">Exclusive</span>
+    notif_order: |
+      <div class="notification notification-order">
+        <div class="notif-icon">📦</div>
+        <div class="notif-content">
+          <h4>Order {{ notif.order_id }} {{ notif.status }}</h4>
+          <p>{{ notif.items }} items • ${{ notif.total }}</p>
+          <time>{{ notif.date }}</time>
+          {% if notif.status == 'confirmed' %}
+            <span class="badge badge-success">Confirmed</span>
+          {% elsif notif.status == 'processing' %}
+            <span class="badge badge-warning">Processing</span>
+          {% elsif notif.status == 'shipped' %}
+            <span class="badge badge-info">Shipped</span>
+          {% endif %}
+        </div>
+      </div>
+    notif_shipping: |
+      <div class="notification notification-shipping">
+        <div class="notif-icon">🚚</div>
+        <div class="notif-content">
+          <h4>Shipment Update</h4>
+          <p>Order {{ notif.order_id }} via {{ notif.carrier }}</p>
+          <p class="tracking">Tracking: {{ notif.tracking }}</p>
+          <p class="eta">Expected: {{ notif.eta }}</p>
+          <a href="/track/{{ notif.tracking }}" class="btn-track">Track Package</a>
+        </div>
+      </div>
+    notif_review: |
+      <div class="notification notification-review">
+        <div class="notif-icon">⭐</div>
+        <div class="notif-content">
+          <h4>New Review for {{ notif.product }}</h4>
+          <p class="reviewer">{{ notif.customer }} rated {{ notif.rating }}/5</p>
+          <blockquote>"{{ notif.snippet }}"</blockquote>
+          <a href="/reviews" class="btn-view">View All Reviews</a>
+        </div>
+      </div>
+    notif_promo: |
+      <div class="notification notification-promo">
+        <div class="notif-icon">🎁</div>
+        <div class="notif-content">
+          <h4>{{ notif.discount }} Off!</h4>
+          <p>Use code <strong>{{ notif.code }}</strong></p>
+          <p class="terms">Min. purchase ${{ notif.min_purchase }} • Expires {{ notif.expires }}</p>
+          <button class="btn-copy" data-code="{{ notif.code }}">Copy Code</button>
+        </div>
+      </div>
+    notif_stock: |
+      <div class="notification notification-stock">
+        <div class="notif-icon">{% if notif.status == 'back_in_stock' %}✅{% else %}⚠️{% endif %}</div>
+        <div class="notif-content">
+          <h4>{{ notif.product }}</h4>
+          <p class="sku">SKU: {{ notif.sku }}</p>
+          {% if notif.status == 'back_in_stock' %}
+            <p class="stock-status good">Back in stock! {{ notif.quantity }} available</p>
+          {% elsif notif.status == 'low_stock' %}
+            <p class="stock-status warning">Low stock: only {{ notif.quantity }} left</p>
+          {% endif %}
+          <a href="/products/{{ notif.sku }}" class="btn-view">View Product</a>
+        </div>
+      </div>
   complexity: 1000
 
 # =============================================================================
@@ -385,3 +470,701 @@ specs:
       <p>Thank you for shopping with us!</p>
     </footer>
   complexity: 1000
+
+# =============================================================================
+# Theme Product Page (Shopify-inspired full page render)
+# =============================================================================
+
+- name: bench_theme_product_page
+  template: |
+    {% render 'theme_header', shop: shop %}
+    {% render 'breadcrumb_nav', crumbs: breadcrumbs %}
+    <main class="product-page">
+      {% render 'product_gallery', images: product.images %}
+      {% render 'product_info', product: product, variants: variants %}
+      {% render 'variant_selector', variants: variants %}
+      {% render 'add_to_cart_form', product: product %}
+      {% render 'product_tabs', product: product %}
+      {% render 'related_grid', products: related_products, title: 'You may also like' %}
+      {% render 'recently_viewed', products: recent_products %}
+    </main>
+    {% render 'theme_footer', shop: shop, links: footer_links %}
+  environment: >
+    {
+      "shop": {
+        "name": "Acme Store",
+        "currency": "USD",
+        "email": "support@acme.test"
+      },
+      "product": {
+        "id": 12345,
+        "title": "Classic Leather Jacket",
+        "vendor": "Acme Apparel",
+        "type": "Outerwear",
+        "price": 299.99,
+        "compare_at_price": 399.99,
+        "description": "Premium quality genuine leather jacket with satin lining. Features two front pockets and an interior pocket.",
+        "sku": "LJ-BLK-M",
+        "available": true,
+        "tags": ["leather", "jacket", "outerwear", "premium"],
+        "images": [
+          {"src": "/images/jacket-front.jpg", "alt": "Front view"},
+          {"src": "/images/jacket-back.jpg", "alt": "Back view"},
+          {"src": "/images/jacket-detail.jpg", "alt": "Detail view"},
+          {"src": "/images/jacket-pocket.jpg", "alt": "Pocket detail"}
+        ],
+        "options": [
+          {"name": "Size", "values": ["S", "M", "L", "XL"]},
+          {"name": "Color", "values": ["Black", "Brown", "Navy"]}
+        ],
+        "features": [
+          "100% genuine leather",
+          "Satin lining",
+          "YKK zippers",
+          "Two exterior pockets",
+          "One interior pocket"
+        ],
+        "care": ["Dry clean only", "Store on padded hanger", "Keep away from heat"]
+      },
+      "variants": [
+        {"id": 1, "title": "S / Black", "price": 299.99, "available": true, "sku": "LJ-BLK-S"},
+        {"id": 2, "title": "M / Black", "price": 299.99, "available": true, "sku": "LJ-BLK-M"},
+        {"id": 3, "title": "L / Black", "price": 299.99, "available": false, "sku": "LJ-BLK-L"},
+        {"id": 4, "title": "XL / Black", "price": 299.99, "available": true, "sku": "LJ-BLK-XL"},
+        {"id": 5, "title": "S / Brown", "price": 299.99, "available": true, "sku": "LJ-BRN-S"},
+        {"id": 6, "title": "M / Brown", "price": 299.99, "available": true, "sku": "LJ-BRN-M"},
+        {"id": 7, "title": "L / Brown", "price": 299.99, "available": true, "sku": "LJ-BRN-L"},
+        {"id": 8, "title": "XL / Brown", "price": 299.99, "available": false, "sku": "LJ-BRN-XL"}
+      ],
+      "breadcrumbs": [
+        {"title": "Home", "url": "/"},
+        {"title": "Apparel", "url": "/collections/apparel"},
+        {"title": "Outerwear", "url": "/collections/outerwear"},
+        {"title": "Classic Leather Jacket", "url": null}
+      ],
+      "related_products": [
+        {"title": "Bomber Jacket", "price": 249.99, "image": "/images/bomber.jpg", "url": "/products/bomber"},
+        {"title": "Denim Jacket", "price": 149.99, "image": "/images/denim.jpg", "url": "/products/denim"},
+        {"title": "Suede Jacket", "price": 279.99, "image": "/images/suede.jpg", "url": "/products/suede"},
+        {"title": "Windbreaker", "price": 99.99, "image": "/images/wind.jpg", "url": "/products/windbreaker"}
+      ],
+      "recent_products": [
+        {"title": "Wool Sweater", "price": 89.99, "image": "/images/sweater.jpg", "url": "/products/sweater"},
+        {"title": "Cotton T-Shirt", "price": 29.99, "image": "/images/tshirt.jpg", "url": "/products/tshirt"}
+      ],
+      "footer_links": [
+        {"title": "About", "url": "/about"},
+        {"title": "Contact", "url": "/contact"},
+        {"title": "Shipping", "url": "/shipping"},
+        {"title": "Returns", "url": "/returns"}
+      ]
+    }
+  filesystem:
+    theme_header: |
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>{{ shop.name }}</title>
+        <meta charset="utf-8">
+      </head>
+      <body>
+        <header class="site-header">
+          <div class="logo">{{ shop.name }}</div>
+          {% render 'main_nav' %}
+          {% render 'cart_icon' %}
+        </header>
+    main_nav: |
+      <nav class="main-nav">
+        <a href="/">Home</a>
+        <a href="/collections">Shop</a>
+        <a href="/about">About</a>
+        <a href="/contact">Contact</a>
+      </nav>
+    cart_icon: |
+      <div class="cart-icon">
+        <a href="/cart">Cart</a>
+      </div>
+    breadcrumb_nav: |
+      <nav class="breadcrumbs" aria-label="Breadcrumb">
+        <ol>
+        {% for crumb in crumbs %}
+          <li>
+            {% if crumb.url %}
+              <a href="{{ crumb.url }}">{{ crumb.title }}</a>
+            {% else %}
+              <span aria-current="page">{{ crumb.title }}</span>
+            {% endif %}
+          </li>
+        {% endfor %}
+        </ol>
+      </nav>
+    product_gallery: |
+      <div class="product-gallery">
+        {% for image in images %}
+          <div class="gallery-image{% if forloop.first %} active{% endif %}">
+            <img src="{{ image.src }}" alt="{{ image.alt }}" loading="{% if forloop.first %}eager{% else %}lazy{% endif %}">
+          </div>
+        {% endfor %}
+        <div class="gallery-thumbs">
+          {% for image in images %}
+            <button class="thumb{% if forloop.first %} active{% endif %}" data-index="{{ forloop.index0 }}">
+              <img src="{{ image.src }}" alt="{{ image.alt }}">
+            </button>
+          {% endfor %}
+        </div>
+      </div>
+    product_info: |
+      <div class="product-info">
+        <p class="vendor">{{ product.vendor }}</p>
+        <h1 class="title">{{ product.title }}</h1>
+        <div class="price">
+          {% if product.compare_at_price > product.price %}
+            <span class="compare-price">${{ product.compare_at_price }}</span>
+          {% endif %}
+          <span class="current-price">${{ product.price }}</span>
+          {% if product.compare_at_price > product.price %}
+            {% assign savings = product.compare_at_price | minus: product.price %}
+            <span class="savings">Save ${{ savings }}</span>
+          {% endif %}
+        </div>
+        <div class="description">{{ product.description }}</div>
+        <div class="tags">
+          {% for tag in product.tags %}
+            <span class="tag">{{ tag }}</span>
+          {% endfor %}
+        </div>
+      </div>
+    variant_selector: |
+      <div class="variant-selector">
+        <label for="variant-select">Select variant:</label>
+        <select id="variant-select" name="variant">
+          {% for variant in variants %}
+            <option value="{{ variant.id }}" {% unless variant.available %}disabled{% endunless %}>
+              {{ variant.title }} - ${{ variant.price }}{% unless variant.available %} (Sold out){% endunless %}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+    add_to_cart_form: |
+      <form class="add-to-cart" action="/cart/add" method="post">
+        <input type="hidden" name="id" value="{{ product.id }}">
+        <div class="quantity">
+          <label for="quantity">Quantity:</label>
+          <input type="number" id="quantity" name="quantity" value="1" min="1">
+        </div>
+        {% if product.available %}
+          <button type="submit" class="btn-add">Add to Cart</button>
+        {% else %}
+          <button type="button" class="btn-sold-out" disabled>Sold Out</button>
+        {% endif %}
+      </form>
+    product_tabs: |
+      <div class="product-tabs">
+        <div class="tab-panel" id="features">
+          <h3>Features</h3>
+          <ul>
+            {% for feature in product.features %}
+              <li>{{ feature }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        <div class="tab-panel" id="care">
+          <h3>Care Instructions</h3>
+          <ul>
+            {% for instruction in product.care %}
+              <li>{{ instruction }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      </div>
+    related_grid: |
+      <section class="related-products">
+        <h2>{{ title }}</h2>
+        <div class="product-grid">
+          {% for product in products %}
+            {% render 'product_card', product: product %}
+          {% endfor %}
+        </div>
+      </section>
+    product_card: |
+      <div class="product-card">
+        <a href="{{ product.url }}">
+          <img src="{{ product.image }}" alt="{{ product.title }}">
+          <h3>{{ product.title }}</h3>
+          <p class="price">${{ product.price }}</p>
+        </a>
+      </div>
+    recently_viewed: |
+      <section class="recently-viewed">
+        <h2>Recently Viewed</h2>
+        <div class="product-row">
+          {% for product in products %}
+            {% render 'product_card', product: product %}
+          {% endfor %}
+        </div>
+      </section>
+    theme_footer: |
+      <footer class="site-footer">
+        <div class="footer-links">
+          {% for link in links %}
+            <a href="{{ link.url }}">{{ link.title }}</a>
+          {% endfor %}
+        </div>
+        <div class="footer-info">
+          <p>&copy; {{ shop.name }}</p>
+          <p>Contact: {{ shop.email }}</p>
+        </div>
+      </footer>
+      </body>
+      </html>
+  complexity: 2000
+
+# =============================================================================
+# Theme Cart Page
+# =============================================================================
+
+- name: bench_theme_cart_page
+  template: |
+    {% render 'theme_header', shop: shop %}
+    <main class="cart-page">
+      <h1>Shopping Cart</h1>
+      {% if cart.items.size > 0 %}
+        {% render 'cart_table', cart: cart %}
+        {% render 'cart_totals', cart: cart %}
+        {% render 'cart_actions' %}
+        {% render 'shipping_calculator', rates: shipping_rates %}
+      {% else %}
+        {% render 'empty_cart' %}
+      {% endif %}
+      {% render 'cart_recommendations', products: recommendations %}
+    </main>
+    {% render 'theme_footer', shop: shop, links: footer_links %}
+  environment: >
+    {
+      "shop": {
+        "name": "Acme Store",
+        "currency": "USD",
+        "email": "support@acme.test"
+      },
+      "cart": {
+        "item_count": 5,
+        "total_price": 549.95,
+        "items": [
+          {
+            "id": 1,
+            "title": "Classic Leather Jacket",
+            "variant_title": "M / Black",
+            "price": 299.99,
+            "quantity": 1,
+            "line_price": 299.99,
+            "image": "/images/jacket.jpg",
+            "url": "/products/jacket",
+            "sku": "LJ-BLK-M",
+            "properties": {"gift_wrap": "Yes", "gift_message": "Happy Birthday!"}
+          },
+          {
+            "id": 2,
+            "title": "Cotton T-Shirt",
+            "variant_title": "L / White",
+            "price": 29.99,
+            "quantity": 3,
+            "line_price": 89.97,
+            "image": "/images/tshirt.jpg",
+            "url": "/products/tshirt",
+            "sku": "TS-WHT-L",
+            "properties": {}
+          },
+          {
+            "id": 3,
+            "title": "Wool Beanie",
+            "variant_title": "One Size / Navy",
+            "price": 24.99,
+            "quantity": 2,
+            "line_price": 49.98,
+            "image": "/images/beanie.jpg",
+            "url": "/products/beanie",
+            "sku": "BN-NVY-OS",
+            "properties": {}
+          },
+          {
+            "id": 4,
+            "title": "Leather Belt",
+            "variant_title": "34 / Brown",
+            "price": 59.99,
+            "quantity": 1,
+            "line_price": 59.99,
+            "image": "/images/belt.jpg",
+            "url": "/products/belt",
+            "sku": "BT-BRN-34",
+            "properties": {}
+          },
+          {
+            "id": 5,
+            "title": "Silk Scarf",
+            "variant_title": "One Size / Burgundy",
+            "price": 49.99,
+            "quantity": 1,
+            "line_price": 49.99,
+            "image": "/images/scarf.jpg",
+            "url": "/products/scarf",
+            "sku": "SC-BUR-OS",
+            "properties": {"monogram": "ABC"}
+          }
+        ],
+        "discounts": [
+          {"code": "SAVE10", "amount": 54.99, "title": "10% Off"}
+        ]
+      },
+      "shipping_rates": [
+        {"name": "Standard Shipping", "price": 5.99, "delivery": "5-7 business days"},
+        {"name": "Express Shipping", "price": 15.99, "delivery": "2-3 business days"},
+        {"name": "Overnight", "price": 29.99, "delivery": "Next business day"}
+      ],
+      "recommendations": [
+        {"title": "Leather Gloves", "price": 49.99, "image": "/images/gloves.jpg", "url": "/products/gloves"},
+        {"title": "Wool Socks", "price": 19.99, "image": "/images/socks.jpg", "url": "/products/socks"},
+        {"title": "Sunglasses", "price": 79.99, "image": "/images/sunglasses.jpg", "url": "/products/sunglasses"}
+      ],
+      "footer_links": [
+        {"title": "About", "url": "/about"},
+        {"title": "Contact", "url": "/contact"},
+        {"title": "Shipping", "url": "/shipping"},
+        {"title": "Returns", "url": "/returns"}
+      ]
+    }
+  filesystem:
+    theme_header: |
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>{{ shop.name }} - Cart</title>
+      </head>
+      <body>
+        <header class="site-header">
+          <div class="logo">{{ shop.name }}</div>
+        </header>
+    cart_table: |
+      <table class="cart-table">
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Price</th>
+            <th>Quantity</th>
+            <th>Total</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in cart.items %}
+            {% render 'cart_line_item', item: item %}
+          {% endfor %}
+        </tbody>
+      </table>
+    cart_line_item: |
+      <tr class="cart-item" data-id="{{ item.id }}">
+        <td class="product-info">
+          <img src="{{ item.image }}" alt="{{ item.title }}" class="cart-thumb">
+          <div class="details">
+            <a href="{{ item.url }}">{{ item.title }}</a>
+            <p class="variant">{{ item.variant_title }}</p>
+            <p class="sku">SKU: {{ item.sku }}</p>
+            {% if item.properties.size > 0 %}
+              <div class="properties">
+                {% for prop in item.properties %}
+                  <p class="property"><strong>{{ prop[0] }}:</strong> {{ prop[1] }}</p>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+        </td>
+        <td class="price">${{ item.price }}</td>
+        <td class="quantity">
+          <input type="number" value="{{ item.quantity }}" min="1" name="updates[{{ item.id }}]">
+        </td>
+        <td class="line-total">${{ item.line_price }}</td>
+        <td class="actions">
+          <button class="btn-remove" data-id="{{ item.id }}">Remove</button>
+        </td>
+      </tr>
+    cart_totals: |
+      <div class="cart-totals">
+        <div class="subtotal">
+          <span>Subtotal ({{ cart.item_count }} items):</span>
+          <span>${{ cart.total_price }}</span>
+        </div>
+        {% if cart.discounts.size > 0 %}
+          <div class="discounts">
+            {% for discount in cart.discounts %}
+              <div class="discount">
+                <span>{{ discount.title }} ({{ discount.code }}):</span>
+                <span>-${{ discount.amount }}</span>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% assign final_total = cart.total_price %}
+        {% for discount in cart.discounts %}
+          {% assign final_total = final_total | minus: discount.amount %}
+        {% endfor %}
+        <div class="total">
+          <span>Total:</span>
+          <span>${{ final_total }}</span>
+        </div>
+      </div>
+    cart_actions: |
+      <div class="cart-actions">
+        <a href="/collections" class="btn-continue">Continue Shopping</a>
+        <button class="btn-update">Update Cart</button>
+        <a href="/checkout" class="btn-checkout">Proceed to Checkout</a>
+      </div>
+    shipping_calculator: |
+      <div class="shipping-calculator">
+        <h3>Shipping Estimates</h3>
+        <ul class="shipping-rates">
+          {% for rate in rates %}
+            <li class="rate">
+              <label>
+                <input type="radio" name="shipping" value="{{ rate.name }}">
+                <span class="rate-name">{{ rate.name }}</span>
+                <span class="rate-price">${{ rate.price }}</span>
+                <span class="rate-delivery">{{ rate.delivery }}</span>
+              </label>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    empty_cart: |
+      <div class="empty-cart">
+        <p>Your cart is empty.</p>
+        <a href="/collections" class="btn-shop">Start Shopping</a>
+      </div>
+    cart_recommendations: |
+      <section class="cart-recommendations">
+        <h2>You might also like</h2>
+        <div class="product-grid">
+          {% for product in products %}
+            {% render 'product_card', product: product %}
+          {% endfor %}
+        </div>
+      </section>
+    product_card: |
+      <div class="product-card">
+        <a href="{{ product.url }}">
+          <img src="{{ product.image }}" alt="{{ product.title }}">
+          <h3>{{ product.title }}</h3>
+          <p class="price">${{ product.price }}</p>
+        </a>
+      </div>
+    theme_footer: |
+      <footer class="site-footer">
+        <div class="footer-links">
+          {% for link in links %}
+            <a href="{{ link.url }}">{{ link.title }}</a>
+          {% endfor %}
+        </div>
+        <p>&copy; {{ shop.name }}</p>
+      </footer>
+      </body>
+      </html>
+  complexity: 2000
+
+# =============================================================================
+# Theme Collection Page
+# =============================================================================
+
+- name: bench_theme_collection_page
+  template: |
+    {% render 'theme_header', shop: shop %}
+    {% render 'collection_hero', collection: collection %}
+    <main class="collection-page">
+      {% render 'filter_sidebar', filters: filters, active_filters: active_filters %}
+      <div class="collection-main">
+        {% render 'sort_bar', sort_options: sort_options, current_sort: current_sort, product_count: collection.products.size %}
+        {% render 'product_grid', products: collection.products %}
+        {% render 'pagination', pages: pagination %}
+      </div>
+    </main>
+    {% render 'theme_footer', shop: shop, links: footer_links %}
+  environment: >
+    {
+      "shop": {
+        "name": "Acme Store",
+        "currency": "USD",
+        "email": "support@acme.test"
+      },
+      "collection": {
+        "title": "Men's Outerwear",
+        "description": "Premium jackets and coats for every season",
+        "image": "/images/outerwear-hero.jpg",
+        "products_count": 48,
+        "products": [
+          {"id": 1, "title": "Classic Leather Jacket", "price": 299.99, "compare_at_price": 399.99, "image": "/images/leather.jpg", "url": "/products/leather-jacket", "vendor": "Acme Apparel", "available": true, "tags": ["leather", "classic"]},
+          {"id": 2, "title": "Bomber Jacket", "price": 249.99, "compare_at_price": null, "image": "/images/bomber.jpg", "url": "/products/bomber", "vendor": "Acme Apparel", "available": true, "tags": ["bomber", "casual"]},
+          {"id": 3, "title": "Denim Jacket", "price": 149.99, "compare_at_price": 179.99, "image": "/images/denim.jpg", "url": "/products/denim-jacket", "vendor": "Acme Apparel", "available": true, "tags": ["denim", "casual"]},
+          {"id": 4, "title": "Wool Peacoat", "price": 349.99, "compare_at_price": null, "image": "/images/peacoat.jpg", "url": "/products/peacoat", "vendor": "Acme Apparel", "available": false, "tags": ["wool", "formal"]},
+          {"id": 5, "title": "Quilted Vest", "price": 129.99, "compare_at_price": null, "image": "/images/vest.jpg", "url": "/products/vest", "vendor": "Acme Apparel", "available": true, "tags": ["vest", "layering"]},
+          {"id": 6, "title": "Windbreaker", "price": 99.99, "compare_at_price": 129.99, "image": "/images/windbreaker.jpg", "url": "/products/windbreaker", "vendor": "Acme Apparel", "available": true, "tags": ["light", "athletic"]},
+          {"id": 7, "title": "Parka", "price": 399.99, "compare_at_price": null, "image": "/images/parka.jpg", "url": "/products/parka", "vendor": "Acme Apparel", "available": true, "tags": ["winter", "heavy"]},
+          {"id": 8, "title": "Suede Jacket", "price": 279.99, "compare_at_price": 329.99, "image": "/images/suede.jpg", "url": "/products/suede-jacket", "vendor": "Premium Line", "available": true, "tags": ["suede", "premium"]},
+          {"id": 9, "title": "Rain Jacket", "price": 149.99, "compare_at_price": null, "image": "/images/rain.jpg", "url": "/products/rain-jacket", "vendor": "Acme Apparel", "available": true, "tags": ["waterproof", "light"]},
+          {"id": 10, "title": "Down Jacket", "price": 279.99, "compare_at_price": null, "image": "/images/down.jpg", "url": "/products/down-jacket", "vendor": "Acme Apparel", "available": true, "tags": ["winter", "warm"]},
+          {"id": 11, "title": "Fleece Jacket", "price": 89.99, "compare_at_price": null, "image": "/images/fleece.jpg", "url": "/products/fleece", "vendor": "Acme Apparel", "available": true, "tags": ["fleece", "casual"]},
+          {"id": 12, "title": "Blazer", "price": 199.99, "compare_at_price": 249.99, "image": "/images/blazer.jpg", "url": "/products/blazer", "vendor": "Premium Line", "available": true, "tags": ["formal", "business"]}
+        ]
+      },
+      "filters": [
+        {"name": "Price", "values": [{"label": "Under $100", "value": "0-100", "count": 2}, {"label": "$100-$200", "value": "100-200", "count": 4}, {"label": "$200-$300", "value": "200-300", "count": 4}, {"label": "Over $300", "value": "300-", "count": 2}]},
+        {"name": "Size", "values": [{"label": "S", "value": "s", "count": 10}, {"label": "M", "value": "m", "count": 12}, {"label": "L", "value": "l", "count": 11}, {"label": "XL", "value": "xl", "count": 9}]},
+        {"name": "Color", "values": [{"label": "Black", "value": "black", "count": 6}, {"label": "Brown", "value": "brown", "count": 4}, {"label": "Navy", "value": "navy", "count": 3}, {"label": "Gray", "value": "gray", "count": 2}]},
+        {"name": "Availability", "values": [{"label": "In Stock", "value": "true", "count": 11}, {"label": "Out of Stock", "value": "false", "count": 1}]}
+      ],
+      "active_filters": ["100-200"],
+      "sort_options": [
+        {"label": "Featured", "value": "featured"},
+        {"label": "Price: Low to High", "value": "price-asc"},
+        {"label": "Price: High to Low", "value": "price-desc"},
+        {"label": "Newest", "value": "created-desc"},
+        {"label": "Best Selling", "value": "best-selling"}
+      ],
+      "current_sort": "featured",
+      "pagination": {
+        "current": 1,
+        "total": 4,
+        "pages": [1, 2, 3, 4]
+      },
+      "footer_links": [
+        {"title": "About", "url": "/about"},
+        {"title": "Contact", "url": "/contact"},
+        {"title": "Shipping", "url": "/shipping"},
+        {"title": "Returns", "url": "/returns"}
+      ]
+    }
+  filesystem:
+    theme_header: |
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>{{ shop.name }}</title>
+      </head>
+      <body>
+        <header class="site-header">
+          <div class="logo">{{ shop.name }}</div>
+        </header>
+    collection_hero: |
+      <section class="collection-hero" style="background-image: url('{{ collection.image }}')">
+        <div class="hero-content">
+          <h1>{{ collection.title }}</h1>
+          <p>{{ collection.description }}</p>
+          <span class="product-count">{{ collection.products_count }} products</span>
+        </div>
+      </section>
+    filter_sidebar: |
+      <aside class="filter-sidebar">
+        <h2>Filter By</h2>
+        {% for filter in filters %}
+          <div class="filter-group">
+            <h3>{{ filter.name }}</h3>
+            <ul class="filter-options">
+              {% for value in filter.values %}
+                <li class="filter-option{% if active_filters contains value.value %} active{% endif %}">
+                  <label>
+                    <input type="checkbox" name="filter[{{ filter.name }}]" value="{{ value.value }}"
+                      {% if active_filters contains value.value %}checked{% endif %}>
+                    {{ value.label }}
+                    <span class="count">({{ value.count }})</span>
+                  </label>
+                </li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% endfor %}
+        <button class="btn-clear-filters">Clear All</button>
+      </aside>
+    sort_bar: |
+      <div class="sort-bar">
+        <span class="result-count">{{ product_count }} products</span>
+        <div class="sort-select">
+          <label for="sort">Sort by:</label>
+          <select id="sort" name="sort">
+            {% for option in sort_options %}
+              <option value="{{ option.value }}"{% if current_sort == option.value %} selected{% endif %}>
+                {{ option.label }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="view-toggle">
+          <button class="view-grid active">Grid</button>
+          <button class="view-list">List</button>
+        </div>
+      </div>
+    product_grid: |
+      <div class="product-grid">
+        {% for product in products %}
+          {% render 'collection_product_card', product: product %}
+        {% endfor %}
+      </div>
+    collection_product_card: |
+      <article class="product-card{% unless product.available %} sold-out{% endunless %}">
+        <a href="{{ product.url }}" class="product-link">
+          <div class="product-image">
+            <img src="{{ product.image }}" alt="{{ product.title }}" loading="lazy">
+            {% if product.compare_at_price %}
+              <span class="badge sale">Sale</span>
+            {% endif %}
+            {% unless product.available %}
+              <span class="badge sold-out">Sold Out</span>
+            {% endunless %}
+          </div>
+          <div class="product-details">
+            <p class="vendor">{{ product.vendor }}</p>
+            <h3 class="title">{{ product.title }}</h3>
+            <div class="price">
+              {% if product.compare_at_price %}
+                <span class="compare-price">${{ product.compare_at_price }}</span>
+              {% endif %}
+              <span class="current-price">${{ product.price }}</span>
+            </div>
+            <div class="tags">
+              {% for tag in product.tags %}
+                <span class="tag">{{ tag }}</span>
+              {% endfor %}
+            </div>
+          </div>
+        </a>
+        {% if product.available %}
+          <button class="btn-quick-add" data-id="{{ product.id }}">Quick Add</button>
+        {% endif %}
+      </article>
+    pagination: |
+      <nav class="pagination" aria-label="Pagination">
+        {% if pages.current > 1 %}
+          <a href="?page={{ pages.current | minus: 1 }}" class="prev">Previous</a>
+        {% endif %}
+        <ul class="page-numbers">
+          {% for page in pages.pages %}
+            <li>
+              {% if page == pages.current %}
+                <span class="current" aria-current="page">{{ page }}</span>
+              {% else %}
+                <a href="?page={{ page }}">{{ page }}</a>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+        {% if pages.current < pages.total %}
+          <a href="?page={{ pages.current | plus: 1 }}" class="next">Next</a>
+        {% endif %}
+      </nav>
+    theme_footer: |
+      <footer class="site-footer">
+        <div class="footer-links">
+          {% for link in links %}
+            <a href="{{ link.url }}">{{ link.title }}</a>
+          {% endfor %}
+        </div>
+        <p>&copy; {{ shop.name }}</p>
+      </footer>
+      </body>
+      </html>
+  complexity: 2000
