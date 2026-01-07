@@ -63,10 +63,14 @@ module LiquidIL
       seen.delete(arr.object_id)
     end
 
+    # Optimized output_string - avoid respond_to? for common types
+    # String, Integer, Float are the most common and don't need to_liquid conversion
     def self.output_string(value)
-      value = value.to_liquid if value.respond_to?(:to_liquid)
-
       case value
+      when String
+        value
+      when Integer, Float
+        value.to_s
       when nil
         ""
       when true
@@ -80,6 +84,8 @@ module LiquidIL
       when EmptyLiteral, BlankLiteral
         ""
       else
+        # Only check to_liquid for objects that might be Drops
+        value = value.to_liquid if value.respond_to?(:to_liquid)
         to_s(value)
       end
     end
