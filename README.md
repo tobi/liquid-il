@@ -177,7 +177,7 @@ rake matrix
 bundle exec liquid-spec run adapter.rb -n "for"
 ```
 
-Note: The Gemfile references a local path for liquid-spec. Update it to point to your checkout of liquid-spec or a published gem location.
+Note: The Gemfile references a local path for liquid-spec. Update it to point to your checkout of liquid-spec or a published gem location. See [spec/README.md](spec/README.md) for more details on how testing works.
 
 ## What This Proves
 
