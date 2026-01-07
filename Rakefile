@@ -29,6 +29,11 @@ task :bench do
   system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
+desc "Run partials benchmarks (local)"
+task :bench_partials do
+  system "bundle exec ruby bench_partials.rb"
+end
+
 desc "Run all tests"
 task all: [:test, :spec]
 
