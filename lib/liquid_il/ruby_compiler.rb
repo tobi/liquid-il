@@ -937,38 +937,29 @@ module LiquidIL
             if key.is_a?(Integer)
               obj[key]
             else
-              # Cache key.to_s for multiple comparisons
-              key_str = key.is_a?(String) ? key : key.to_s
-              case key_str
+              case key.to_s
               when "size", "length" then obj.length
               when "first" then obj.first
               when "last" then obj.last
-              else
-                # Fast integer string check (avoid regex)
-                if key_str.length > 0 && (key_str.getbyte(0) == 45 || (key_str.getbyte(0) >= 48 && key_str.getbyte(0) <= 57))
-                  obj[key_str.to_i]
-                end
+              else obj[key.to_i]
               end
             end
           when LiquidIL::ForloopDrop, LiquidIL::Drop
             obj[key]
           when LiquidIL::RangeValue
-            key_str = key.is_a?(String) ? key : key.to_s
-            case key_str
+            case key.to_s
             when "first" then obj.first
             when "last" then obj.last
             when "size", "length" then obj.length
             end
           when String
-            key_str = key.is_a?(String) ? key : key.to_s
-            case key_str
+            case key.to_s
             when "size", "length" then obj.length
             when "first" then obj[0]
             when "last" then obj[-1]
             end
           when Integer
-            key_str = key.is_a?(String) ? key : key.to_s
-            obj.size if key_str == "size"
+            obj.size if key.to_s == "size"
           when Float
             nil
           else
@@ -1672,38 +1663,29 @@ module LiquidIL
             if key.is_a?(Integer)
               obj[key]
             else
-              # Cache key.to_s for multiple comparisons
-              key_str = key.is_a?(String) ? key : key.to_s
-              case key_str
+              case key.to_s
               when "size", "length" then obj.length
               when "first" then obj.first
               when "last" then obj.last
-              else
-                # Fast integer string check (avoid regex)
-                if key_str.length > 0 && (key_str.getbyte(0) == 45 || (key_str.getbyte(0) >= 48 && key_str.getbyte(0) <= 57))
-                  obj[key_str.to_i]
-                end
+              else obj[key.to_i]
               end
             end
           when LiquidIL::ForloopDrop, LiquidIL::Drop
             obj[key]
           when LiquidIL::RangeValue
-            key_str = key.is_a?(String) ? key : key.to_s
-            case key_str
+            case key.to_s
             when "first" then obj.first
             when "last" then obj.last
             when "size", "length" then obj.length
             end
           when String
-            key_str = key.is_a?(String) ? key : key.to_s
-            case key_str
+            case key.to_s
             when "size", "length" then obj.length
             when "first" then obj[0]
             when "last" then obj[-1]
             end
           when Integer
-            key_str = key.is_a?(String) ? key : key.to_s
-            obj.size if key_str == "size"
+            obj.size if key.to_s == "size"
           when Float
             nil
           else
