@@ -201,11 +201,14 @@ module LiquidIL
       StructuredCode.new(type: :sequence, children: blocks)
     end
 
+    # Default output buffer capacity (8KB)
+    OUTPUT_CAPACITY = 8192
+
     def generate_ruby(structured)
       code = String.new
       code << "# frozen_string_literal: true\n"
       code << "proc do |__scope__, __spans__, __template_source__|\n"
-      code << "  __output__ = String.new\n"
+      code << "  __output__ = String.new(capacity: #{OUTPUT_CAPACITY})\n"
       code << "  __stack__ = []\n"
       code << "  __for_iterators__ = []\n"
       code << "  __current_file__ = nil\n"
@@ -285,8 +288,32 @@ module LiquidIL
       code = String.new
 
       blocks.each do |block|
-        block.instructions.each_with_index do |inst, local_idx|
-          code << generate_instruction(inst, block.indices[local_idx])
+        i = 0
+        while i < block.instructions.length
+          inst = block.instructions[i]
+
+          # Batch consecutive WRITE_RAW instructions
+          if inst[0] == IL::WRITE_RAW
+            raw_strings = [inst[1]]
+            j = i + 1
+            while j < block.instructions.length && block.instructions[j][0] == IL::WRITE_RAW
+              raw_strings << block.instructions[j][1]
+              j += 1
+            end
+
+            if raw_strings.length > 1
+              # Batch multiple raw strings into one output call
+              combined = raw_strings.join
+              code << "  __write_output__(#{combined.inspect}, __output__, __scope__)\n"
+              i = j
+            else
+              code << generate_instruction(inst, block.indices[i])
+              i += 1
+            end
+          else
+            code << generate_instruction(inst, block.indices[i])
+            i += 1
+          end
         end
       end
 
@@ -307,10 +334,35 @@ module LiquidIL
           next
         end
 
-        block.instructions.each_with_index do |inst, local_idx|
-          global_idx = block.indices[local_idx]
-          inst_code = generate_instruction_for_state_machine(inst, global_idx, block)
-          code << inst_code
+        i = 0
+        while i < block.instructions.length
+          inst = block.instructions[i]
+          global_idx = block.indices[i]
+
+          # Batch consecutive WRITE_RAW instructions
+          if inst[0] == IL::WRITE_RAW
+            raw_strings = [inst[1]]
+            j = i + 1
+            while j < block.instructions.length && block.instructions[j][0] == IL::WRITE_RAW
+              raw_strings << block.instructions[j][1]
+              j += 1
+            end
+
+            if raw_strings.length > 1
+              # Batch multiple raw strings into one output call
+              combined = raw_strings.join
+              code << "      __write_output__(#{combined.inspect}, __output__, __scope__)\n"
+              i = j
+            else
+              inst_code = generate_instruction_for_state_machine(inst, global_idx, block)
+              code << inst_code
+              i += 1
+            end
+          else
+            inst_code = generate_instruction_for_state_machine(inst, global_idx, block)
+            code << inst_code
+            i += 1
+          end
         end
 
         # Handle control flow
@@ -884,31 +936,39 @@ module LiquidIL
           when Array
             if key.is_a?(Integer)
               obj[key]
-            elsif key.to_s =~ /\A-?\d+\z/
-              obj[key.to_i]
-            elsif key.to_s == "size" || key.to_s == "length"
-              obj.length
-            elsif key.to_s == "first"
-              obj.first
-            elsif key.to_s == "last"
-              obj.last
+            else
+              # Cache key.to_s for multiple comparisons
+              key_str = key.is_a?(String) ? key : key.to_s
+              case key_str
+              when "size", "length" then obj.length
+              when "first" then obj.first
+              when "last" then obj.last
+              else
+                # Fast integer string check (avoid regex)
+                if key_str.length > 0 && (key_str.getbyte(0) == 45 || (key_str.getbyte(0) >= 48 && key_str.getbyte(0) <= 57))
+                  obj[key_str.to_i]
+                end
+              end
             end
           when LiquidIL::ForloopDrop, LiquidIL::Drop
             obj[key]
           when LiquidIL::RangeValue
-            case key.to_s
+            key_str = key.is_a?(String) ? key : key.to_s
+            case key_str
             when "first" then obj.first
             when "last" then obj.last
             when "size", "length" then obj.length
             end
           when String
-            case key.to_s
+            key_str = key.is_a?(String) ? key : key.to_s
+            case key_str
             when "size", "length" then obj.length
             when "first" then obj[0]
             when "last" then obj[-1]
             end
           when Integer
-            obj.size if key.to_s == "size"
+            key_str = key.is_a?(String) ? key : key.to_s
+            obj.size if key_str == "size"
           when Float
             nil
           else
@@ -1611,31 +1671,39 @@ module LiquidIL
           when Array
             if key.is_a?(Integer)
               obj[key]
-            elsif key.to_s =~ /\A-?\d+\z/
-              obj[key.to_i]
-            elsif key.to_s == "size" || key.to_s == "length"
-              obj.length
-            elsif key.to_s == "first"
-              obj.first
-            elsif key.to_s == "last"
-              obj.last
+            else
+              # Cache key.to_s for multiple comparisons
+              key_str = key.is_a?(String) ? key : key.to_s
+              case key_str
+              when "size", "length" then obj.length
+              when "first" then obj.first
+              when "last" then obj.last
+              else
+                # Fast integer string check (avoid regex)
+                if key_str.length > 0 && (key_str.getbyte(0) == 45 || (key_str.getbyte(0) >= 48 && key_str.getbyte(0) <= 57))
+                  obj[key_str.to_i]
+                end
+              end
             end
           when LiquidIL::ForloopDrop, LiquidIL::Drop
             obj[key]
           when LiquidIL::RangeValue
-            case key.to_s
+            key_str = key.is_a?(String) ? key : key.to_s
+            case key_str
             when "first" then obj.first
             when "last" then obj.last
             when "size", "length" then obj.length
             end
           when String
-            case key.to_s
+            key_str = key.is_a?(String) ? key : key.to_s
+            case key_str
             when "size", "length" then obj.length
             when "first" then obj[0]
             when "last" then obj[-1]
             end
           when Integer
-            obj.size if key.to_s == "size"
+            key_str = key.is_a?(String) ? key : key.to_s
+            obj.size if key_str == "size"
           when Float
             nil
           else
