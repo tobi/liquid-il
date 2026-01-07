@@ -59,8 +59,15 @@ $ rake matrix
 LiquidIL compiles templates to an intermediate language (IL) that runs on a stack-based virtual machine. This is different from Shopify's reference implementation which uses an AST interpreter.
 
 ```
-Source → Lexer → Parser → IL → Linker → VM
+Source → Lexer → Parser → IL → [Optimizer] → Linker → VM
 ```
+
+The optimizer is optional and applies compile-time transformations:
+- **Constant folding** - Evaluate constant expressions, comparisons, and pure filters at compile time
+- **Instruction fusion** - Merge `FIND_VAR` + property lookups into single `FIND_VAR_PATH` opcode
+- **Dead code elimination** - Remove unreachable code after unconditional jumps
+- **Write merging** - Combine consecutive `WRITE_RAW` instructions
+- **Partial inlining** - Pre-compile `{% render %}` / `{% include %}` partials when file system available
 
 ### Why IL?
 
