@@ -9,7 +9,7 @@ task :test do
   system "ruby -Ilib test/liquid_il_test.rb"
 end
 
-ADAPTER = "spec/adapter.rb"
+ADAPTER = "spec/liquid_il.rb"
 
 desc "Run the liquid-spec test suite"
 task :spec do

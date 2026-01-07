@@ -48,7 +48,7 @@ Not bad for a "vibe coded" implementation! The reference implementation has year
 
 ## How the Adapter Works
 
-The adapter (`adapter.rb`) implements two callbacks:
+The adapter (`liquid_il.rb`) implements two callbacks:
 
 ```ruby
 # Parse template source into a compiled template object
@@ -84,7 +84,7 @@ end
 rake spec
 
 # Run specific pattern
-bundle exec liquid-spec run spec/adapter.rb -n "for"
+bundle exec liquid-spec run spec/liquid_il.rb -n "for"
 
 # Compare against reference
 rake matrix
