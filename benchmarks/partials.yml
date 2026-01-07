@@ -1,0 +1,387 @@
+---
+# =============================================================================
+# BENCHMARK: Partials Performance
+# =============================================================================
+#
+# Tests performance of render/include with various partial patterns.
+# Includes nested partials, loops with partials, and various parameter passing.
+#
+# =============================================================================
+
+_metadata:
+  doc: implementers/partials.md
+
+specs:
+
+# =============================================================================
+# Simple Product Listing with Partials
+# =============================================================================
+
+- name: bench_simple_product_listing
+  template: |
+    {% render 'header' with 'Products' as title %}
+    <ul>
+    {% for product in products %}
+      {% render 'item' with product as item %}
+    {% endfor %}
+    </ul>
+  environment: >
+    {"products": [
+      {"name": "Widget", "price": 9.99},
+      {"name": "Gadget", "price": 19.99},
+      {"name": "Gizmo", "price": 29.99}
+    ]}
+  filesystem:
+    header: "<header>{{ title }}</header>"
+    item: "<li>{{ item.name }}: ${{ item.price }}</li>"
+  expected: |
+    <header>Products</header>
+    <ul>
+
+      <li>Widget: $9.99</li>
+
+      <li>Gadget: $19.99</li>
+
+      <li>Gizmo: $29.99</li>
+
+    </ul>
+  complexity: 1000
+
+# =============================================================================
+# Render with Parameters
+# =============================================================================
+
+- name: bench_render_with_params
+  template: |
+    {% for product in products %}
+    {% render 'product_card', product: product, show_price: true %}
+    {% endfor %}
+  environment: >
+    {"products": [
+      {"name": "Widget", "price": 9.99, "description": "A useful widget"},
+      {"name": "Gadget", "price": 19.99, "description": "An amazing gadget"},
+      {"name": "Gizmo", "price": 29.99, "description": "A fantastic gizmo"},
+      {"name": "Doohickey", "price": 39.99, "description": "A wonderful doohickey"},
+      {"name": "Thingamajig", "price": 49.99, "description": "A marvelous thingamajig"}
+    ]}
+  filesystem:
+    product_card: |
+      <div class="product">
+        <h3>{{ product.name }}</h3>
+        <p>{{ product.description }}</p>
+        {% if show_price %}<span class="price">${{ product.price }}</span>{% endif %}
+      </div>
+  expected: |
+    <div class="product">
+      <h3>Widget</h3>
+      <p>A useful widget</p>
+      <span class="price">$9.99</span>
+    </div>
+    <div class="product">
+      <h3>Gadget</h3>
+      <p>An amazing gadget</p>
+      <span class="price">$19.99</span>
+    </div>
+    <div class="product">
+      <h3>Gizmo</h3>
+      <p>A fantastic gizmo</p>
+      <span class="price">$29.99</span>
+    </div>
+    <div class="product">
+      <h3>Doohickey</h3>
+      <p>A wonderful doohickey</p>
+      <span class="price">$39.99</span>
+    </div>
+    <div class="product">
+      <h3>Thingamajig</h3>
+      <p>A marvelous thingamajig</p>
+      <span class="price">$49.99</span>
+    </div>
+  complexity: 1000
+
+# =============================================================================
+# Render with For
+# =============================================================================
+
+- name: bench_render_for_loop
+  template: "{% render 'item' for items as item %}"
+  environment: >
+    {"items": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]}
+  filesystem:
+    item: "{{ item }}{% unless forloop.last %}, {% endunless %}"
+  expected: "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
+  complexity: 1000
+
+# =============================================================================
+# Nested Partials
+# =============================================================================
+
+- name: bench_nested_partials
+  template: "{% render 'layout' %}"
+  environment: >
+    {"title": "My Store", "products": [
+      {"name": "Widget", "price": 9.99},
+      {"name": "Gadget", "price": 19.99},
+      {"name": "Gizmo", "price": 29.99}
+    ]}
+  filesystem:
+    layout: |
+      <html>
+      <head><title>{{ title }}</title></head>
+      <body>
+      {% render 'header', title: title %}
+      {% render 'product_list', products: products %}
+      {% render 'footer' %}
+      </body>
+      </html>
+    header: |
+      <header>
+        <h1>{{ title }}</h1>
+        {% render 'nav' %}
+      </header>
+    nav: |
+      <nav>
+        <a href="/">Home</a>
+        <a href="/products">Products</a>
+        <a href="/about">About</a>
+      </nav>
+    product_list: |
+      <main>
+        <ul class="products">
+        {% for product in products %}
+          {% render 'product_item', product: product %}
+        {% endfor %}
+        </ul>
+      </main>
+    product_item: |
+      <li>{{ product.name }}: ${{ product.price }}</li>
+    footer: |
+      <footer>
+        <p>Copyright 2024</p>
+      </footer>
+  expected: |
+    <html>
+    <head><title>My Store</title></head>
+    <body>
+    <header>
+      <h1>My Store</h1>
+      <nav>
+      <a href="/">Home</a>
+      <a href="/products">Products</a>
+      <a href="/about">About</a>
+    </nav>
+    </header>
+    <main>
+      <ul class="products">
+
+        <li>Widget: $9.99</li>
+
+        <li>Gadget: $19.99</li>
+
+        <li>Gizmo: $29.99</li>
+
+      </ul>
+    </main>
+    <footer>
+      <p>Copyright 2024</p>
+    </footer>
+    </body>
+    </html>
+  complexity: 1000
+
+# =============================================================================
+# Render with Literal Values
+# =============================================================================
+
+- name: bench_render_with_literal
+  template: |
+    {% render 'badge' with 'New' as text %}
+    {% render 'badge' with 'Sale' as text %}
+    {% render 'badge' with 'Popular' as text %}
+    {% render 'badge' with 'Limited' as text %}
+    {% render 'badge' with 'Exclusive' as text %}
+  filesystem:
+    badge: "<span class=\"badge\">{{ text }}</span>"
+  expected: |
+    <span class="badge">New</span>
+    <span class="badge">Sale</span>
+    <span class="badge">Popular</span>
+    <span class="badge">Limited</span>
+    <span class="badge">Exclusive</span>
+  complexity: 1000
+
+# =============================================================================
+# E-commerce Product Page
+# =============================================================================
+
+- name: bench_ecommerce_product_page
+  template: |
+    {% render 'page_header', page_title: product.name %}
+    {% render 'breadcrumbs', items: breadcrumbs %}
+    {% render 'product_detail', product: product %}
+    {% render 'product_reviews', reviews: reviews %}
+    {% render 'related_products', products: related %}
+    {% render 'page_footer' %}
+  environment: >
+    {
+      "product": {
+        "name": "Premium Widget",
+        "price": 99.99,
+        "description": "The finest widget money can buy",
+        "sku": "WDG-001",
+        "in_stock": true,
+        "features": ["Durable", "Lightweight", "Eco-friendly"]
+      },
+      "breadcrumbs": [
+        {"label": "Home", "url": "/"},
+        {"label": "Widgets", "url": "/widgets"},
+        {"label": "Premium Widget", "url": null}
+      ],
+      "reviews": [
+        {"author": "Alice", "rating": 5, "text": "Amazing!"},
+        {"author": "Bob", "rating": 4, "text": "Very good"},
+        {"author": "Carol", "rating": 5, "text": "Love it"}
+      ],
+      "related": [
+        {"name": "Basic Widget", "price": 29.99},
+        {"name": "Super Widget", "price": 149.99},
+        {"name": "Widget Pro", "price": 199.99}
+      ]
+    }
+  filesystem:
+    page_header: |
+      <header>
+        <h1>{{ page_title }}</h1>
+      </header>
+    breadcrumbs: |
+      <nav class="breadcrumbs">
+        {% for item in items %}
+          {% if item.url %}
+            <a href="{{ item.url }}">{{ item.label }}</a>
+          {% else %}
+            <span>{{ item.label }}</span>
+          {% endif %}
+          {% unless forloop.last %} &gt; {% endunless %}
+        {% endfor %}
+      </nav>
+    product_detail: |
+      <article class="product">
+        <h2>{{ product.name }}</h2>
+        <p class="price">${{ product.price }}</p>
+        <p class="description">{{ product.description }}</p>
+        <p class="sku">SKU: {{ product.sku }}</p>
+        {% if product.in_stock %}
+          <p class="stock in-stock">In Stock</p>
+        {% else %}
+          <p class="stock out-of-stock">Out of Stock</p>
+        {% endif %}
+        <ul class="features">
+          {% for feature in product.features %}
+            <li>{{ feature }}</li>
+          {% endfor %}
+        </ul>
+      </article>
+    product_reviews: |
+      <section class="reviews">
+        <h3>Customer Reviews</h3>
+        {% for review in reviews %}
+          {% render 'review_card', review: review %}
+        {% endfor %}
+      </section>
+    review_card: |
+      <div class="review">
+        <strong>{{ review.author }}</strong>
+        <span class="rating">{{ review.rating }}/5</span>
+        <p>{{ review.text }}</p>
+      </div>
+    related_products: |
+      <section class="related">
+        <h3>Related Products</h3>
+        <ul>
+          {% for product in products %}
+            <li>{{ product.name }} - ${{ product.price }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+    page_footer: |
+      <footer>
+        <p>Thank you for shopping with us!</p>
+      </footer>
+  expected: |
+    <header>
+      <h1>Premium Widget</h1>
+    </header>
+    <nav class="breadcrumbs">
+
+
+          <a href="/">Home</a>
+
+         &gt;
+
+
+          <a href="/widgets">Widgets</a>
+
+         &gt;
+
+
+          <span>Premium Widget</span>
+
+
+
+    </nav>
+    <article class="product">
+      <h2>Premium Widget</h2>
+      <p class="price">$99.99</p>
+      <p class="description">The finest widget money can buy</p>
+      <p class="sku">SKU: WDG-001</p>
+
+        <p class="stock in-stock">In Stock</p>
+
+      <ul class="features">
+
+          <li>Durable</li>
+
+          <li>Lightweight</li>
+
+          <li>Eco-friendly</li>
+
+      </ul>
+    </article>
+    <section class="reviews">
+      <h3>Customer Reviews</h3>
+
+        <div class="review">
+        <strong>Alice</strong>
+        <span class="rating">5/5</span>
+        <p>Amazing!</p>
+      </div>
+
+        <div class="review">
+        <strong>Bob</strong>
+        <span class="rating">4/5</span>
+        <p>Very good</p>
+      </div>
+
+        <div class="review">
+        <strong>Carol</strong>
+        <span class="rating">5/5</span>
+        <p>Love it</p>
+      </div>
+
+    </section>
+    <section class="related">
+      <h3>Related Products</h3>
+      <ul>
+
+          <li>Basic Widget - $29.99</li>
+
+          <li>Super Widget - $149.99</li>
+
+          <li>Widget Pro - $199.99</li>
+
+      </ul>
+    </section>
+    <footer>
+      <p>Thank you for shopping with us!</p>
+    </footer>
+  complexity: 1000

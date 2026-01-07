@@ -1,6 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# AOT-compiled Ruby adapter for liquid-spec
+# Uses LiquidIL::Compiler::Ruby.compile for fast execution
+
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"
 
@@ -21,7 +24,8 @@ LiquidSpec.compile do |ctx, source, compile_options|
   )
 
   ctx[:context] = context
-  ctx[:template] = context.parse(source)
+  template = context.parse(source)
+  ctx[:template] = LiquidIL::Compiler::Ruby.compile(template)
 end
 
 LiquidSpec.render do |ctx, assigns, render_options|

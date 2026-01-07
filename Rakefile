@@ -9,22 +9,29 @@ task :test do
   system "ruby -Ilib test/liquid_il_test.rb"
 end
 
-ADAPTER = "spec/liquid_il.rb"
-OPTIMIZED_ADAPTER = "spec/liquid_il_optimized.rb"
+ADAPTER_VM = "spec/liquid_il.rb"
+ADAPTER_OPTIMIZED = "spec/liquid_il_optimized.rb"
+ADAPTER_COMPILED = "spec/liquid_il_compiled.rb"
+ADAPTER_OPTIMIZED_COMPILED = "spec/liquid_il_optimized_compiled.rb"
 
 desc "Run the liquid-spec test suite"
 task :spec do
-  system "bash -c 'bundle exec liquid-spec run #{ADAPTER} 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec run #{ADAPTER_VM} 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run spec matrix comparing LiquidIL against reference implementations"
 task :matrix do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER} 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run benchmarks comparing LiquidIL against reference implementations"
 task :bench do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{OPTIMIZED_ADAPTER} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
+end
+
+desc "Run partials benchmarks (local)"
+task :bench_partials do
+  system "bundle exec ruby bench_partials.rb"
 end
 
 desc "Run all tests"
@@ -42,11 +49,11 @@ task :inspect, [:name] do |_t, args|
   puts "=" * 60
   puts "Spec details:"
   puts "=" * 60
-  system "bundle exec liquid-spec inspect #{ADAPTER} -n #{name.shellescape} 2>/dev/null | grep -v 'missing extensions'"
+  system "bundle exec liquid-spec inspect #{ADAPTER_VM} -n #{name.shellescape} 2>/dev/null | grep -v 'missing extensions'"
   puts
 
   # Extract template from spec output and run through liquidil eval
-  spec_output = `bundle exec liquid-spec inspect #{ADAPTER} -n #{name.shellescape} 2>/dev/null`
+  spec_output = `bundle exec liquid-spec inspect #{ADAPTER_VM} -n #{name.shellescape} 2>/dev/null`
   # Strip ANSI color codes
   spec_output = spec_output.gsub(/\e\[[0-9;]*m/, '')
 

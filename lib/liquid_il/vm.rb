@@ -583,6 +583,21 @@ module LiquidIL
       end
     end
 
+    # Read from file system, supporting both liquid-spec's read_template_file and our read interface
+    def read_from_file_system(fs, name)
+      return nil unless fs
+
+      if fs.respond_to?(:read_template_file)
+        begin
+          fs.read_template_file(name)
+        rescue StandardError
+          nil
+        end
+      elsif fs.respond_to?(:read)
+        fs.read(name)
+      end
+    end
+
     # --- Core abstractions ---
 
     # Convert any value to output string
@@ -1229,7 +1244,7 @@ module LiquidIL
           name = resolved_name
         end
 
-        source = @context.file_system.read(name)
+        source = read_from_file_system(@context.file_system, name)
         unless source
           raise_error "Could not find asset #{name}"
         end

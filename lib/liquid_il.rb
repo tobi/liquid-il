@@ -10,6 +10,7 @@ require_relative "liquid_il/context"
 require_relative "liquid_il/drops"
 require_relative "liquid_il/filters"
 require_relative "liquid_il/pretty_printer"
+require_relative "liquid_il/ruby_compiler"
 
 module LiquidIL
   class Error < StandardError; end

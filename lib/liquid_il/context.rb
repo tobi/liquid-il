@@ -1,6 +1,86 @@
 # frozen_string_literal: true
 
 module LiquidIL
+  # Minimal scope for isolated render - just locals + static_environments
+  class RenderScope
+    attr_accessor :file_system
+
+    def initialize(static_environments, file_system, depth = 0)
+      @static_environments = static_environments
+      @locals = {}
+      @file_system = file_system
+      @depth = depth
+    end
+
+    def disable_include = true
+
+    def lookup(key)
+      key = key.to_s
+      @locals.fetch(key) { @static_environments&.[](key) }
+    end
+
+    def assign(key, value)
+      @locals[key.to_s] = value
+    end
+
+    alias assign_local assign
+
+    def push_scope(scope = {}) = nil
+    def pop_scope = nil
+
+    # Render depth - needed for nested render calls
+    def push_render_depth = @depth += 1
+    def pop_render_depth; @depth -= 1 if @depth > 0; end
+    def render_depth_exceeded?(strict: false) = strict ? @depth >= 100 : @depth > 100
+
+    def isolated
+      RenderScope.new(@static_environments, @file_system, @depth)
+    end
+
+    # Lazy registers - only created if needed
+    def registers
+      @registers ||= { "for" => {}, "for_stack" => [], "counters" => {}, "cycles" => {}, "temps" => [], "capture_stack" => [] }
+    end
+
+    # Interrupt handling
+    def push_interrupt(type) = (@interrupts ||= []).push(type)
+    def pop_interrupt = @interrupts&.pop
+    def has_interrupt? = @interrupts&.any? || false
+    def peek_interrupt = @interrupts&.last
+
+    # Forloop
+    def for_stack = registers["for_stack"]
+    def push_forloop(f) = for_stack.push(f)
+    def pop_forloop = for_stack.pop
+    def current_forloop = for_stack.last
+    def parent_forloop = for_stack.length < 2 ? nil : for_stack[-2]
+
+    # Counters
+    def increment(n) = (registers["counters"][n] ||= 0).tap { registers["counters"][n] += 1 }
+    def decrement(n) = (registers["counters"][n] = (registers["counters"][n] || 0) - 1)
+
+    # Cycles
+    def cycle_step(id, vals)
+      return nil if vals.empty?
+      registers["cycles"][id] ||= 0
+      vals[registers["cycles"][id] % vals.length].tap { registers["cycles"][id] += 1 }
+    end
+
+    # For offset
+    def for_offset(n) = registers["for"][n] || 0
+    def set_for_offset(n, o) = registers["for"][n] = o
+
+    # Temps
+    def store_temp(i, v) = registers["temps"][i] = v
+    def load_temp(i) = registers["temps"][i]
+
+    # Capture
+    def push_capture = registers["capture_stack"].push(String.new)
+    def pop_capture = registers["capture_stack"].pop || ""
+    def current_capture = registers["capture_stack"].last
+    def capturing? = registers["capture_stack"].any?
+  end
+
   # Internal execution state with scope stack and registers
   # (Public API uses Context - this is the VM's internal state)
   class Scope
@@ -223,13 +303,7 @@ module LiquidIL
     # --- Isolation for render ---
 
     def isolated
-      # Create isolated context - no parent variables visible EXCEPT static_environments
-      # static_environments (initial environment data) IS shared with render
-      iso = Scope.new({}, registers: {}, strict_errors: @strict_errors, static_environments: @static_environments)
-      iso.file_system = @file_system
-      iso.disable_include = true  # Include is not allowed inside render
-      iso.instance_variable_set(:@render_depth, @render_depth)  # Copy render depth for tracking
-      iso
+      RenderScope.new(@static_environments, @file_system, @render_depth)
     end
 
     private
