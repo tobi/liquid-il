@@ -21,15 +21,23 @@ Can an AI build a working programming language implementation from scratch, guid
 
 **Result:**
 ```
+$ bundle exec liquid-spec run adapter.rb
+
+Features: core, runtime_drops
+
 Basics ................................. 525/525 passed
 Liquid Ruby ............................ 1717/1717 passed
 Shopify Production Recordings .......... 2182/2182 passed
+Liquid Ruby (Lax Mode) ................. skipped (needs lax_parsing)
+Shopify Theme Dawn ..................... skipped (needs shopify_tags, shopify_objects, shopify_filters)
 
-Total: 4424 passed, 0 failed, 0 errors
+Total: 4424 passed, 0 failed, 0 errors. Max complexity reached: 1000/1000
 ```
 
 When compared against the reference Ruby implementation:
 ```
+$ rake matrix
+
 4425 matched, 9 different (99.8% compatible)
 ```
 
@@ -62,28 +70,74 @@ The IL approach was not planned—it emerged from the "vibe coding" process. The
 - **Easy optimization** - Peephole passes on linear instruction streams
 - **Clear execution model** - Stack machine with explicit control flow
 
-### Example
+### IL Examples
 
-Template:
-```liquid
-{% if user %}Hello {{ user.name | upcase }}{% endif %}
+**Simple output with variable:**
+```
+$ bin/liquidil parse 'Hello {{ name }}!' --no-color
+
+[  0]     WRITE_RAW         "Hello "
+[  1]     FIND_VAR          "name"                # → name
+[  2]     WRITE_VALUE                             # pop → output
+[  3]     WRITE_RAW         "!"
+[  4]     HALT                                    # end execution
 ```
 
-Compiles to:
+**Conditional:**
 ```
-FIND_VAR "user"
-IS_TRUTHY
-JUMP_IF_FALSE L1
-WRITE_RAW "Hello "
-FIND_VAR "user"
-LOOKUP_CONST_KEY "name"
-CALL_FILTER "upcase" 0
-WRITE_VALUE
-LABEL L1
-HALT
+$ bin/liquidil parse '{% if user %}Hello {{ user.name }}{% endif %}' --no-color
+
+[  0]     FIND_VAR          "user"                # → user
+[  1]     IS_TRUTHY                               # pop → bool
+[  2]     JUMP_IF_FALSE     L0                    # pop, jump if falsy
+[  3]     WRITE_RAW         "Hello "
+[  4]     FIND_VAR          "user"                # → user
+[  5]     LOOKUP_CONST_KEY  "name"                # pop obj → obj.name
+[  6]     WRITE_VALUE                             # pop → output
+[  7]  L0:
+[  8]     HALT                                    # end execution
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for full details on the instruction set and VM design.
+**Filter chain:**
+```
+$ bin/liquidil parse '{{ "hello" | upcase | split: "" | join: "-" }}' --no-color
+
+[  0]     CONST_STRING      "hello"
+[  1]     CALL_FILTER       "upcase", 0           # 0 args
+[  2]     CONST_STRING      ""
+[  3]     CALL_FILTER       "split", 1            # 1 args
+[  4]     CONST_STRING      "-"
+[  5]     CALL_FILTER       "join", 1             # 1 args
+[  6]     WRITE_VALUE                             # pop → output
+[  7]     HALT                                    # end execution
+```
+
+**For loop:**
+```
+$ bin/liquidil parse '{% for i in (1..3) %}{{ i }}{% endfor %}' --no-color
+
+[  0]     CONST_INT         1                     # → 1
+[  1]     CONST_INT         3                     # → 3
+[  2]     NEW_RANGE                               # pop end, start → range
+[  3]     JUMP_IF_EMPTY     L3                    # peek, jump if empty
+[  4]     FOR_INIT          "i"
+[  5]     PUSH_SCOPE
+[  6]     PUSH_FORLOOP
+[  7]  L0:
+[  8]     FOR_NEXT          L1, L2                # continue, break
+[  9]     ASSIGN_LOCAL      "i"
+[ 10]     FIND_VAR          "i"                   # → i
+[ 11]     WRITE_VALUE                             # pop → output
+[ 12]     JUMP_IF_INTERRUPT L2                    # jump if break/continue
+[ 13]  L1:
+[ 14]     POP_INTERRUPT
+[ 15]     JUMP              L0
+[ 16]  L2:
+...
+[ 24]     HALT                                    # end execution
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete instruction reference (55 IL operations).
 
 ## Usage
 
