@@ -1,112 +1,84 @@
 # frozen_string_literal: true
 
 module LiquidIL
-  # Lightweight scope for isolated render - avoids full Scope overhead
+  # Minimal scope for isolated render - just locals + static_environments
   class RenderScope
     attr_accessor :file_system
-    attr_reader :registers
 
-    def initialize(static_environments, render_depth, file_system)
+    def initialize(static_environments, file_system, depth = 0)
       @static_environments = static_environments
       @locals = {}
-      @render_depth = render_depth
       @file_system = file_system
-      @registers = {
-        "for" => {},
-        "for_stack" => [],
-        "counters" => {},
-        "cycles" => {},
-        "temps" => [],
-        "capture_stack" => []
-      }
-      @interrupts = []
+      @depth = depth
     end
 
     def disable_include = true
 
     def lookup(key)
       key = key.to_s
-      return @locals[key] if @locals.key?(key)
-      @static_environments&.[](key)
+      @locals.fetch(key) { @static_environments&.[](key) }
     end
 
     def assign(key, value)
       @locals[key.to_s] = value
     end
 
-    def assign_local(key, value)
-      @locals[key.to_s] = value
-    end
+    alias assign_local assign
 
     def push_scope(scope = {}) = nil
     def pop_scope = nil
 
-    def push_render_depth
-      @render_depth += 1
-    end
-
-    def pop_render_depth
-      @render_depth -= 1 if @render_depth > 0
-    end
-
-    def render_depth_exceeded?(strict: false)
-      strict ? @render_depth >= 100 : @render_depth > 100
-    end
-
-    def render_depth = @render_depth
+    # Render depth - needed for nested render calls
+    def push_render_depth = @depth += 1
+    def pop_render_depth; @depth -= 1 if @depth > 0; end
+    def render_depth_exceeded?(strict: false) = strict ? @depth >= 100 : @depth > 100
 
     def isolated
-      RenderScope.new(@static_environments, @render_depth, @file_system)
+      RenderScope.new(@static_environments, @file_system, @depth)
+    end
+
+    # Lazy registers - only created if needed
+    def registers
+      @registers ||= { "for" => {}, "for_stack" => [], "counters" => {}, "cycles" => {}, "temps" => [], "capture_stack" => [] }
     end
 
     # Interrupt handling
-    def push_interrupt(type) = @interrupts.push(type)
-    def pop_interrupt = @interrupts.pop
-    def has_interrupt? = !@interrupts.empty?
-    def peek_interrupt = @interrupts.last
+    def push_interrupt(type) = (@interrupts ||= []).push(type)
+    def pop_interrupt = @interrupts&.pop
+    def has_interrupt? = @interrupts&.any? || false
+    def peek_interrupt = @interrupts&.last
 
-    # Forloop stack
-    def for_stack = @registers["for_stack"]
+    # Forloop
+    def for_stack = registers["for_stack"]
     def push_forloop(f) = for_stack.push(f)
     def pop_forloop = for_stack.pop
     def current_forloop = for_stack.last
     def parent_forloop = for_stack.length < 2 ? nil : for_stack[-2]
 
     # Counters
-    def increment(name)
-      @registers["counters"][name] ||= 0
-      r = @registers["counters"][name]
-      @registers["counters"][name] += 1
-      r
-    end
-
-    def decrement(name)
-      @registers["counters"][name] ||= 0
-      @registers["counters"][name] -= 1
-    end
+    def increment(n) = (registers["counters"][n] ||= 0).tap { registers["counters"][n] += 1 }
+    def decrement(n) = (registers["counters"][n] = (registers["counters"][n] || 0) - 1)
 
     # Cycles
-    def cycle_step(identity, values)
-      return nil if values.empty?
-      @registers["cycles"][identity] ||= 0
-      idx = @registers["cycles"][identity] % values.length
-      @registers["cycles"][identity] += 1
-      values[idx]
+    def cycle_step(id, vals)
+      return nil if vals.empty?
+      registers["cycles"][id] ||= 0
+      vals[registers["cycles"][id] % vals.length].tap { registers["cycles"][id] += 1 }
     end
 
-    # For offset tracking
-    def for_offset(name) = @registers["for"][name] || 0
-    def set_for_offset(name, offset) = @registers["for"][name] = offset
+    # For offset
+    def for_offset(n) = registers["for"][n] || 0
+    def set_for_offset(n, o) = registers["for"][n] = o
 
     # Temps
-    def store_temp(i, v) = @registers["temps"][i] = v
-    def load_temp(i) = @registers["temps"][i]
+    def store_temp(i, v) = registers["temps"][i] = v
+    def load_temp(i) = registers["temps"][i]
 
     # Capture
-    def push_capture = @registers["capture_stack"].push(String.new)
-    def pop_capture = @registers["capture_stack"].pop || ""
-    def current_capture = @registers["capture_stack"].last
-    def capturing? = !@registers["capture_stack"].empty?
+    def push_capture = registers["capture_stack"].push(String.new)
+    def pop_capture = registers["capture_stack"].pop || ""
+    def current_capture = registers["capture_stack"].last
+    def capturing? = registers["capture_stack"].any?
   end
 
   # Internal execution state with scope stack and registers
@@ -331,7 +303,7 @@ module LiquidIL
     # --- Isolation for render ---
 
     def isolated
-      RenderScope.new(@static_environments, @render_depth, @file_system)
+      RenderScope.new(@static_environments, @file_system, @render_depth)
     end
 
     private
