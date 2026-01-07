@@ -86,12 +86,16 @@ module LiquidIL
         format_simple("CONST_BLANK", [], idx, comment: "→ blank")
       when IL::FIND_VAR
         format_simple("FIND_VAR", [format_string(args[0])], idx, comment: "→ #{args[0]}")
+      when IL::FIND_VAR_PATH
+        format_simple("FIND_VAR_PATH", [format_string(args[0]), format_string(args[1].join("."))], idx, comment: "→ #{args[0]}.#{args[1].join('.')}")
       when IL::FIND_VAR_DYNAMIC
         format_simple("FIND_VAR_DYNAMIC", [], idx, comment: "pop name → value")
       when IL::LOOKUP_KEY
         format_simple("LOOKUP_KEY", [], idx, comment: "pop key, obj → obj[key]")
       when IL::LOOKUP_CONST_KEY
         format_simple("LOOKUP_CONST_KEY", [format_string(args[0])], idx, comment: "pop obj → obj.#{args[0]}")
+      when IL::LOOKUP_CONST_PATH
+        format_simple("LOOKUP_CONST_PATH", [format_string(args[0].join("."))], idx, comment: "pop obj → obj.#{args[0].join('.')}")
       when IL::LOOKUP_COMMAND
         format_simple("LOOKUP_COMMAND", [format_string(args[0])], idx, comment: "pop → .#{args[0]}")
       when IL::PUSH_CAPTURE

@@ -27,7 +27,7 @@ module LiquidIL
       advance_template
       parse_block_body(nil)
       @builder.halt
-      IL.link(@builder.instructions)
+      @builder.instructions
     end
 
     private
@@ -1855,7 +1855,7 @@ module LiquidIL
       args['__for__'] = for_expr if for_expr
       args['__as__'] = as_alias if as_alias
 
-      @builder.render_partial(partial_name, args)
+      @builder.const_render(partial_name, args)
       false
     end
 
@@ -2112,7 +2112,11 @@ module LiquidIL
       args['__dynamic_name__'] = partial_name if dynamic_name
       args['__invalid_name__'] = true if invalid_name
 
-      @builder.include_partial(partial_name, args)
+      if !dynamic_name && !invalid_name
+        @builder.const_include(partial_name, args)
+      else
+        @builder.include_partial(partial_name, args)
+      end
       false
     end
 

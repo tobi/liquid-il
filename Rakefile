@@ -10,6 +10,7 @@ task :test do
 end
 
 ADAPTER = "spec/liquid_il.rb"
+OPTIMIZED_ADAPTER = "spec/liquid_il_optimized.rb"
 
 desc "Run the liquid-spec test suite"
 task :spec do
@@ -23,7 +24,7 @@ end
 
 desc "Run benchmarks comparing LiquidIL against reference implementations"
 task :bench do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{OPTIMIZED_ADAPTER} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run all tests"

@@ -87,6 +87,175 @@ class ModuleLevelAPITest < Minitest::Test
   end
 end
 
+class OptimizerTest < Minitest::Test
+  def test_optimizer_wraps_context
+    ctx = LiquidIL::Context.new
+    opt = LiquidIL::Optimizer.optimize(ctx)
+    assert_instance_of LiquidIL::OptimizedContext, opt
+  end
+
+  def test_optimizer_is_idempotent
+    ctx = LiquidIL::Context.new
+    opt1 = LiquidIL::Optimizer.optimize(ctx)
+    opt2 = LiquidIL::Optimizer.optimize(opt1)
+    assert_same opt1, opt2
+  end
+
+  def test_optimizer_preserves_context_options
+    ctx = LiquidIL::Context.new(strict_errors: true, registers: { "x" => 1 })
+    opt = LiquidIL::Optimizer.optimize(ctx)
+    assert opt.strict_errors
+    assert_equal({ "x" => 1 }, opt.registers)
+  end
+
+  def test_optimizer_enables_compile_optimizations
+    ctx = LiquidIL::Context.new
+    opt = LiquidIL::Optimizer.optimize(ctx)
+    template = opt.parse("{{ true }}")
+    instructions = template.instructions.map(&:first)
+    refute_includes instructions, LiquidIL::IL::WRITE_VALUE
+    assert_includes instructions, LiquidIL::IL::WRITE_RAW
+  end
+end
+
+class ILOptimizationTest < Minitest::Test
+  def setup
+    @ctx = LiquidIL::Context.new
+  end
+
+  def test_const_write_value_folded
+    template = @ctx.parse("{{ 'hello' }}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::WRITE_VALUE
+    assert_includes opcodes, LiquidIL::IL::WRITE_RAW
+  end
+
+  def test_const_if_branch_eliminated
+    template = @ctx.parse("{% if false %}no{% else %}yes{% endif %}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::JUMP_IF_FALSE
+    refute_includes opcodes, LiquidIL::IL::JUMP_IF_TRUE
+    assert_includes opcodes, LiquidIL::IL::JUMP
+  end
+
+  def test_jump_to_next_label_removed
+    template = @ctx.parse("{% if false %}a{% endif %}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::JUMP_IF_FALSE
+  end
+
+  def test_noop_removed
+    template = @ctx.parse("{% comment %}ignored{% endcomment %}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::NOOP
+  end
+
+  def test_lookup_const_path_collapsed
+    template = @ctx.parse("{{ user.name.first }}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    assert_includes opcodes, LiquidIL::IL::FIND_VAR_PATH
+    refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_KEY
+    refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_PATH
+  end
+
+  def test_const_filter_folded
+    template = @ctx.parse("{{ 'hello' | upcase }}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::CALL_FILTER
+    assert_includes opcodes, LiquidIL::IL::WRITE_RAW
+  end
+
+  def test_redundant_is_truthy_removed_for_compare
+    template = @ctx.parse("{% if x == 1 %}yes{% endif %}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::IS_TRUTHY
+    assert_includes opcodes, LiquidIL::IL::COMPARE
+  end
+
+  def test_const_capture_folded
+    template = @ctx.parse("{% capture foo %}hi{% endcapture %}{{ foo }}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::PUSH_CAPTURE
+    refute_includes opcodes, LiquidIL::IL::POP_CAPTURE
+    assert_includes opcodes, LiquidIL::IL::CONST_STRING
+    assert_includes opcodes, LiquidIL::IL::ASSIGN
+  end
+
+  def test_empty_write_raw_removed
+    template = @ctx.parse("{{ '' }}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::WRITE_RAW
+    assert_includes opcodes, LiquidIL::IL::HALT
+  end
+end
+
+class PartialInliningTest < Minitest::Test
+  class MemoryFS
+    attr_reader :reads
+
+    def initialize(templates)
+      @templates = templates
+      @reads = Hash.new(0)
+    end
+
+    def read(name)
+      @reads[name] += 1
+      @templates[name]
+    end
+  end
+
+  def test_literal_render_inlined_with_cached_partial
+    fs = MemoryFS.new("snippet" => "Hi {{ target }}")
+    ctx = LiquidIL::Context.new(file_system: fs)
+    opt = LiquidIL::Optimizer.optimize(ctx)
+    template = opt.parse("{% render 'snippet' %}")
+
+    inst = template.instructions.find { |i| i[0] == LiquidIL::IL::RENDER_PARTIAL }
+    refute_nil inst
+    compiled = inst[2]["__compiled_template__"]
+    refute_nil compiled
+    assert_equal "Hi World", template.render("target" => "World")
+    assert_equal 1, fs.reads["snippet"]
+
+    # Rendering again without a file system should still work via the compiled template
+    opt.file_system = nil
+    assert_equal "Hi Friend", template.render("target" => "Friend")
+  end
+
+  def test_render_with_with_clause_still_inlined
+    fs = MemoryFS.new("snippet" => "Name: {{ snippet }}")
+    ctx = LiquidIL::Context.new(file_system: fs)
+    opt = LiquidIL::Optimizer.optimize(ctx)
+    template = opt.parse("{% render 'snippet' with helper %}")
+    inst = template.instructions.find { |i| i[0] == LiquidIL::IL::RENDER_PARTIAL }
+    refute_nil inst
+    refute_nil inst[2]["__compiled_template__"]
+    assert_equal "Name: helper!", template.render("helper" => "helper!")
+  end
+
+  def test_include_literal_inlined
+    fs = MemoryFS.new("shared" => "Shared: {{ greeting }}")
+    ctx = LiquidIL::Context.new(file_system: fs)
+    opt = LiquidIL::Optimizer.optimize(ctx)
+    template = opt.parse("{% include 'shared' %}")
+    inst = template.instructions.find { |i| i[0] == LiquidIL::IL::INCLUDE_PARTIAL }
+    refute_nil inst
+    refute_nil inst[2]["__compiled_template__"]
+    assert_equal "Shared: hi", template.render("greeting" => "hi")
+  end
+
+  def test_dynamic_include_not_inlined
+    fs = MemoryFS.new("shared" => "Hello")
+    ctx = LiquidIL::Context.new(file_system: fs)
+    opt = LiquidIL::Optimizer.optimize(ctx)
+    template = opt.parse("{% assign tpl = 'shared' %}{% include tpl %}")
+    inst = template.instructions.find { |i| i[0] == LiquidIL::IL::INCLUDE_PARTIAL }
+    refute_nil inst
+    assert_nil inst[2]["__compiled_template__"]
+    assert_equal "Hello", template.render
+  end
+end
+
 class VariableOutputTest < Minitest::Test
   def setup
     @ctx = LiquidIL::Context.new

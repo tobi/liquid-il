@@ -116,6 +116,17 @@ module LiquidIL
           @stack.push(value)
           @pc += 1
 
+        when IL::FIND_VAR_PATH
+          name = inst[1]
+          path = inst[2]
+          obj = @context.lookup(name)
+          path.each do |key|
+            obj = lookup_property(obj, key)
+            break if obj.nil?
+          end
+          @stack.push(obj)
+          @pc += 1
+
         when IL::FIND_VAR_DYNAMIC
           name = @stack.pop
           value = @context.lookup(name.to_s)
@@ -132,6 +143,16 @@ module LiquidIL
           key = inst[1]
           obj = @stack.pop
           @stack.push(lookup_property(obj, key))
+          @pc += 1
+
+        when IL::LOOKUP_CONST_PATH
+          path = inst[1]
+          obj = @stack.pop
+          path.each do |key|
+            obj = lookup_property(obj, key)
+            break if obj.nil?
+          end
+          @stack.push(obj)
           @pc += 1
 
         when IL::LOOKUP_COMMAND
@@ -1192,22 +1213,28 @@ module LiquidIL
         raise_error "Argument error in tag '#{tag_type}' - Illegal template name"
       end
 
-      return unless @context.file_system
+      compiled_template = args["__compiled_template__"]
 
-      # Handle dynamic template name
-      if args["__dynamic_name__"]
-        resolved_name = eval_expression(args["__dynamic_name__"])
-        # Validate template name - must be a non-nil string
-        if resolved_name.nil? || !resolved_name.is_a?(String)
-          tag_type = isolated ? "render" : "include"
-          raise_error "Argument error in tag '#{tag_type}' - Illegal template name"
+      unless compiled_template
+        return unless @context.file_system
+
+        # Handle dynamic template name
+        if args["__dynamic_name__"]
+          resolved_name = eval_expression(args["__dynamic_name__"])
+          # Validate template name - must be a non-nil string
+          if resolved_name.nil? || !resolved_name.is_a?(String)
+            tag_type = isolated ? "render" : "include"
+            raise_error "Argument error in tag '#{tag_type}' - Illegal template name"
+          end
+          name = resolved_name
         end
-        name = resolved_name
-      end
 
-      source = @context.file_system.read(name)
-      unless source
-        raise_error "Could not find asset #{name}"
+        source = @context.file_system.read(name)
+        unless source
+          raise_error "Could not find asset #{name}"
+        end
+      else
+        source = compiled_template[:source]
       end
 
       # Handle with/for
@@ -1224,7 +1251,8 @@ module LiquidIL
           # Empty array = don't render at all
           collection.each_with_index do |item, idx|
             render_partial_once(name, source, args, item, as_alias, isolated: isolated,
-                               forloop_index: idx, forloop_length: collection.length, has_item: true)
+                               forloop_index: idx, forloop_length: collection.length, has_item: true,
+                               compiled_template: compiled_template)
           end
         elsif (collection.is_a?(RangeValue) || collection.is_a?(Range)) && isolated
           # Ranges iterate over their values ONLY for render (isolated)
@@ -1232,21 +1260,25 @@ module LiquidIL
           items = collection.to_a
           items.each_with_index do |item, idx|
             render_partial_once(name, source, args, item, as_alias, isolated: isolated,
-                               forloop_index: idx, forloop_length: items.length, has_item: true)
+                               forloop_index: idx, forloop_length: items.length, has_item: true,
+                               compiled_template: compiled_template)
           end
         elsif !collection.is_a?(Hash) && !collection.is_a?(String) && !collection.is_a?(Range) && !collection.is_a?(RangeValue) && collection.respond_to?(:each) && collection.respond_to?(:to_a)
           # Enumerable drop - iterate over it (but not strings, hashes, or ranges for include)
           items = collection.to_a
           items.each_with_index do |item, idx|
             render_partial_once(name, source, args, item, as_alias, isolated: isolated,
-                               forloop_index: idx, forloop_length: items.length, has_item: true)
+                               forloop_index: idx, forloop_length: items.length, has_item: true,
+                               compiled_template: compiled_template)
           end
         elsif collection.nil?
           # Nil collection = render once with keyword args only (no item from for loop)
-          render_partial_once(name, source, args, nil, as_alias, isolated: isolated, has_item: false)
+          render_partial_once(name, source, args, nil, as_alias, isolated: isolated, has_item: false,
+                               compiled_template: compiled_template)
         else
           # Single item (including hashes and strings) - render once with it
-          render_partial_once(name, source, args, collection, as_alias, isolated: isolated, has_item: true)
+          render_partial_once(name, source, args, collection, as_alias, isolated: isolated, has_item: true,
+                               compiled_template: compiled_template)
         end
       elsif with_expr
         # Render with the variable
@@ -1256,20 +1288,23 @@ module LiquidIL
         if item.is_a?(Array) && !isolated
           # Include with array - iterate like "for"
           item.each do |array_item|
-            render_partial_once(name, source, args, array_item, as_alias, isolated: isolated, has_item: true)
+            render_partial_once(name, source, args, array_item, as_alias, isolated: isolated, has_item: true,
+                               compiled_template: compiled_template)
           end
         else
           # For render (isolated), nil/undefined with expr lets keyword arg take precedence
           # For include (non-isolated), nil with expr still overrides keyword arg
           has_item = isolated ? !item.nil? : true
-          render_partial_once(name, source, args, item, as_alias, isolated: isolated, has_item: has_item)
+          render_partial_once(name, source, args, item, as_alias, isolated: isolated, has_item: has_item,
+                               compiled_template: compiled_template)
         end
       else
-        render_partial_once(name, source, args, nil, nil, isolated: isolated, has_item: false)
+        render_partial_once(name, source, args, nil, nil, isolated: isolated, has_item: false,
+                             compiled_template: compiled_template)
       end
     end
 
-    def render_partial_once(name, source, args, item, as_alias, isolated:, forloop_index: nil, forloop_length: nil, has_item: false)
+    def render_partial_once(name, source, args, item, as_alias, isolated:, forloop_index: nil, forloop_length: nil, has_item: false, compiled_template: nil)
       # Track render depth to prevent infinite recursion
       @context.push_render_depth
       # include uses stricter limit (>= 100), render allows one more level (> 100)
@@ -1311,10 +1346,16 @@ module LiquidIL
       end
 
       template = begin
-                   Template.parse(source)
+                   if compiled_template
+                     compiled_template[:template] ||= Template.new(
+                       compiled_template[:source],
+                       compiled_template[:instructions],
+                       compiled_template[:spans]
+                     )
+                   else
+                     Template.parse(source)
+                   end
                  rescue LiquidIL::SyntaxError => e
-                   # Use line from exception if available (computed from position/source)
-                   # Otherwise try to extract position from message for backward compatibility
                    line = if e.respond_to?(:line) && e.position
                             e.line
                           elsif e.message =~ /at position (\d+)/

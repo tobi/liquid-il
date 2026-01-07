@@ -62,6 +62,9 @@ module LiquidIL
     #   template.render(name: "World")
     #
     def parse(source, **options)
+      if @file_system && !options.key?(:file_system)
+        options = options.merge(file_system: @file_system)
+      end
       result = Compiler.new(source, **options).compile
       Template.new(source, result[:instructions], result[:spans], self)
     end
@@ -89,6 +92,8 @@ module LiquidIL
       @cache&.clear
     end
   end
+
+  require_relative "liquid_il/optimizer"
 
   # A parsed template ready for rendering
   class Template

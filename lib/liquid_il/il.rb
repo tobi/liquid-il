@@ -22,9 +22,11 @@ module LiquidIL
 
     # Variable and property access
     FIND_VAR = :FIND_VAR             # [:FIND_VAR, name]
+    FIND_VAR_PATH = :FIND_VAR_PATH   # [:FIND_VAR_PATH, name, [path]]
     FIND_VAR_DYNAMIC = :FIND_VAR_DYNAMIC  # [:FIND_VAR_DYNAMIC] - pops name from stack
     LOOKUP_KEY = :LOOKUP_KEY         # [:LOOKUP_KEY] - pops key from stack
     LOOKUP_CONST_KEY = :LOOKUP_CONST_KEY  # [:LOOKUP_CONST_KEY, name]
+    LOOKUP_CONST_PATH = :LOOKUP_CONST_PATH  # [:LOOKUP_CONST_PATH, [name, ...]]
     LOOKUP_COMMAND = :LOOKUP_COMMAND      # [:LOOKUP_COMMAND, name] - optimized for size/first/last
 
     # Capture opcodes
@@ -77,6 +79,8 @@ module LiquidIL
     CYCLE_STEP_VAR = :CYCLE_STEP_VAR # [:CYCLE_STEP_VAR, var_name, values] - group from variable
 
     # Partial opcodes
+    CONST_RENDER = :CONST_RENDER     # [:CONST_RENDER, name, args_map] - lowered by compiler
+    CONST_INCLUDE = :CONST_INCLUDE   # [:CONST_INCLUDE, name, args_map] - lowered by compiler
     RENDER_PARTIAL = :RENDER_PARTIAL # [:RENDER_PARTIAL, name, args_map]
     INCLUDE_PARTIAL = :INCLUDE_PARTIAL  # [:INCLUDE_PARTIAL, name, args_map]
 
@@ -200,6 +204,10 @@ module LiquidIL
         emit(FIND_VAR, name)
       end
 
+      def find_var_path(name, path)
+        emit(FIND_VAR_PATH, name, path)
+      end
+
       def find_var_dynamic
         emit(FIND_VAR_DYNAMIC)
       end
@@ -210,6 +218,10 @@ module LiquidIL
 
       def lookup_const_key(name)
         emit(LOOKUP_CONST_KEY, name)
+      end
+
+      def lookup_const_path(path)
+        emit(LOOKUP_CONST_PATH, path)
       end
 
       def lookup_command(name)
@@ -346,6 +358,14 @@ module LiquidIL
 
       def include_partial(name, args)
         emit(INCLUDE_PARTIAL, name, args)
+      end
+
+      def const_render(name, args)
+        emit(CONST_RENDER, name, args)
+      end
+
+      def const_include(name, args)
+        emit(CONST_INCLUDE, name, args)
       end
 
       def tablerow_init(var_name, loop_name, has_limit, has_offset, cols)
