@@ -302,7 +302,18 @@ module LiquidIL
       when IL::CONST_INT
         "  __stack__ << #{inst[1]}\n"
       when IL::CONST_FLOAT
-        "  __stack__ << #{inst[1]}\n"
+        val = inst[1]
+        # Handle special float values
+        val_str = if val.nan?
+                    "Float::NAN"
+                  elsif val.infinite? == 1
+                    "Float::INFINITY"
+                  elsif val.infinite? == -1
+                    "-Float::INFINITY"
+                  else
+                    val.inspect
+                  end
+        "  __stack__ << #{val_str}\n"
       when IL::CONST_STRING
         "  __stack__ << #{inst[1].inspect}\n"
       when IL::CONST_RANGE
@@ -315,10 +326,16 @@ module LiquidIL
         "  __stack__ << __scope__.lookup(#{inst[1].inspect})\n"
       when IL::FIND_VAR_DYNAMIC
         "  __stack__ << __scope__.lookup(__stack__.pop.to_s)\n"
+      when IL::FIND_VAR_PATH
+        name, path = inst[1], inst[2]
+        "  __obj__ = __scope__.lookup(#{name.inspect}); #{path.map { |k| "__obj__ = __lookup_property__(__obj__, #{k.inspect})" }.join("; ")}; __stack__ << __obj__\n"
       when IL::LOOKUP_KEY
         "  __k__ = __stack__.pop; __o__ = __stack__.pop; __stack__ << __lookup_key__(__o__, __k__)\n"
       when IL::LOOKUP_CONST_KEY
         "  __stack__ << __lookup_property__(__stack__.pop, #{inst[1].inspect})\n"
+      when IL::LOOKUP_CONST_PATH
+        path = inst[1]
+        "  __obj__ = __stack__.pop; #{path.map { |k| "__obj__ = __lookup_property__(__obj__, #{k.inspect})" }.join("; ")}; __stack__ << __obj__\n"
       when IL::LOOKUP_COMMAND
         "  __stack__ << __execute_command__(__stack__.pop, #{inst[1].inspect})\n"
       when IL::PUSH_CAPTURE
