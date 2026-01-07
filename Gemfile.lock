@@ -20,9 +20,12 @@ GEM
     base64 (0.3.0)
     bigdecimal (4.0.1)
     diff-lcs (1.6.2)
+    minitest (6.0.1)
+      prism (~> 1.5)
     optimist (3.2.1)
     patience_diff (1.2.0)
       optimist (~> 3.0)
+    prism (1.7.0)
     rake (13.3.1)
     strscan (3.1.6)
     super_diff (0.18.0)
@@ -38,6 +41,7 @@ DEPENDENCIES
   base64
   liquid!
   liquid-spec!
+  minitest
   rake
 
 BUNDLED WITH

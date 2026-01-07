@@ -8,3 +8,4 @@ gem "liquid-spec", :git => "/Users/tobi/src/tries/2025-12-31-liquid-4_0-optimiza
 gem "liquid", :git => "https://github.com/Shopify/liquid"
 gem "base64"
 gem "rake"
+gem "minitest"
