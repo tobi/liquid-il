@@ -4,27 +4,29 @@ module LiquidIL
   # Compiles IL instructions to Ruby code for AOT execution.
   # Falls back to VM for unsupported instructions.
   class RubyCompiler
-    UNSUPPORTED_OPCODES = [
-      IL::RENDER_PARTIAL,
-      IL::INCLUDE_PARTIAL,
-    ].freeze
+    # No longer have unsupported opcodes - partials are checked dynamically
+    UNSUPPORTED_OPCODES = [].freeze
 
     class CompilationResult
-      attr_reader :proc, :source, :can_compile
+      attr_reader :proc, :source, :can_compile, :partials
 
-      def initialize(proc:, source:, can_compile:)
+      def initialize(proc:, source:, can_compile:, partials: {})
         @proc = proc
         @source = source
         @can_compile = can_compile
+        @partials = partials  # name -> { source:, instructions:, spans:, compiled_source: }
       end
     end
 
-    def initialize(instructions, spans: nil, template_source: nil)
+    def initialize(instructions, spans: nil, template_source: nil, context: nil, partials: nil, partial_names_in_progress: nil)
       @instructions = instructions
       @spans = spans
       @template_source = template_source
+      @context = context
       @var_counter = 0
       @label_to_block = {}  # label_id -> block index where label appears
+      @partials = partials || {}  # Shared partial cache across recursive compilations
+      @partial_names_in_progress = partial_names_in_progress || Set.new  # Shared to prevent infinite recursion
     end
 
     def compile
@@ -49,7 +51,8 @@ module LiquidIL
       CompilationResult.new(
         proc: compiled_proc,
         source: ruby_code,
-        can_compile: true
+        can_compile: true,
+        partials: @partials
       )
     end
 
@@ -57,10 +60,23 @@ module LiquidIL
 
     def can_compile?
       @instructions.each do |inst|
+        case inst[0]
+        when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
+          args = inst[2] || {}
+          # Dynamic partials cannot be compiled - require runtime resolution
+          if args["__dynamic_name__"]
+            raise DynamicPartialError, "Cannot compile template with dynamic partial name: {% render #{args["__dynamic_name__"]} %}"
+          end
+          # If no file system, can't load partials - fall back to VM
+          return false unless @context&.file_system
+        end
         return false if UNSUPPORTED_OPCODES.include?(inst[0])
       end
       true
     end
+
+    # Error raised when a dynamic partial is encountered
+    class DynamicPartialError < StandardError; end
 
     def fallback_result
       CompilationResult.new(proc: nil, source: nil, can_compile: false)
@@ -194,7 +210,54 @@ module LiquidIL
       code << "  __for_iterators__ = []\n"
       code << "  __current_file__ = nil\n"
       code << "\n"
+      code << generate_ruby_body(structured)
+      code << "\n  __output__\n"
+      code << "end\n"
 
+      code
+    end
+
+    # Generate partial method definitions for the runtime proc
+    def generate_runtime_partial_methods
+      return "" if @partials.empty?
+
+      code = String.new
+      @partials.each do |name, info|
+        method_name = partial_method_name(name)
+        body = info[:compiled_body]
+
+        code << "\n"
+        code << "def #{method_name}(assigns, __output__, __parent_scope__, isolated)\n"
+        code << "  # Check render depth to prevent infinite recursion\n"
+        code << "  __parent_scope__.push_render_depth\n"
+        code << "  if __parent_scope__.render_depth_exceeded?(strict: !isolated)\n"
+        code << "    __parent_scope__.pop_render_depth\n"
+        code << "    __write_output__(\"Liquid error (#{name} line 1): Nesting too deep\", __output__, __parent_scope__)\n"
+        code << "    return\n"
+        code << "  end\n"
+        code << "\n"
+        code << "  __scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
+        code << "  assigns.each { |k, v| __scope__.assign(k, v) }\n"
+        code << "  __spans__ = nil\n"
+        code << "  __template_source__ = #{info[:source].inspect}\n"
+        code << "  __stack__ = []\n"
+        code << "  __for_iterators__ = []\n"
+        code << "  __current_file__ = #{name.inspect}\n"
+        code << "\n"
+        code << body
+        code << "\n"
+        code << "  __parent_scope__.pop_render_depth\n"
+        code << "rescue LiquidIL::RuntimeError => e\n"
+        code << "  __parent_scope__.pop_render_depth\n"
+        code << "  __write_output__(\"Liquid error (\#{e.file || #{name.inspect}} line \#{e.line}): \#{e.message}\", __output__, __scope__)\n"
+        code << "end\n"
+      end
+
+      code
+    end
+
+    # Generate just the body code (for partials and standalone files)
+    def generate_ruby_body(structured)
       blocks = structured.children
 
       # Check if we need state machine (any jumps/conditionals)
@@ -212,15 +275,10 @@ module LiquidIL
       end
 
       if needs_state_machine
-        code << generate_state_machine(blocks)
+        generate_state_machine(blocks)
       else
-        code << generate_straight_line(blocks)
+        generate_straight_line(blocks)
       end
-
-      code << "\n  __output__\n"
-      code << "end\n"
-
-      code
     end
 
     def generate_straight_line(blocks)
@@ -398,9 +456,169 @@ module LiquidIL
         RUBY
       when IL::POP_FORLOOP
         "  __scope__.pop_forloop\n"
+      when IL::RENDER_PARTIAL
+        generate_partial_call(inst, idx, isolated: true)
+      when IL::INCLUDE_PARTIAL
+        # Add check for include being disabled (inside render context)
+        code = String.new
+        code << "  if __scope__.disable_include\n"
+        code << "    __write_output__(\"Liquid error (line 1): include usage is not allowed in this context\", __output__, __scope__)\n"
+        code << "  else\n"
+        code << generate_partial_call(inst, idx, isolated: false).gsub(/^/, "  ")
+        code << "  end\n"
+        code
       else
         "  # unsupported: #{opcode}\n"
       end
+    end
+
+    def generate_partial_call(inst, idx, isolated:)
+      name = inst[1]
+      args = inst[2] || {}
+
+      # Ensure this partial is compiled (unless it's already being compiled - recursive case)
+      compile_partial(name) unless @partials[name] || @partial_names_in_progress.include?(name)
+
+      method_name = partial_method_name(name)
+      tag_type = isolated ? "render" : "include"
+
+      # Build argument hash
+      arg_assignments = []
+      args.each do |k, v|
+        next if k.start_with?("__")
+        if v.is_a?(Hash) && v[:__var__]
+          # Variable lookup
+          var_path = v[:__var__]
+          if var_path.is_a?(Array)
+            arg_assignments << "#{k.inspect} => __scope__.lookup(#{var_path[0].inspect})"
+          else
+            arg_assignments << "#{k.inspect} => __scope__.lookup(#{var_path.inspect})"
+          end
+        else
+          arg_assignments << "#{k.inspect} => #{v.inspect}"
+        end
+      end
+
+      code = String.new
+      code << "  # #{tag_type} '#{name}'\n"
+
+      # Handle with/for expressions
+      with_expr = args["__with__"]
+      for_expr = args["__for__"]
+      as_alias = args["__as__"]
+
+      if for_expr
+        # Render once per item in collection
+        var_expr = generate_eval_expression(for_expr)
+        item_var = as_alias || name
+        code << "  __partial_args__ = {#{arg_assignments.join(", ")}}\n"
+        code << "  __for_coll__ = #{var_expr}\n"
+        code << "  __for_coll__ = __to_iterable__(__for_coll__) if __for_coll__.is_a?(Array) || __for_coll__.is_a?(LiquidIL::RangeValue)\n"
+        code << "  if __for_coll__.is_a?(Array)\n"
+        code << "    __for_coll__.each_with_index do |__item__, __idx__|\n"
+        code << "      __partial_args__[#{item_var.inspect}] = __item__\n"
+        if isolated
+          code << "      __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = __idx__ }\n"
+        end
+        code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+        code << "    end\n"
+        code << "  else\n"
+        code << "    __partial_args__[#{item_var.inspect}] = __for_coll__\n"
+        code << "    #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+        code << "  end\n"
+      elsif with_expr
+        # Render with a specific value
+        var_expr = generate_eval_expression(with_expr)
+        item_var = as_alias || name
+        code << "  __partial_args__ = {#{arg_assignments.join(", ")}}\n"
+        code << "  __partial_args__[#{item_var.inspect}] = #{var_expr}\n"
+        code << "  #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+      else
+        # Simple render
+        if arg_assignments.empty?
+          code << "  #{method_name}({}, __output__, __scope__, #{isolated})\n"
+        else
+          code << "  #{method_name}({#{arg_assignments.join(", ")}}, __output__, __scope__, #{isolated})\n"
+        end
+      end
+
+      code
+    end
+
+    # Generate Ruby code to evaluate an expression (handles literals, ranges, and variables)
+    def generate_eval_expression(expr)
+      return "nil" unless expr
+      expr_str = expr.to_s
+
+      # Handle string literals (quoted strings)
+      if expr_str =~ /\A'(.*)'\z/ || expr_str =~ /\A"(.*)"\z/
+        return Regexp.last_match(1).inspect
+      end
+
+      # Handle range literals (1..10)
+      if expr_str =~ /\A\((-?\d+)\.\.(-?\d+)\)\z/
+        return "LiquidIL::RangeValue.new(#{Regexp.last_match(1)}, #{Regexp.last_match(2)})"
+      end
+
+      # Handle variable lookups (possibly with property access)
+      "__eval_expression__(#{expr_str.inspect}, __scope__)"
+    end
+
+    def compile_partial(name)
+      return if @partials[name]
+      return if @partial_names_in_progress.include?(name)
+
+      @partial_names_in_progress.add(name)
+
+      # Load the partial source
+      fs = @context&.file_system
+      source = if fs.respond_to?(:read_template_file)
+                 fs.read_template_file(name) rescue nil
+               elsif fs.respond_to?(:read)
+                 fs.read(name)
+               end
+
+      unless source
+        raise "Cannot load partial '#{name}': no file system available or partial not found"
+      end
+
+      # Compile the partial
+      compiler = LiquidIL::Compiler.new(source, optimize: true)
+      result = compiler.compile
+      instructions = result[:instructions]
+      spans = result[:spans]
+
+      # Recursively compile to Ruby (sharing partials cache and in-progress set)
+      ruby_compiler = RubyCompiler.new(
+        instructions,
+        spans: spans,
+        template_source: source,
+        context: @context,
+        partials: @partials,
+        partial_names_in_progress: @partial_names_in_progress
+      )
+
+      # Check for dynamic partials in this partial
+      ruby_compiler.send(:can_compile?)
+
+      # Build basic blocks and generate code for this partial
+      blocks = ruby_compiler.send(:build_basic_blocks)
+      structured = ruby_compiler.send(:analyze_structure, blocks)
+      partial_code = ruby_compiler.send(:generate_ruby_body, structured)
+
+      @partials[name] = {
+        source: source,
+        instructions: instructions,
+        spans: spans,
+        compiled_body: partial_code
+      }
+
+      @partial_names_in_progress.delete(name)
+    end
+
+    def partial_method_name(name)
+      # Convert partial name to valid Ruby method name
+      "__partial_#{name.gsub(/[^a-zA-Z0-9_]/, '_')}__"
     end
 
     def generate_instruction_for_state_machine(inst, idx, block)
@@ -886,6 +1104,38 @@ module LiquidIL
           end
         end
 
+        def __eval_expression__(expr, scope)
+          return nil unless expr
+          expr_str = expr.to_s
+
+          # Handle string literals (quoted strings)
+          if expr_str =~ /\A'(.*)'\z/ || expr_str =~ /\A"(.*)"\z/
+            return Regexp.last_match(1)
+          end
+
+          # Handle range literals (1..10)
+          if expr_str =~ /\A\((-?\d+)\.\.(-?\d+)\)\z/
+            return LiquidIL::RangeValue.new(Regexp.last_match(1).to_i, Regexp.last_match(2).to_i)
+          end
+
+          # Parse variable path: product.name or items[0]
+          parts = expr_str.scan(/(\w+)|\[(\d+)\]|\[['"](\w+)['"]\]/)
+          return nil if parts.empty?
+
+          result = nil
+          parts.each_with_index do |match, idx|
+            if idx == 0
+              # First part is always a variable name
+              result = scope.lookup(match[0])
+            else
+              # Subsequent parts are property access
+              key = match[0] || match[1] || match[2]
+              result = __lookup_property__(result, key.to_s =~ /^\d+$/ ? key.to_i : key)
+            end
+          end
+          result
+        end
+
         def __valid_integer__(value)
           return true if value.nil? || value.is_a?(Integer) || value.is_a?(Float)
           return true if value.is_a?(String) && value =~ /\A-?\d/
@@ -1042,6 +1292,12 @@ module LiquidIL
         end
       end
 
+      # Add partial methods to the helpers module
+      partial_code = generate_runtime_partial_methods
+      unless partial_code.empty?
+        helpers.module_eval(partial_code)
+      end
+
       # Create proc with helpers in scope
       binding_obj = helpers.instance_eval { binding }
       eval(source, binding_obj)
@@ -1052,7 +1308,7 @@ module LiquidIL
 
   # A compiled template that uses the generated Ruby proc
   class CompiledTemplate
-    attr_reader :source, :instructions, :spans, :compiled_source, :uses_vm
+    attr_reader :source, :instructions, :spans, :compiled_source, :uses_vm, :partials
 
     def initialize(source, instructions, spans, context, compiled_result)
       @source = source
@@ -1062,6 +1318,7 @@ module LiquidIL
       @compiled_proc = compiled_result.proc
       @compiled_source = compiled_result.source
       @uses_vm = !compiled_result.can_compile
+      @partials = compiled_result.partials || {}
     end
 
     def render(assigns = {}, **extra_assigns)
@@ -1097,12 +1354,23 @@ module LiquidIL
       # Extract the proc body from compiled source (remove the "proc do |...| ... end" wrapper)
       proc_body = extract_proc_body(@compiled_source)
 
+      # Generate partial methods
+      partial_methods = generate_partial_methods
+
+      # Generate partial source comments
+      partial_sources = @partials.map do |name, info|
+        lines = ["# Partial '#{name}':"]
+        lines += info[:source].lines.map { |l| "#   #{l.chomp}" }
+        lines.join("\n")
+      end.join("\n#\n")
+      partial_sources = "\n#\n#{partial_sources}" unless partial_sources.empty?
+
       <<~RUBY
         # frozen_string_literal: true
         #
         # Auto-generated by LiquidIL::Compiler::Ruby
         # Original template:
-        #{@source.lines.map { |l| "#   #{l}" }.join}
+        #{@source.lines.map { |l| "#   #{l}" }.join}#{partial_sources}
         #
         # Usage:
         #   require_relative 'this_file'
@@ -1118,7 +1386,7 @@ module LiquidIL
           SOURCE = #{@source.inspect}.freeze
 
           #{generate_helper_methods}
-
+        #{partial_methods}
           def render(assigns = {})
             __scope__ = LiquidIL::Scope.new(assigns)
             __spans__ = SPANS
@@ -1150,6 +1418,45 @@ module LiquidIL
           puts render(assigns)
         end
       RUBY
+    end
+
+    def generate_partial_methods
+      return "" if @partials.empty?
+
+      code = String.new
+      @partials.each do |name, info|
+        method_name = "__partial_#{name.gsub(/[^a-zA-Z0-9_]/, '_')}__"
+        body = info[:compiled_body]
+
+        code << "\n"
+        code << "  # Partial: #{name}\n"
+        code << "  def #{method_name}(assigns, __output__, __parent_scope__, isolated)\n"
+        code << "    # Check render depth to prevent infinite recursion\n"
+        code << "    __parent_scope__.push_render_depth\n"
+        code << "    if __parent_scope__.render_depth_exceeded?(strict: !isolated)\n"
+        code << "      __parent_scope__.pop_render_depth\n"
+        code << "      __write_output__(\"Liquid error (#{name} line 1): Nesting too deep\", __output__, __parent_scope__)\n"
+        code << "      return\n"
+        code << "    end\n"
+        code << "\n"
+        code << "    __scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
+        code << "    assigns.each { |k, v| __scope__.assign(k, v) }\n"
+        code << "    __spans__ = nil\n"
+        code << "    __template_source__ = #{info[:source].inspect}\n"
+        code << "    __stack__ = []\n"
+        code << "    __for_iterators__ = []\n"
+        code << "    __current_file__ = #{name.inspect}\n"
+        code << "\n"
+        code << indent_code(body, 4)
+        code << "\n"
+        code << "    __parent_scope__.pop_render_depth\n"
+        code << "  rescue LiquidIL::RuntimeError => e\n"
+        code << "    __parent_scope__.pop_render_depth\n"
+        code << "    __write_output__(\"Liquid error (\#{e.file || #{name.inspect}} line \#{e.line}): \#{e.message}\", __output__, __scope__)\n"
+        code << "  end\n"
+      end
+
+      code
     end
 
     def extract_proc_body(source)
@@ -1516,6 +1823,38 @@ module LiquidIL
           end
         end
 
+        def __eval_expression__(expr, scope)
+          return nil unless expr
+          expr_str = expr.to_s
+
+          # Handle string literals (quoted strings)
+          if expr_str =~ /\A'(.*)'\z/ || expr_str =~ /\A"(.*)"\z/
+            return Regexp.last_match(1)
+          end
+
+          # Handle range literals (1..10)
+          if expr_str =~ /\A\((-?\d+)\.\.(-?\d+)\)\z/
+            return LiquidIL::RangeValue.new(Regexp.last_match(1).to_i, Regexp.last_match(2).to_i)
+          end
+
+          # Parse variable path: product.name or items[0]
+          parts = expr_str.scan(/(\w+)|\[(\d+)\]|\[['"](\w+)['"]\]/)
+          return nil if parts.empty?
+
+          result = nil
+          parts.each_with_index do |match, idx|
+            if idx == 0
+              # First part is always a variable name
+              result = scope.lookup(match[0])
+            else
+              # Subsequent parts are property access
+              key = match[0] || match[1] || match[2]
+              result = __lookup_property__(result, key.to_s =~ /^\d+$/ ? key.to_i : key)
+            end
+          end
+          result
+        end
+
         def __valid_integer__(value)
           return true if value.nil? || value.is_a?(Integer) || value.is_a?(Float)
           return true if value.is_a?(String) && value =~ /\A-?\d/
@@ -1684,8 +2023,13 @@ module LiquidIL
           spans = result[:spans]
         end
 
-        # Try to compile to Ruby
-        ruby_compiler = RubyCompiler.new(instructions, spans: spans, template_source: source)
+        # Try to compile to Ruby, passing context for partial resolution
+        ruby_compiler = RubyCompiler.new(
+          instructions,
+          spans: spans,
+          template_source: source,
+          context: context
+        )
         compiled_result = ruby_compiler.compile
 
         CompiledTemplate.new(source, instructions, spans, context, compiled_result)
