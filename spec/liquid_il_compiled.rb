@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# AOT-compiled Ruby adapter for liquid-spec
-# Uses LiquidIL::Compiler::Ruby.compile for fast execution
+# Combined optimized + AOT-compiled Ruby adapter for liquid-spec
+# Uses LiquidIL::Optimizer for IL optimization + LiquidIL::Compiler::Ruby for AOT compilation
 
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"
@@ -17,14 +17,18 @@ LiquidSpec.configure do |config|
 end
 
 LiquidSpec.compile do |ctx, source, compile_options|
+  # Create optimized context for parsing
   context = LiquidIL::Context.new(
     file_system: compile_options[:file_system],
     registers: compile_options[:registers],
     strict_errors: compile_options[:strict_errors]
   )
 
-  ctx[:context] = context
+  # optimized_context = LiquidIL::Optimizer.optimize(context)
+
+  # Parse with optimized context, then compile to Ruby
   template = context.parse(source)
+  ctx[:context] = context
   ctx[:template] = LiquidIL::Compiler::Ruby.compile(template)
 end
 

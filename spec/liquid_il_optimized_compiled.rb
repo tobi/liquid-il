@@ -18,15 +18,17 @@ end
 
 LiquidSpec.compile do |ctx, source, compile_options|
   # Create optimized context for parsing
-  optimized_ctx = LiquidIL::Optimizer.optimize(LiquidIL::Context.new(
+  context = LiquidIL::Context.new(
     file_system: compile_options[:file_system],
     registers: compile_options[:registers],
     strict_errors: compile_options[:strict_errors]
-  ))
+  )
+
+  optimized_context = LiquidIL::Optimizer.optimize(context)
 
   # Parse with optimized context, then compile to Ruby
-  template = optimized_ctx.parse(source)
-  ctx[:context] = optimized_ctx
+  template = optimized_context.parse(source)
+  ctx[:context] = optimized_context
   ctx[:template] = LiquidIL::Compiler::Ruby.compile(template)
 end
 
