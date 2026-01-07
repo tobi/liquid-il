@@ -253,4 +253,36 @@ class RubyCompilerTest < Minitest::Test
     template = LiquidIL::Compiler::Ruby.compile("{% tablerow i in items %}{{ i }}{% endtablerow %}")
     refute template.uses_vm, "Tablerow should use compiled Ruby, not VM"
   end
+
+  def test_save_creates_standalone_file
+    require "tempfile"
+
+    template = LiquidIL::Compiler::Ruby.compile("Hello {{ name | upcase }}!")
+
+    Tempfile.create(["compiled", ".rb"]) do |f|
+      template.save(f.path)
+      content = File.read(f.path)
+
+      # Check structure
+      assert_match %r{require "liquid_il"}, content
+      assert_match %r{module CompiledLiquidTemplate}, content
+      assert_match %r{def render\(assigns = \{\}\)}, content
+      assert_match %r{# Original template:}, content
+
+      # Load and execute the saved file
+      load f.path
+      result = CompiledLiquidTemplate.render("name" => "world")
+      assert_equal "Hello WORLD!", result
+    end
+  end
+
+  def test_save_raises_for_vm_fallback
+    # render/include tags require VM fallback
+    template = LiquidIL::Compiler::Ruby.compile("{% render 'partial' %}")
+    assert template.uses_vm
+
+    assert_raises(RuntimeError) do
+      template.save("/tmp/test.rb")
+    end
+  end
 end
