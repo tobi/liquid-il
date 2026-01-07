@@ -2,6 +2,7 @@
 
 module LiquidIL
   # Minimal scope for isolated render - just locals + static_environments
+  # Optimized for hot-path performance with direct ivars instead of hash lookups
   class RenderScope
     attr_accessor :file_system
 
@@ -10,17 +11,27 @@ module LiquidIL
       @locals = {}
       @file_system = file_system
       @depth = depth
+      # Eagerly initialize hot-path arrays as direct ivars
+      @interrupts = []
+      @capture_stack = []
+      @for_stack = []
+      @temps = []
+      # Lazy-init hashes (less frequently accessed)
+      @for_offsets = nil
+      @counters = nil
+      @cycles = nil
     end
 
     def disable_include = true
 
     def lookup(key)
-      key = key.to_s
-      @locals.fetch(key) { @static_environments&.[](key) }
+      key = key.to_s unless key.is_a?(String)
+      @locals[key] || @static_environments&.[](key)
     end
 
     def assign(key, value)
-      @locals[key.to_s] = value
+      key = key.to_s unless key.is_a?(String)
+      @locals[key] = value
     end
 
     alias assign_local assign
@@ -37,48 +48,63 @@ module LiquidIL
       RenderScope.new(@static_environments, @file_system, @depth)
     end
 
-    # Lazy registers - only created if needed
+    # Legacy registers accessor for compatibility
     def registers
-      @registers ||= { "for" => {}, "for_stack" => [], "counters" => {}, "cycles" => {}, "temps" => [], "capture_stack" => [] }
+      @registers ||= {
+        "for" => (@for_offsets ||= {}),
+        "for_stack" => @for_stack,
+        "counters" => (@counters ||= {}),
+        "cycles" => (@cycles ||= {}),
+        "temps" => @temps,
+        "capture_stack" => @capture_stack
+      }
     end
 
-    # Interrupt handling
-    def push_interrupt(type) = (@interrupts ||= []).push(type)
-    def pop_interrupt = @interrupts&.pop
-    def has_interrupt? = @interrupts&.any? || false
-    def peek_interrupt = @interrupts&.last
+    # Interrupt handling - direct ivar access (hot path)
+    def push_interrupt(type) = @interrupts.push(type)
+    def pop_interrupt = @interrupts.pop
+    def has_interrupt? = !@interrupts.empty?
+    def peek_interrupt = @interrupts.last
 
-    # Forloop
-    def for_stack = registers["for_stack"]
-    def push_forloop(f) = for_stack.push(f)
-    def pop_forloop = for_stack.pop
-    def current_forloop = for_stack.last
-    def parent_forloop = for_stack.length < 2 ? nil : for_stack[-2]
+    # Forloop - direct ivar access (hot path)
+    def for_stack = @for_stack
+    def push_forloop(f) = @for_stack.push(f)
+    def pop_forloop = @for_stack.pop
+    def current_forloop = @for_stack.last
+    def parent_forloop = @for_stack.length < 2 ? nil : @for_stack[-2]
 
-    # Counters
-    def increment(n) = (registers["counters"][n] ||= 0).tap { registers["counters"][n] += 1 }
-    def decrement(n) = (registers["counters"][n] = (registers["counters"][n] || 0) - 1)
+    # Counters - lazy hash init
+    def increment(n)
+      counters = (@counters ||= {})
+      (counters[n] ||= 0).tap { counters[n] += 1 }
+    end
 
-    # Cycles
+    def decrement(n)
+      counters = (@counters ||= {})
+      counters[n] = (counters[n] || 0) - 1
+    end
+
+    # Cycles - lazy hash init
     def cycle_step(id, vals)
       return nil if vals.empty?
-      registers["cycles"][id] ||= 0
-      vals[registers["cycles"][id] % vals.length].tap { registers["cycles"][id] += 1 }
+      cycles = (@cycles ||= {})
+      cycles[id] ||= 0
+      vals[cycles[id] % vals.length].tap { cycles[id] += 1 }
     end
 
-    # For offset
-    def for_offset(n) = registers["for"][n] || 0
-    def set_for_offset(n, o) = registers["for"][n] = o
+    # For offset - lazy hash init
+    def for_offset(n) = (@for_offsets ||= {})[n] || 0
+    def set_for_offset(n, o) = (@for_offsets ||= {})[n] = o
 
-    # Temps
-    def store_temp(i, v) = registers["temps"][i] = v
-    def load_temp(i) = registers["temps"][i]
+    # Temps - direct ivar access
+    def store_temp(i, v) = @temps[i] = v
+    def load_temp(i) = @temps[i]
 
-    # Capture
-    def push_capture = registers["capture_stack"].push(String.new)
-    def pop_capture = registers["capture_stack"].pop || ""
-    def current_capture = registers["capture_stack"].last
-    def capturing? = registers["capture_stack"].any?
+    # Capture - direct ivar access (hot path)
+    def push_capture = @capture_stack.push(String.new)
+    def pop_capture = @capture_stack.pop || ""
+    def current_capture = @capture_stack.last
+    def capturing? = !@capture_stack.empty?
   end
 
   # Internal execution state with scope stack and registers
@@ -107,6 +133,10 @@ module LiquidIL
       @registers["cycles"] ||= {}   # cycle state
       @registers["temps"] ||= []    # temporary storage
       @registers["capture_stack"] ||= [] # capture buffers
+
+      # Cache hot-path references for performance
+      @capture_stack = @registers["capture_stack"]
+      @for_stack_ref = @registers["for_stack"]
     end
 
     # --- Render depth tracking ---
@@ -140,7 +170,7 @@ module LiquidIL
     end
 
     def lookup(key)
-      key = key.to_s
+      key = key.to_s unless key.is_a?(String)
       # Check if this was explicitly assigned - assigned vars take precedence over counters
       if @assigned_vars[key]
         @scopes.each do |scope|
@@ -155,8 +185,7 @@ module LiquidIL
         return scope[key] if scope.key?(key)
       end
       # Check static_environments (shared with render)
-      return @static_environments[key] if @static_environments&.key?(key)
-      nil
+      @static_environments[key] if @static_environments&.key?(key)
     end
 
     def assign(key, value)
@@ -199,27 +228,27 @@ module LiquidIL
       @interrupts.last
     end
 
-    # --- Forloop stack ---
+    # --- Forloop stack (using cached @for_stack_ref for performance) ---
 
     def for_stack
-      @registers["for_stack"]
+      @for_stack_ref
     end
 
     def push_forloop(forloop)
-      for_stack.push(forloop)
+      @for_stack_ref.push(forloop)
     end
 
     def pop_forloop
-      for_stack.pop
+      @for_stack_ref.pop
     end
 
     def current_forloop
-      for_stack.last
+      @for_stack_ref.last
     end
 
     def parent_forloop
-      return nil if for_stack.length < 2
-      for_stack[-2]
+      return nil if @for_stack_ref.length < 2
+      @for_stack_ref[-2]
     end
 
     # --- Counter management ---
@@ -282,22 +311,22 @@ module LiquidIL
       @registers["ifchanged"][tag_id] = value
     end
 
-    # --- Capture ---
+    # --- Capture (using cached @capture_stack for performance) ---
 
     def push_capture
-      @registers["capture_stack"].push(String.new)
+      @capture_stack.push(String.new)
     end
 
     def pop_capture
-      @registers["capture_stack"].pop || ""
+      @capture_stack.pop || ""
     end
 
     def current_capture
-      @registers["capture_stack"].last
+      @capture_stack.last
     end
 
     def capturing?
-      !@registers["capture_stack"].empty?
+      !@capture_stack.empty?
     end
 
     # --- Isolation for render ---
