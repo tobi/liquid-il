@@ -20,6 +20,7 @@ GEM
     base64 (0.3.0)
     bigdecimal (4.0.1)
     diff-lcs (1.6.2)
+    memory_profiler (1.1.0)
     minitest (6.0.1)
       prism (~> 1.5)
     optimist (3.2.1)
@@ -27,6 +28,7 @@ GEM
       optimist (~> 3.0)
     prism (1.7.0)
     rake (13.3.1)
+    stackprof (0.2.27)
     strscan (3.1.6)
     super_diff (0.18.0)
       attr_extras (>= 6.2.4)
@@ -41,8 +43,10 @@ DEPENDENCIES
   base64
   liquid!
   liquid-spec!
+  memory_profiler
   minitest
   rake
+  stackprof
 
 BUNDLED WITH
    2.6.2
