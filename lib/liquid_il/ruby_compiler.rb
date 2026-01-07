@@ -764,10 +764,12 @@ module LiquidIL
         def __write_output__(str, output, scope)
           return unless str
           return if scope.has_interrupt?
+          # Fast path: skip .to_s for strings (most common case)
+          str = str.to_s unless str.is_a?(String)
           if scope.capturing?
-            scope.current_capture << str.to_s
+            scope.current_capture << str
           else
-            output << str.to_s
+            output << str
           end
         end
 
@@ -805,12 +807,15 @@ module LiquidIL
         end
 
         def __is_truthy__(value)
-          value = value.to_liquid_value if value.respond_to?(:to_liquid_value)
+          # Fast path for common types that don't have to_liquid_value
           case value
           when nil, false, LiquidIL::EmptyLiteral, LiquidIL::BlankLiteral
             false
-          else
+          when true, String, Integer, Float, Array, Hash
             true
+          else
+            value = value.to_liquid_value if value.respond_to?(:to_liquid_value)
+            !value.nil? && value != false
           end
         end
 
@@ -826,7 +831,8 @@ module LiquidIL
 
         def __lookup_key__(obj, key)
           return nil if obj.nil?
-          key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
+          # Fast path: strings/integers don't have to_liquid_value
+          key = key.to_liquid_value if !key.is_a?(String) && !key.is_a?(Integer) && key.respond_to?(:to_liquid_value)
           return nil if key.is_a?(LiquidIL::RangeValue) || key.is_a?(Range)
 
           case obj
@@ -857,14 +863,16 @@ module LiquidIL
 
         def __lookup_property__(obj, key)
           return nil if obj.nil?
-          key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
+          # Fast path: strings don't have to_liquid_value
+          key = key.to_liquid_value if !key.is_a?(String) && key.respond_to?(:to_liquid_value)
 
           case obj
           when Hash
-            key_str = key.to_s
+            # Fast path: key is usually already a string
+            key_str = key.is_a?(String) ? key : key.to_s
             result = obj[key_str]
             return result unless result.nil?
-            result = obj[key.to_sym] if key.is_a?(String)
+            result = obj[key_str.to_sym]
             return result unless result.nil?
             case key_str
             when "first"
@@ -1526,12 +1534,15 @@ module LiquidIL
         end
 
         def __is_truthy__(value)
-          value = value.to_liquid_value if value.respond_to?(:to_liquid_value)
+          # Fast path for common types that don't have to_liquid_value
           case value
           when nil, false, LiquidIL::EmptyLiteral, LiquidIL::BlankLiteral
             false
-          else
+          when true, String, Integer, Float, Array, Hash
             true
+          else
+            value = value.to_liquid_value if value.respond_to?(:to_liquid_value)
+            !value.nil? && value != false
           end
         end
 
@@ -1547,7 +1558,8 @@ module LiquidIL
 
         def __lookup_key__(obj, key)
           return nil if obj.nil?
-          key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
+          # Fast path: strings/integers don't have to_liquid_value
+          key = key.to_liquid_value if !key.is_a?(String) && !key.is_a?(Integer) && key.respond_to?(:to_liquid_value)
           return nil if key.is_a?(LiquidIL::RangeValue) || key.is_a?(Range)
 
           case obj
@@ -1578,14 +1590,16 @@ module LiquidIL
 
         def __lookup_property__(obj, key)
           return nil if obj.nil?
-          key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
+          # Fast path: strings don't have to_liquid_value
+          key = key.to_liquid_value if !key.is_a?(String) && key.respond_to?(:to_liquid_value)
 
           case obj
           when Hash
-            key_str = key.to_s
+            # Fast path: key is usually already a string
+            key_str = key.is_a?(String) ? key : key.to_s
             result = obj[key_str]
             return result unless result.nil?
-            result = obj[key.to_sym] if key.is_a?(String)
+            result = obj[key_str.to_sym]
             return result unless result.nil?
             case key_str
             when "first"
