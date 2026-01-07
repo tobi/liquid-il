@@ -101,7 +101,8 @@ module LiquidIL
     def load_temp(i) = @temps[i]
 
     # Capture - direct ivar access (hot path)
-    def push_capture = @capture_stack.push(String.new)
+    # Pre-allocate with small capacity to reduce reallocations
+    def push_capture = @capture_stack.push(String.new(capacity: 128))
     def pop_capture = @capture_stack.pop || ""
     def current_capture = @capture_stack.last
     def capturing? = !@capture_stack.empty?
@@ -314,7 +315,7 @@ module LiquidIL
     # --- Capture (using cached @capture_stack for performance) ---
 
     def push_capture
-      @capture_stack.push(String.new)
+      @capture_stack.push(String.new(capacity: 128))
     end
 
     def pop_capture

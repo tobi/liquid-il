@@ -23,11 +23,14 @@ module LiquidIL
       end
     end
 
+    # Default output buffer capacity (8KB)
+    OUTPUT_CAPACITY = 8192
+
     def initialize(instructions, context, current_file: nil, spans: nil, source: nil)
       @instructions = instructions
       @context = context
       @stack = []
-      @output = String.new
+      @output = String.new(capacity: OUTPUT_CAPACITY)
       @pc = 0  # Program counter
       @for_iterators = []  # Stack of iterators for FOR_NEXT
       @current_file = current_file  # Current file name for error messages
