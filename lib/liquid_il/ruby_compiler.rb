@@ -346,10 +346,15 @@ module LiquidIL
                 code << "  __output__ << #{combined.inspect}\n"
               end
               i = j
-            else
-              code << generate_instruction(inst, block.indices[i])
-              i += 1
+              next
             end
+          end
+
+          # Try to generate direct expression for output patterns
+          expr_result = try_generate_direct_expression(block.instructions, i, "  ")
+          if expr_result
+            code << expr_result[:code]
+            i += expr_result[:consumed]
           else
             code << generate_instruction(inst, block.indices[i])
             i += 1
@@ -358,6 +363,138 @@ module LiquidIL
       end
 
       code
+    end
+
+    # Try to generate a direct expression for common patterns like:
+    # FIND_VAR + WRITE_VALUE, FIND_VAR + LOOKUP + WRITE_VALUE, etc.
+    # Returns { code: String, consumed: Integer } or nil if pattern doesn't match
+    def try_generate_direct_expression(instructions, start_idx, indent = "  ")
+      return nil if start_idx >= instructions.length
+
+      inst = instructions[start_idx]
+      opcode = inst[0]
+
+      # Pattern: FIND_VAR [+ lookups/filters] + WRITE_VALUE
+      if opcode == IL::FIND_VAR
+        expr, consumed = build_expression_chain(instructions, start_idx)
+        return nil unless expr && consumed > 1  # Must consume more than just FIND_VAR
+
+        # Check if chain ends with WRITE_VALUE
+        last_idx = start_idx + consumed - 1
+        if last_idx < instructions.length && instructions[last_idx][0] == IL::WRITE_VALUE
+          output_code = generate_output_expression(expr, indent)
+          return { code: output_code, consumed: consumed }
+        end
+      end
+
+      # Pattern: FIND_VAR_PATH [+ lookups/filters] + WRITE_VALUE
+      if opcode == IL::FIND_VAR_PATH
+        expr, consumed = build_expression_chain(instructions, start_idx)
+        return nil unless expr && consumed > 1
+
+        last_idx = start_idx + consumed - 1
+        if last_idx < instructions.length && instructions[last_idx][0] == IL::WRITE_VALUE
+          output_code = generate_output_expression(expr, indent)
+          return { code: output_code, consumed: consumed }
+        end
+      end
+
+      nil
+    end
+
+    # Build an expression chain from instructions starting at idx
+    # Returns [expression_string, instructions_consumed] or nil
+    def build_expression_chain(instructions, start_idx)
+      return nil if start_idx >= instructions.length
+
+      inst = instructions[start_idx]
+      idx = start_idx
+      expr = nil
+      temp_assigns = []  # Track temp assignments for caching
+
+      # Start with variable lookup
+      case inst[0]
+      when IL::FIND_VAR
+        expr = "__scope__.lookup(#{inst[1].inspect})"
+        idx += 1
+      when IL::FIND_VAR_PATH
+        name, path = inst[1], inst[2]
+        if path.length == 1
+          expr = "__lookup_property__(__scope__.lookup(#{name.inspect}), #{path[0].inspect})"
+        else
+          expr = "__lookup_path__(__scope__.lookup(#{name.inspect}), #{path.map(&:inspect).join(", ")})"
+        end
+        idx += 1
+      else
+        return nil
+      end
+
+      # Follow chain of operations
+      while idx < instructions.length
+        next_inst = instructions[idx]
+
+        case next_inst[0]
+        when IL::LOOKUP_CONST_KEY
+          expr = "__lookup_property__(#{expr}, #{next_inst[1].inspect})"
+          idx += 1
+        when IL::LOOKUP_CONST_PATH
+          path = next_inst[1]
+          if path.length == 1
+            expr = "__lookup_property__(#{expr}, #{path[0].inspect})"
+          else
+            expr = "__lookup_path__(#{expr}, #{path.map(&:inspect).join(", ")})"
+          end
+          idx += 1
+        when IL::CALL_FILTER
+          name, argc = next_inst[1], next_inst[2]
+          if argc == 0
+            expr = "__call_filter__(#{name.inspect}, #{expr}, [], __scope__, __spans__, __template_source__, #{idx})"
+          else
+            # Filters with args are complex - bail out for now
+            # TODO: could handle constant args
+            break
+          end
+          idx += 1
+        when IL::DUP
+          # DUP for caching - record that we need to cache this value
+          temp_assigns << expr
+          idx += 1
+        when IL::STORE_TEMP
+          # Complete the caching - but don't add to expr, just note the temp
+          idx += 1
+        when IL::WRITE_VALUE
+          # End of expression - include this in consumed count
+          idx += 1
+          break
+        else
+          # Unknown operation - stop here
+          break
+        end
+      end
+
+      # Generate temp assignments if needed
+      if temp_assigns.any?
+        # For now, bail on complex caching patterns
+        # The expression we built doesn't include the temp handling
+        return nil
+      end
+
+      [expr, idx - start_idx]
+    end
+
+    # Generate optimized output code for an expression
+    def generate_output_expression(expr, indent)
+      # Skip ErrorMarker check for simple lookups (they don't produce errors)
+      # For now, keep the check for safety
+      output_expr = "(__v__ = #{expr}; __v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__))"
+
+      if @uses_capture
+        "#{indent}__write_output__(#{output_expr}, __output__, __scope__)\n"
+      elsif @uses_interrupts
+        "#{indent}__output__ << #{output_expr} unless __scope__.has_interrupt?\n"
+      else
+        "#{indent}__output__ << #{output_expr}\n"
+      end
     end
 
     def generate_state_machine(blocks)
@@ -399,11 +536,15 @@ module LiquidIL
                 code << "      __output__ << #{combined.inspect}\n"
               end
               i = j
-            else
-              inst_code = generate_instruction_for_state_machine(inst, global_idx, block)
-              code << inst_code
-              i += 1
+              next
             end
+          end
+
+          # Try to generate direct expression for output patterns
+          expr_result = try_generate_direct_expression(block.instructions, i, "      ")
+          if expr_result
+            code << expr_result[:code]
+            i += expr_result[:consumed]
           else
             inst_code = generate_instruction_for_state_machine(inst, global_idx, block)
             code << inst_code
@@ -569,9 +710,9 @@ module LiquidIL
       when IL::BUILD_HASH
         "  __pairs__ = __stack__.pop(#{inst[1] * 2}); __h__ = {}; __i__ = 0; while __i__ < __pairs__.length; __h__[__pairs__[__i__].to_s] = __pairs__[__i__+1]; __i__ += 2; end; __stack__ << __h__\n"
       when IL::STORE_TEMP
-        "  __scope__.store_temp(#{inst[1]}, __stack__.pop)\n"
+        "  __t#{inst[1]}__ = __stack__.pop\n"
       when IL::LOAD_TEMP
-        "  __stack__ << __scope__.load_temp(#{inst[1]})\n"
+        "  __stack__ << __t#{inst[1]}__\n"
       when IL::IFCHANGED_CHECK
         "  __captured__ = __stack__.pop; __prev__ = __scope__.get_ifchanged_state(#{inst[1].inspect}); if __captured__ != __prev__; __scope__.set_ifchanged_state(#{inst[1].inspect}, __captured__); __output__ << __captured__.to_s; end\n"
       when IL::PUSH_INTERRUPT

@@ -1,0 +1,1104 @@
+
+ * ▐▛███▜▌ *   Claude Code v2.0.76
+* ▝▜█████▛▘ *  Opus 4.5 · API Usage Billing
+ *  ▘▘ ▝▝  *   ~/src/tries/2026-01-05-liquid-il
+
+  Welcome to Opus 4.5
+══════════════════ Conversation compacted · ctrl+o for history ═════════════════
+
+⏺ Let me run the specs to see the current state and continue fixing the remaining failures.
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb 2>&1 | tail -30)
+  ⎿ /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/b
+    undler/gems/liquid-spec-3e198d9fa649/specs/shopify_production_recording
+    s/recorded_specs.yml:22954
+    … +36 lines (ctrl+o to expand)
+
+
+
+⏺ Let me see all 7 failures:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb 2>&1 | grep -A 7 "^[0-9]*)")
+  ⎿  1) RecordedTest#test_for_loop_with_invalid_limit_55f726412
+        Template:
+                   {%- for i in array limit: 'limit' -%}
+     … +65 lines (ctrl+o to expand)
+
+⏺ Let me get more details on each failure:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n
+      "test_for_loop_with_invalid_limit" 2>&1)
+  ⎿  Error: Exit code 1
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.6 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.7 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=prism version=1.7.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=liquid-c version=4.2.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=json version=2.18.0 platform=ruby> because it is missing extensions
+     Features: core, runtime_drops
+
+     Shopify Production Recordings .......... 0/1 passed, 1 failed, 0 errors
+     Liquid Ruby (Lax Mode) ................. skipped (needs lax_parsing)
+     … +19 lines (ctrl+o to see all)
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_parity_on_other_gsub"
+      2>&1)
+  ⎿  Error: Exit code 1
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.6 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.7 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=prism version=1.7.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=liquid-c version=4.2.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=json version=2.18.0 platform=ruby> because it is missing extensions
+     Features: core, runtime_drops
+
+     Shopify Production Recordings .......... 0/1 passed, 1 failed, 0 errors
+     Liquid Ruby (Lax Mode) ................. skipped (needs lax_parsing)
+     … +33 lines (ctrl+o to see all)
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_render_recursive" 2>&1)
+  ⎿  Error: Exit code 1
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.6 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.7 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=prism version=1.7.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=liquid-c version=4.2.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=json version=2.18.0 platform=ruby> because it is missing extensions
+     Features: core, runtime_drops
+
+     Liquid Ruby ............................ 1/1 passed
+     Shopify Production Recordings .......... 0/1 passed, 1 failed, 0 errors
+     … +417 lines (ctrl+o to see all)
+
+⏺ Let me update the todo list and start fixing these:
+
+⏺ Let me check how we validate integers in the VM:
+
+⏺ Search(pattern: "invalid integer", path: "~/src/tries/2026-01-05-liquid-il",
+        output_mode: "content")
+  ⎿  Found 7 lines (ctrl+o to expand)
+
+⏺ Read(lib/liquid_il/vm.rb)
+  ⎿  Read 80 lines
+
+⏺ Search(pattern: "def valid_integer\?", path: "lib/liquid_il/vm.rb",
+        output_mode: "content")
+  ⎿  Found 16 lines (ctrl+o to expand)
+
+⏺ I see the issue. The valid_integer? function is too strict. "0x10" should be valid because it starts with a digit - Ruby's to_i will extract 0 from it. The rule should be: strings starting with an optional minus and a digit are valid (to_i extracts the leading number).
+
+⏺ Update(lib/liquid_il/vm.rb)
+  ⎿  Added 3 lines, removed 1 line                                       
+       999        return true if value.nil?  # nil is treated as 0       
+      1000        return true if value.is_a?(Integer)                    
+      1001        return true if value.is_a?(Float)  # floats are        
+            truncated                                                    
+      1002 -      return true if value.is_a?(String) && value =~         
+           -/\A-?\d+(?:\.\d+)?\z/                                        
+      1002 +      # Strings starting with optional minus and digit are   
+           +valid (to_i extracts leading number)                         
+      1003 +      # "0x10" → valid (to_i = 0), "limit" → invalid         
+           +(doesn't start with digit)                                   
+      1004 +      return true if value.is_a?(String) && value =~         
+           +/\A-?\d/                                                     
+      1005        false                                                  
+      1006      end                                                      
+      1007                                                               
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_tablerow_with_bad_limit"
+      2>&1 | tail -20)
+  ⎿ Source locally installed gems is ignoring #<Bundler::StubSpecification 
+    name=strscan version=3.1.6 platform=ruby> because it is missing extensi
+    ons
+    … +20 lines (ctrl+o to expand)
+
+
+⏺ Good! Now let me verify the for loop invalid limit/offset tests still correctly throw errors for non-numeric strings:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_for_loop_with_invalid"
+      2>&1)
+  ⎿  Error: Exit code 1
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.6 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.7 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=prism version=1.7.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=liquid-c version=4.2.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=json version=2.18.0 platform=ruby> because it is missing extensions
+     Features: core, runtime_drops
+
+     Shopify Production Recordings .......... 0/2 passed, 2 failed, 0 errors
+     Liquid Ruby (Lax Mode) ................. skipped (needs lax_parsing)
+     … +32 lines (ctrl+o to see all)
+
+⏺ The errors look identical but there's a trailing newline difference. Let me compare byte-by-byte:
+
+⏺ Bash(bundle exec liquid-spec eval adapter.rb -l "{%- for i in (1..3) limit:
+      'abc' -%}{{ i }}{% endfor %}" 2>&1 | xxd | tail -10)
+  ⎿  00001140: 792f 342e 302e 302f 6c69 622f 7275 6279  y/4.0.0/lib/ruby
+     00001150: 2f34 2e30 2e30 2f72 7562 7967 656d 732e  /4.0.0/rubygems.
+     00001160: 7262 3a33 3033 3a69 6e20 2747 656d 2e61  rb:303:in 'Gem.a
+     … +7 lines (ctrl+o to expand)
+
+⏺ Bash(bundle exec ruby -r ./lib/liquid_il -e "
+      template = '{%- for i in (1..3) limit: \"abc\" -%}{{ i }}{% endfor %}'…)
+  ⎿  Error: Exit code 1
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already initialized 
+     constant Gem::Platform::JAVA
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:279: warning: previous definition of JAVA was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:295: warning: already initialized 
+     constant Gem::Platform::MSWIN
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:280: warning: previous definition of MSWIN was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:296: warning: already initialized 
+     constant Gem::Platform::MSWIN64
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:281: warning: previous definition of MSWIN64 was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:297: warning: already initialized 
+     constant Gem::Platform::MINGW
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:282: warning: previous definition of MINGW was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:298: warning: already initialized 
+     constant Gem::Platform::X64_MINGW
+
+
+
+
+
+     … +19 lines (ctrl+o to see all)
+
+⏺ Bash(bundle exec liquid-spec eval adapter.rb -l "{%- for i in (1..3) limit:
+      'abc' -%}{{ i }}{% endfor %}" 2>&1 | grep -A5 "Output:" | head -10)
+  ⎿  (No content)
+
+⏺ Bash(bundle exec liquid-spec eval adapter.rb -l "{%- for i in (1..3) limit:
+      'abc' -%}{{ i }}{% endfor %}" 2>&1)
+  ⎿  Error: Exit code 1
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.6 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.7 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=prism version=1.7.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=liquid-c version=4.2.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=json version=2.18.0 platform=ruby> because it is missing extensions
+     bundler: failed to load command: liquid-spec (/Users/tobi/.local/share/mise/
+     installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bin/liquid-spec)
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundle
+     r/gems/liquid-spec-3e198d9fa649/lib/liquid/spec/cli/eval.rb:445:in 
+     'Liquid::Spec::CLI::Eval.load_spec_from_string': undefined method '[]' for 
+     nil (NoMethodError)
+
+                 options[:liquid] = spec["template"] || spec[:template]
+     … +24 lines (ctrl+o to see all)
+
+⏺ Let me look at how we output error messages and whether we need a trailing newline:
+
+⏺ Search(pattern: "def raise_error", path: "lib/liquid_il/vm.rb", output_mode:
+        "content")
+  ⎿  Found 11 lines (ctrl+o to expand)
+
+⏺ Read(adapter.rb)
+  ⎿  Read 53 lines
+
+⏺ Search(pattern: "def render\(", path: "lib/liquid_il.rb", output_mode:
+        "content")
+  ⎿  Found 77 lines (ctrl+o to expand)
+
+⏺ Looking at the test, the expected output includes a trailing newline after the error message. Let me check by examining a simpler case:
+
+⏺ Bash(bundle exec ruby -r liquid -e "
+      tpl = Liquid::Template.parse('{%- for i in (1..3) limit: \"abc\" -%}{{ i
+      }}{% endfor %}')…)
+  ⎿ "Liquid error: invalid integer"                                        
+    /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/g
+    ems/bundler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already ini
+    … +54 lines (ctrl+o to expand)
+
+
+
+⏺ Let me check the specific test case in the YAML spec:
+
+⏺ Bash(grep -A20 "test_for_loop_with_invalid_limit"
+      ~/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundler/gems/l
+      iquid-spec-3e198d9fa649/specs/shopify_pro…)
+  ⎿  - name: RecordedTest#test_for_loop_with_invalid_limit_55f726412
+       expected: 'Liquid error (line 1): invalid integer
+     … +18 lines (ctrl+o to expand)
+
+⏺ The expected output has a trailing newline. Let me fix this by adding a newline at the end of error messages:
+
+⏺ Update(lib/liquid_il.rb)
+  ⎿  File must be read first
+
+⏺ Read(lib/liquid_il.rb)
+  ⎿  Read 138 lines
+
+⏺ Update(lib/liquid_il.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      103        rescue LiquidIL::RuntimeError => e                      
+      104          output = e.partial_output || ""                       
+      105          location = e.file ? "#{e.file} line #{e.line}" :      
+           "line #{e.line}"                                              
+      106 -        output + "Liquid error (#{location}): #{e.message}"   
+      106 +        output + "Liquid error (#{location}): #{e.message}\n" 
+      107        end                                                     
+      108      end                                                       
+      109                                                                
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_for_loop_with_invalid"
+      2>&1 | tail -15)
+  ⎿ Source locally installed gems is ignoring #<Bundler::StubSpecification 
+    name=strscan version=3.1.6 platform=ruby> because it is missing extensi
+    ons
+    … +20 lines (ctrl+o to expand)
+
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb 2>&1 | tail -40)
+  ⎿  (... 2 more failures not shown due to --max-failures 10 ...)
+     … +2 lines (ctrl+o to expand)
+
+⏺ We have more failures now. Let me check what went wrong:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb 2>&1 | grep -E "^[0-9]+\)" | head
+      -15)
+  ⎿ 1) RecordedTest#test_range_bound_dynamic_type_check_rejects_float_1721e
+    d89b
+    2) RecordedTest#test_rendering_include_tag_with_file_does_not_exist_doe
+    … +11 lines (ctrl+o to expand)
+
+
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_range_bound_dynamic"
+      2>&1)
+  ⎿  Error: Exit code 1
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.6 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.7 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=prism version=1.7.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=liquid-c version=4.2.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=json version=2.18.0 platform=ruby> because it is missing extensions
+     Features: core, runtime_drops
+
+     Shopify Production Recordings .......... 0/1 passed, 1 failed, 0 errors
+     Liquid Ruby (Lax Mode) ................. skipped (needs lax_parsing)
+     … +15 lines (ctrl+o to see all)
+
+⏺ I see - some tests expect a trailing newline, others don't. Let me check the pattern:
+
+⏺ Bash(grep -B5 -A5 "test_range_bound_dynamic_type_check_rejects_float"
+      ~/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundler/gems/l
+      iquid-spec-3e198d9fa6…)
+  ⎿    expected: 'c:'                                   
+       template: "{% render 'child' a: 1, b: 2, c: a %}"
+       environment: {}
+     … +9 lines (ctrl+o to expand)
+
+⏺ Let me look at the actual template content from the YAML more carefully:
+
+⏺ Bash(ruby -r yaml -e "
+      yaml = File.read(File.expand_path('~/.local/share/mise/installs/ruby/4.0.0
+      /lib/ruby/gems/4.0.0/bundler/gems/liquid-spec-3e198d9fa649/specs/sho…)
+  ⎿  Error: Exit code 1
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/psych/visit
+     ors/to_ruby.rb:475:in 
+     'Psych::Visitors::NoAliasRuby#visit_Psych_Nodes_Alias': Alias parsing was 
+     not enabled. To enable it, pass `aliases: true` to `Psych::load` or 
+     `Psych::safe_load`. (Psych::AliasesNotEnabled)
+     	from /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/psych/
+     visitors/visitor.rb:30:in 'Psych::Visitors::Visitor#visit'
+     	from /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/psych/
+     visitors/visitor.rb:6:in 'Psych::Visitors::Visitor#accept'
+     	from /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/psych/
+     visitors/to_ruby.rb:39:in 'Psych::Visitors::ToRuby#accept'
+     	from /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/psych/
+     visitors/to_ruby.rb:390:in 'block in Psych::Visitors::ToRuby#revive_hash'
+     	from /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/psych/
+     visitors/to_ruby.rb:388:in 'Array#each'
+     	from /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/psych/
+     visitors/to_ruby.rb:388:in 'Enumerable#each_slice'
+     	from /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/psych/
+     visitors/to_ruby.rb:388:in 'Psych::Visitors::ToRuby#revive_hash'
+     	from /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/psych/
+     visitors/to_ruby.rb:172:in 
+     'Psych::Visitors::ToRuby#visit_Psych_Nodes_Mapping'
+
+     … +17 lines (ctrl+o to see all)
+
+⏺ Bash(grep -A1 "test_for_loop_with_invalid_limit"
+      ~/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundler/gems/l
+      iquid-spec-3e198d9fa649/specs/shopify_prod…)
+  ⎿  - name: RecordedTest#test_for_loop_with_invalid_limit_55f726412
+       expected: 'Liquid error (line 1): invalid integer
+
+⏺ Bash(bundle exec ruby -r liquid -e "
+      # Test 1: Simple one-liner…)
+  ⎿  Test 1: Simple one-liner       
+     "Liquid error: invalid integer"
+     … +58 lines (ctrl+o to expand)
+
+⏺ Now I understand! Liquid doesn't add newlines to errors - it continues processing after the error. The trailing newline comes from the remaining template content. Let me verify:
+
+⏺ Bash(bundle exec ruby -r liquid -e "
+      # Test: Does Liquid continue after an error?…)
+  ⎿ "Liquid error: invalid integerMORE CONTENT"                            
+    /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/g
+    ems/bundler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already ini
+    … +54 lines (ctrl+o to expand)
+
+
+
+⏺ Liquid continues executing after errors! Let me revert the trailing newline change and implement proper error recovery:
+
+⏺ Update(lib/liquid_il.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      103        rescue LiquidIL::RuntimeError => e                      
+      104          output = e.partial_output || ""                       
+      105          location = e.file ? "#{e.file} line #{e.line}" :      
+           "line #{e.line}"                                              
+      106 -        output + "Liquid error (#{location}): #{e.message}\n" 
+      106 +        output + "Liquid error (#{location}): #{e.message}"   
+      107        end                                                     
+      108      end                                                       
+      109                                                                
+
+⏺ Now I need to implement error recovery in the VM. Instead of stopping on errors, Liquid continues execution. Let me look at how the VM handles FOR_INIT:
+
+⏺ Read(lib/liquid_il/vm.rb)
+  ⎿  Read 80 lines
+
+⏺ Let me look at how FOR_INIT is generated to see what recovery information we have:
+
+⏺ Search(pattern: "FOR_INIT", path: "lib/liquid_il/parser.rb", output_mode:
+        "content")
+  ⎿  Found 0 lines 
+
+⏺ Search(pattern: "def parse_for_tag", path: "lib/liquid_il/parser.rb",
+        output_mode: "content")
+  ⎿  Found 81 lines (ctrl+o to expand)
+
+⏺ Let me understand the correct error handling. When an error occurs, Liquid outputs the error and continues. Let me check what label info FOR_INIT needs:
+
+⏺ Search(pattern: "for_init", path: "lib/liquid_il", output_mode: "content")
+  ⎿  Found 24 lines (ctrl+o to expand)
+
+⏺ I need to add error recovery to FOR_INIT. Let me modify the parser to pass the break label, and the VM to use it for error recovery:
+
+⏺ Read(lib/liquid_il/il.rb)
+  ⎿  Read 20 lines
+
+⏺ Update(lib/liquid_il/il.rb)
+  ⎿  Added 2 lines, removed 2 lines                                      
+      296          emit(CALL_FILTER, name, argc)                         
+      297        end                                                     
+      298                                                                
+      299 -      def for_init(var_name, loop_name, has_limit = false,    
+          -has_offset = false, offset_continue = false, reversed = false)
+      300 -        emit(FOR_INIT, var_name, loop_name, has_limit,        
+          -has_offset, offset_continue, reversed)                        
+      299 +      def for_init(var_name, loop_name, has_limit = false,    
+          +has_offset = false, offset_continue = false, reversed = false 
+          +, recovery_label = nil)                                       
+      300 +        emit(FOR_INIT, var_name, loop_name, has_limit,        
+          +has_offset, offset_continue, reversed, recovery_label)        
+      301        end                                                     
+      302                                                                
+      303        def for_next(label_continue, label_break)               
+
+⏺ Now update the parser to pass the break label for recovery:
+
+⏺ Read(lib/liquid_il/parser.rb)
+  ⎿  Read 20 lines
+
+⏺ Let me check what comes after the for block in the parsed template:
+
+⏺ Bash(bundle exec ruby -r ./lib/liquid_il -e "
+      template = LiquidIL.parse(\"{%- for i in (1..3) limit: 'abc' -%}{{ i }}{%
+      endfor %}…)
+  ⎿    0: [:CONST_INT, 1]          
+       1: [:CONST_INT, 3]
+       2: [:NEW_RANGE]
+     … +80 lines (ctrl+o to expand)
+
+⏺ I can see the structure. The recovery should jump to label_end (index 24), which is after all the for loop cleanup. The trailing \n is at instruction 25. Let me update the parser:
+
+⏺ Update(lib/liquid_il/parser.rb)
+  ⎿  Added 2 lines, removed 1 line                                       
+      960        end                                                     
+      961                                                                
+      962        # Initialize for loop (pops collection, creates         
+           iterator)                                                     
+      963 -      @builder.for_init(var_name, loop_name,                  
+          -!limit_expr.nil?, !offset_expr.nil?, offset_continue,         
+          -reversed)                                                     
+      963 +      # Pass label_end for error recovery - on error, output  
+          +error message and jump past the for block                     
+      964 +      @builder.for_init(var_name, loop_name,                  
+          +!limit_expr.nil?, !offset_expr.nil?, offset_continue,         
+          +reversed, label_end)                                          
+      965                                                                
+      966        @builder.push_scope                                     
+      967        @builder.push_forloop                                   
+
+⏺ Read(lib/liquid_il/parser.rb)
+  ⎿  Read 20 lines
+
+⏺ Read(lib/liquid_il/parser.rb)
+  ⎿  Read 80 lines
+
+⏺ Update(lib/liquid_il/parser.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      1659          parse_expression(offset_lexer)                       
+      1660        end                                                    
+      1661                                                               
+      1662 -      @builder.for_init(var_name, loop_name,                 
+           -!limit_expr.nil?, !offset_expr.nil?, offset_continue,        
+           -reversed)                                                    
+      1662 +      @builder.for_init(var_name, loop_name,                 
+           +!limit_expr.nil?, !offset_expr.nil?, offset_continue,        
+           +reversed, label_end)                                         
+      1663        @builder.push_scope                                    
+      1664        @builder.push_forloop                                  
+      1665                                                               
+
+⏺ Now update the VM to use error recovery in FOR_INIT:
+
+⏺ Read(lib/liquid_il/vm.rb)
+  ⎿  Read 30 lines
+
+⏺ Update(lib/liquid_il/vm.rb)
+  ⎿  Added 11 lines, removed 3 lines                                     
+      285            has_offset = inst[4]                                
+      286            offset_continue = inst[5]                           
+      287            reversed = inst[6]                                  
+      288 +          recovery_label = inst[7]                            
+      289            offset = has_offset ? @stack.pop : nil              
+      290            limit = has_limit ? @stack.pop : nil                
+      291            collection = @stack.pop                             
+      292 -          iterator = create_iterator(collection, loop_name,   
+          -has_limit, limit, has_offset, offset, offset_continue,        
+          -reversed)                                                     
+      293 -          @for_iterators.push(iterator)                       
+      294 -          @pc += 1                                            
+      292 +          begin                                               
+      293 +            iterator = create_iterator(collection, loop_name, 
+          + has_limit, limit, has_offset, offset, offset_continue,       
+          +reversed)                                                     
+      294 +            @for_iterators.push(iterator)                     
+      295 +            @pc += 1                                          
+      296 +          rescue LiquidIL::RuntimeError => e                  
+      297 +            # Error recovery: output error message and jump   
+          +to recovery point                                             
+      298 +            location = @current_file ? "#{@current_file} line 
+          + #{e.line}" : "line #{e.line}"                                
+      299 +            @output << "Liquid error (#{location}):           
+          +#{e.message}"                                                 
+      300 +            @pc = recovery_label || (@instructions.length -   
+          +1)                                                            
+      301 +          end                                                 
+      302                                                                
+      303          when IL::FOR_NEXT                                     
+      304            label_continue = inst[1]                            
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_for_loop_with_invalid"
+      2>&1 | tail -20)
+  ⎿ Source locally installed gems is ignoring #<Bundler::StubSpecification 
+    name=strscan version=3.1.6 platform=ruby> because it is missing extensi
+    ons
+    … +20 lines (ctrl+o to expand)
+
+
+⏺ Let me run the full test suite:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb 2>&1 | tail -30)
+  ⎿ /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/b
+    undler/gems/liquid-spec-3e198d9fa649/specs/shopify_production_recording
+    s/recorded_specs.yml:22954
+    … +24 lines (ctrl+o to expand)
+
+
+
+⏺ Down to 4 failures (4415 passed)! Let me see all of them:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb 2>&1 | grep -E "^[0-9]+\)" -A6)
+  ⎿  1) RecordedTest#test_parity_on_other_gsub_escape_sequences_1003c6a87
+        Template:
+                   {{ "1. toto" | replace: "t", "\0" }}
+     … +33 lines (ctrl+o to expand)
+
+⏺ Let me examine the gsub escape sequences test:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_parity_on_other_gsub"
+      2>&1)
+  ⎿  Error: Exit code 1
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.6 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.7 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=prism version=1.7.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=liquid-c version=4.2.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=json version=2.18.0 platform=ruby> because it is missing extensions
+     Features: core, runtime_drops
+
+     Shopify Production Recordings .......... 0/1 passed, 1 failed, 0 errors
+     Liquid Ruby (Lax Mode) ................. skipped (needs lax_parsing)
+     … +33 lines (ctrl+o to see all)
+
+⏺ The error line number is wrong - it says "line 1" instead of "line 3". Let me look at how filter errors track line numbers:
+
+⏺ Read(lib/liquid_il/vm.rb)
+  ⎿  Read 25 lines
+
+⏺ Search(pattern: "def current_line", path: "lib/liquid_il/vm.rb", output_mode:
+        "content")
+  ⎿  Found 11 lines (ctrl+o to expand)
+
+⏺ Search(pattern: "ErrorMarker", path: "lib/liquid_il/vm.rb", output_mode:
+        "content")
+  ⎿  Found 43 lines (ctrl+o to expand)
+
+⏺ Read(lib/liquid_il/vm.rb)
+  ⎿  Read 25 lines
+
+⏺ Let me check how spans are passed to the VM and what they contain:
+
+⏺ Bash(bundle exec ruby -r ./lib/liquid_il -e "
+      template = '{{ \"1. toto\" | replace: \"t\", \"\0\" }}…)
+  ⎿  Instructions and spans:                 
+       0: line 1 | [:CONST_STRING, "1. toto"]
+       1: line 1 | [:CONST_STRING, "t"]
+     … +78 lines (ctrl+o to expand)
+
+⏺ The spans are correct. Line 3 maps to instruction 15. Let me check how VM.execute receives these:
+
+⏺ Read(lib/liquid_il.rb)
+  ⎿  Read 15 lines
+
+⏺ The issue is that VM.execute is not being passed the spans and source. Let me fix this:
+
+⏺ Update(lib/liquid_il.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+       99        scope = Scope.new(assigns, registers:                   
+           @context&.registers&.dup || {}, strict_errors:                
+           @context&.strict_errors || false)                             
+      100        scope.file_system = @context&.file_system               
+      101        begin                                                   
+      102 -        VM.execute(@instructions, scope)                      
+      102 +        VM.execute(@instructions, scope                       
+          +, spans: @spans, source: @source)                             
+      103        rescue LiquidIL::RuntimeError => e                      
+      104          output = e.partial_output || ""                       
+      105          location = e.file ? "#{e.file} line #{e.line}" :      
+           "line #{e.line}"                                              
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_parity_on_other_gsub"
+      2>&1 | tail -25)
+  ⎿ Source locally installed gems is ignoring #<Bundler::StubSpecification 
+    name=strscan version=3.1.6 platform=ruby> because it is missing extensi
+    ons
+    … +20 lines (ctrl+o to expand)
+
+
+⏺ Let me run the full test suite:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb 2>&1 | tail -30)
+  ⎿ /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/b
+    undler/gems/liquid-spec-3e198d9fa649/specs/shopify_production_recording
+    s/recorded_specs.yml:22954
+    … +24 lines (ctrl+o to expand)
+
+
+
+⏺ Excellent! 4416 passed, 3 failed. Let me check the remaining failures:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_render_recursive" 2>&1)
+  ⎿  Error: Exit code 1
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.6 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.7 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=prism version=1.7.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=liquid-c version=4.2.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=json version=2.18.0 platform=ruby> because it is missing extensions
+     Features: core, runtime_drops
+
+     Liquid Ruby ............................ 1/1 passed
+     Shopify Production Recordings .......... 0/1 passed, 1 failed, 0 errors
+     … +417 lines (ctrl+o to see all)
+
+⏺ The outputs look nearly identical. Let me compare the line counts:
+
+⏺ Bash(grep -A10 "test_render_recursive"
+      ~/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundler/gems/l
+      iquid-spec-3e198d9fa649/specs/shopify_production_rec…)
+  ⎿  - name: RecordedTest#test_render_recursive_04615750a
+       expected: |2+
+     … +20 lines (ctrl+o to expand)
+
+⏺ Bash(grep -A5 "filesystem:"
+      ~/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundler/gems/l
+      iquid-spec-3e198d9fa649/specs/shopify_production_recordings/rec…)
+  ⎿  - name: RecordedTest#test_render_recursive_04615750a
+       expected: |2+
+     … +3 lines (ctrl+o to expand)
+
+⏺ Bash(ruby -r yaml -e "
+      yaml = File.read(File.expand_path('~/.local/share/mise/installs/ruby/4.0.0
+      /lib/ruby/gems/4.0.0/bundler/gems/liquid-spec-3e198d9fa649/specs/sho…)
+  ⎿  test_render_recursive_04615750a
+       expected: |2+
+
+⏺ Bash(grep -A220 "test_render_recursive_04615750a"
+      ~/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundler/gems/l
+      iquid-spec-3e198d9fa649/specs/shopify_pro…)
+  ⎿    template: "{% assign depth = 0 %}{%- render 'snippets/foo' -%}\n"
+       environment: {}
+       filesystem:
+     … +17 lines (ctrl+o to expand)
+
+⏺ Bash(bundle exec liquid-spec eval adapter.rb -j '
+      template: |…)
+  ⎿ Source locally installed gems is ignoring #<Bundler::StubSpecification 
+    name=strscan version=3.1.6 platform=ruby> because it is missing extensi
+    ons
+    … +78 lines (ctrl+o to expand)
+
+
+⏺ Bash(cat > /tmp/test_recursive.yml << 'EOF'
+      template: |…)
+  ⎿  Running in the background (↓ to manage)
+
+⏺ Bash(cat /tmp/claude/-Users-tobi-src-tries-2026-01-05-liquid-il/tasks/b228335.
+      output 2>&1 | head -120)
+  ⎿  (No content)
+
+⏺ Task Output b228335
+  ⎿  (No content)
+
+⏺ Kill Shell(Kill shell: b228335)
+  ⎿  Shell b228335 killed
+
+⏺ Let me count the differences more carefully:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_render_recursive" 2>&1 |
+      grep -c "^$" | head -5)
+  ⎿  5
+
+⏺ Let me skip the recursive test for now and look at the snippet syntax error tests - they seem more impactful:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_snippet_syntax_error"
+      2>&1)
+  ⎿  Error: Exit code 1
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.6 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.7 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=prism version=1.7.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=liquid-c version=4.2.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=json version=2.18.0 platform=ruby> because it is missing extensions
+     Features: core, runtime_drops
+
+     Shopify Production Recordings .......... 0/2 passed, 2 failed, 0 errors
+     Liquid Ruby (Lax Mode) ................. skipped (needs lax_parsing)
+     … +20 lines (ctrl+o to see all)
+
+⏺ Bash(grep -A10 "test_snippet_syntax_error_is_rescued"
+      ~/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundler/gems/l
+      iquid-spec-3e198d9fa649/specs/shopify…)
+  ⎿ - name: RecordedTest#test_snippet_syntax_error_is_rescued_by_include_ta
+    g_0e58a5140
+      expected: 'Liquid syntax error (snippet line 3): Variable ''{{'' was
+    … +16 lines (ctrl+o to expand)
+
+
+⏺ I see the snippet has an unterminated {{ on line 3. Let me check how we handle syntax errors in partials:
+
+⏺ Search(pattern: "render_partial", path: "lib/liquid_il/vm.rb", output_mode:
+        "content")
+  ⎿  Found 217 lines (ctrl+o to expand)
+
+⏺ I see the issue. When parsing a partial fails, we output a generic error with line 1. Let me check if the SyntaxError has line info:
+
+⏺ Search(pattern: "class SyntaxError", path: "lib/liquid_il", output_mode:
+        "content")
+  ⎿  Found 0 lines 
+
+⏺ Search(pattern: "SyntaxError"", path: "lib/liquid_il", output_mode: "content")
+  ⎿  Found 0 lines 
+
+⏺ Search(pattern: "raise.*SyntaxError"", path: "lib/liquid_il", output_mode:
+        "content")
+  ⎿  Found 0 lines 
+
+⏺ Search(pattern: "raise.*Error"", path: "lib/liquid_il/lexer.rb", output_mode:
+        "content")
+  ⎿  Found 0 lines 
+
+⏺ Bash(bundle exec ruby -r ./lib/liquid_il -e "
+      begin…)
+  ⎿ Error class: LiquidIL::SyntaxError                                     
+    Message: Unterminated variable at position 6
+    Methods: [:detailed_message, :full_message, :backtrace, :backtrace_loca
+    … +57 lines (ctrl+o to expand)
+
+
+⏺ The error doesn't have line info, and the message format is different. Let me:
+  1. Add line tracking to SyntaxError
+  2. Format it as "Liquid syntax error"
+
+⏺ Read(lib/liquid_il.rb)
+  ⎿  Read 15 lines
+
+⏺ Update(lib/liquid_il.rb)
+  ⎿  Added 13 lines, removed 1 line                                      
+      13                                                                 
+      14  module LiquidIL                                                
+      15    class Error < StandardError; end                             
+      16 -  class SyntaxError < Error; end                               
+      16 +  class SyntaxError < Error                                    
+      17 +    attr_accessor :position, :source                           
+      18 +    def initialize(message, position: nil, source: nil)        
+      19 +      super(message)                                           
+      20 +      @position = position                                     
+      21 +      @source = source                                         
+      22 +    end                                                        
+      23 +                                                               
+      24 +    def line                                                   
+      25 +      return 1 unless @position && @source                     
+      26 +      @source[0, @position].count("\n") + 1                    
+      27 +    end                                                        
+      28 +  end                                                          
+      29    class RuntimeError < Error                                   
+      30      attr_accessor :file, :line, :partial_output                
+      31      def initialize(message, file: nil, line: 1,                
+          partial_output: nil)                                           
+
+⏺ Now update the lexer to pass position and source when raising SyntaxError:
+
+⏺ Search(pattern: "raise SyntaxError", path: "lib/liquid_il", output_mode:
+        "content")
+  ⎿  Found 17 lines (ctrl+o to expand)
+
+⏺ Let me focus on the lexer's unterminated variable/tag error at line 167:
+
+⏺ Read(lib/liquid_il/lexer.rb)
+  ⎿  Read 20 lines
+
+⏺ Read(lib/liquid_il/lexer.rb)
+  ⎿  Read 50 lines
+
+⏺ Let me update render_partial_once to handle syntax errors properly - extracting position and computing line:
+
+⏺ Read(lib/liquid_il/vm.rb)
+  ⎿  Read 25 lines
+
+⏺ Update(lib/liquid_il/vm.rb)
+  ⎿  Added 11 lines, removed 2 lines                                     
+      1311                                                               
+      1312        template = begin                                       
+      1313                     Template.parse(source)                    
+      1314 +                 rescue LiquidIL::SyntaxError => e           
+      1315 +                   # Syntax errors: compute line number from 
+           + position                                                    
+      1316 +                   line = if e.message =~ /at position       
+           +(\d+)/                                                       
+      1317 +                            pos = $1.to_i                    
+      1318 +                            source[0, pos].count("\n") + 1   
+      1319 +                          else                               
+      1320 +                            1                                
+      1321 +                          end                                
+      1322 +                   write_output("Liquid syntax error         
+           +(#{name} line #{line}): #{e.message}")                       
+      1323 +                   return                                    
+      1324                   rescue LiquidIL::Error => e                 
+      1325 -                   location = name # Syntax errors in        
+           -snippets should show snippet name                            
+      1326 -                   write_output("Liquid error (#{location}   
+           -line 1): #{e.message}")                                      
+      1325 +                   write_output("Liquid error (#{name} line  
+           +1): #{e.message}")                                           
+      1326                     return                                    
+      1327                   end                                         
+      1328                                                               
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_snippet_syntax_error"
+      2>&1 | tail -25)
+  ⎿ Source locally installed gems is ignoring #<Bundler::StubSpecification 
+    name=json version=2.18.0 platform=ruby> because it is missing extension
+    s
+    … +35 lines (ctrl+o to expand)
+
+
+⏺ The line number and error type are now correct. The only remaining difference is the message format. Let me run the full suite:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb 2>&1 | tail -15)
+  ⎿ 2) RecordedTest#test_snippet_syntax_error_is_rescued_by_include_tag_0e5
+    8a5140
+       Template:   "{% include 'snippet' %}foo"
+    … +21 lines (ctrl+o to expand)
+
+
+⏺ Let me update the lexer's error message to match Liquid's format:
+
+⏺ Update(lib/liquid_il/lexer.rb)
+  ⎿  Added 6 lines, removed 1 line                                       
+      164                                                                
+      165          [type, content.strip, trim_left, trim_right,          
+           start_pos, end_pos]                                           
+      166        else                                                    
+      167 -        raise SyntaxError, "Unterminated #{type == VAR ?      
+          -'variable' : 'tag'} at position #{start_pos}"                 
+      167 +        # Format message to match Liquid's error format       
+      168 +        if type == VAR                                        
+      169 +          raise SyntaxError, "Variable '{{' was not properly  
+          +terminated with regexp: /\\}\\}/"                             
+      170 +        else                                                  
+      171 +          raise SyntaxError, "Tag '{%' was not properly       
+          +terminated with regexp: /%\\}/"                               
+      172 +        end                                                   
+      173        end                                                     
+      174      end                                                       
+      175    end                                                         
+
+⏺ But now we lost position info. Let me append it to maintain backward compatibility:
+
+⏺ Update(lib/liquid_il/lexer.rb)
+  ⎿  Added 4 lines, removed 2 lines                                      
+      165          [type, content.strip, trim_left, trim_right,          
+           start_pos, end_pos]                                           
+      166        else                                                    
+      167          # Format message to match Liquid's error format       
+      168 +        # Note: Don't include position in message for Liquid  
+          +compatibility                                                 
+      169          if type == VAR                                        
+      170 -          raise SyntaxError,                                  
+          -"Variable '{{' was not properly terminated with regexp:       
+          -/\\}\\}/"                                                     
+      170 +          err = SyntaxError.new(                              
+          +"Variable '{{' was not properly terminated with regexp:       
+          +/\\}\\}/", position: start_pos, source: @source)              
+      171          else                                                  
+      172 -          raise SyntaxError,                                  
+          -"Tag '{%' was not properly terminated with regexp: /%\\}/"    
+      172 +          err = SyntaxError.new(                              
+          +"Tag '{%' was not properly terminated with regexp: /%\\}/"    
+          +, position: start_pos, source: @source)                       
+      173          end                                                   
+      174 +        raise err                                             
+      175        end                                                     
+      176      end                                                       
+      177    end                                                         
+
+⏺ Now update the error handler to use the line method from SyntaxError:
+
+⏺ Update(lib/liquid_il/vm.rb)
+  ⎿  Added 5 lines, removed 2 lines                                      
+      1312        template = begin                                       
+      1313                     Template.parse(source)                    
+      1314                   rescue LiquidIL::SyntaxError => e           
+      1315 -                   # Syntax errors: compute line number from 
+           - position                                                    
+      1316 -                   line = if e.message =~ /at position       
+           -(\d+)/                                                       
+      1315 +                   # Use line from exception if available    
+           +(computed from position/source)                              
+      1316 +                   # Otherwise try to extract position from  
+           +message for backward compatibility                           
+      1317 +                   line = if e.respond_to?(:line) &&         
+           +e.position                                                   
+      1318 +                            e.line                           
+      1319 +                          elsif e.message =~ /at position    
+           +(\d+)/                                                       
+      1320                              pos = $1.to_i                    
+      1321                              source[0, pos].count("\n") + 1   
+      1322                            else                               
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n "test_snippet_syntax_error"
+      2>&1 | tail -20)
+  ⎿ Source locally installed gems is ignoring #<Bundler::StubSpecification 
+    name=strscan version=3.1.6 platform=ruby> because it is missing extensi
+    ons
+    … +20 lines (ctrl+o to expand)
+
+
+⏺ Excellent! Let me run the full suite:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb 2>&1 | tail -20)
+  ⎿ Total: 4418 passed, 1 failed, 0 errors. Max complexity reached: 500/100
+    0
+
+
+⏺ 4418 passed with only 1 failure! Let me see what's left:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb 2>&1 | grep -A10 "^1)")
+  ⎿  1) RecordedTest#test_render_recursive_04615750a                  
+        Template:
+                   {% assign depth = 0 %}{%- render 'snippets/foo' -%}
+     … +3 lines (ctrl+o to expand)
+
+⏺ Let me understand the recursive template behavior:
+
+⏺ Bash(bundle exec ruby -r liquid -e "
+      tpl = Liquid::Template.parse('{{x}}{% assign x = x | plus: 1 %}')…)
+  ⎿ ""                                                                     
+    /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/g
+    ems/bundler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already ini
+    … +54 lines (ctrl+o to expand)
+
+
+
+⏺ Let me look at the exact snippet content:
+
+⏺ Bash(grep -A15 "test_render_recursive_04615750a"
+      ~/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundler/gems/l
+      iquid-spec-3e198d9fa649/specs/shopify_prod…)
+  ⎿  - name: RecordedTest#test_render_recursive_04615750a
+       expected: |2+
+
+⏺ Bash(cat ~/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundler/g
+      ems/liquid-spec-3e198d9fa649/specs/shopify_production_recordings/recorded_
+      specs.yml 2>/…)
+  ⎿    template: "{% assign depth = 0 %}{%- render 'snippets/foo' -%}\n"
+       environment: {}
+       filesystem:
+     … +7 lines (ctrl+o to expand)
+
+⏺ This recursive test is complex. Let me see the exact difference by comparing output:
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n
+      "test_render_recursive_04615750a" 2>&1 | grep -E "Expected:|Got:" -A210 |
+      head -230)
+  ⎿     Expected:                   
+     … +200 lines (ctrl+o to expand)
+
+⏺ Bash(bundle exec liquid-spec run adapter.rb -n
+      "test_render_recursive_04615750a" 2>&1 | grep "Got:" -A210 | head -210)
+  ⎿     Got:                        
+     … +201 lines (ctrl+o to expand)
+
+⏺ Bash(cat > /tmp/compare_recursive.rb << 'EOF'
+      require_relative 'lib/liquid_il'…)
+  ⎿  Error: Exit code 1
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already initialized 
+     constant Gem::Platform::JAVA
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:279: warning: previous definition of JAVA was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:295: warning: already initialized 
+     constant Gem::Platform::MSWIN
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:280: warning: previous definition of MSWIN was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:296: warning: already initialized 
+     constant Gem::Platform::MSWIN64
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:281: warning: previous definition of MSWIN64 was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:297: warning: already initialized 
+     constant Gem::Platform::MINGW
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:282: warning: previous definition of MINGW was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:298: warning: already initialized 
+     constant Gem::Platform::X64_MINGW
+
+
+
+
+
+     … +14 lines (ctrl+o to see all)
+
+⏺ Bash(cat > /tmp/compare_recursive.rb << 'EOF'
+      $LOAD_PATH.unshift(File.dirname(__FILE__))…)
+  ⎿ /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/g
+    ems/bundler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already ini
+    tialized constant Gem::Platform::JAVA
+    … +58 lines (ctrl+o to expand)
+
+
+
+⏺ Our output has 100 newlines before and 99 after, which matches what the test shows. Let me compare more carefully:
+
+⏺ Bash(cat > /tmp/compare_recursive.rb << 'EOF'
+      require 'yaml'…)
+  ⎿ /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/g
+    ems/bundler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already ini
+    tialized constant Gem::Platform::JAVA
+    … +262 lines (ctrl+o to expand)
+
+
+
+⏺ Bash(cat > /tmp/compare_recursive.rb << 'EOF'
+      $LOAD_PATH.unshift(File.dirname(__FILE__))…)
+  ⎿ /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/g
+    ems/bundler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already ini
+    tialized constant Gem::Platform::JAVA
+    … +65 lines (ctrl+o to expand)
+
+
+
+⏺ Bash(cat > /tmp/compare_recursive.rb << 'EOF'
+      $LOAD_PATH.unshift(File.dirname(__FILE__))…)
+  ⎿ /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/g
+    ems/bundler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already ini
+    tialized constant Gem::Platform::JAVA
+    … +59 lines (ctrl+o to expand)
+
+
+
+⏺ Let me check the actual YAML expected value more carefully. The issue might be at the very end:
+
+⏺ Bash(cat > /tmp/compare_recursive.rb << 'EOF'
+      require 'yaml'…)
+  ⎿ /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/g
+    ems/bundler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already ini
+    tialized constant Gem::Platform::JAVA
+    … +73 lines (ctrl+o to expand)
+
+
+
+⏺ I found it. The expected has 100 empty lines before error AND 100 after. But we have 100 before and 99 after. Let me trace why we lose one newline after the error:
+
+⏺ Bash(cat > /tmp/trace_recursive.rb << 'EOF'
+      $LOAD_PATH.unshift(File.dirname(__FILE__))…)
+  ⎿  Interrupted · What should Claude do instead?
+
+
+

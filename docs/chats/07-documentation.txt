@@ -1,0 +1,1044 @@
+
+ * ▐▛███▜▌ *   Claude Code v2.0.76
+* ▝▜█████▛▘ *  Opus 4.5 · API Usage Billing
+ *  ▘▘ ▝▝  *   ~/src/tries/2026-01-05-liquid-il
+
+  Welcome to Opus 4.5
+
+> fix alignment in pretty printed IL
+
+     FIND_VAR            "x"  # → x                                 [0]
+     FIND_VAR            "y"  # → y                                 [1]
+     CALL_FILTER         "plus", 1  # 1 args                                
+ [2]
+     WRITE_VALUE           # pop → output                                 
+[3]
+     CONST_STRING        "\\t"                                 [4]
+     WRITE_VALUE           # pop → output                                 
+[5]
+     CONST_TRUE            # → true                                 [6]
+     IS_TRUTHY             # pop → bool                                 [7]
+     JUMP_IF_FALSE       L0  # pop, jump if falsy
+
+also jump labels should have a L0: behind htem. and line numbers should come
+ first? 
+
+⏺ Read(lib/liquid_il/pretty_printer.rb)
+  ⎿  Read 264 lines
+
+⏺ I can see the issues. Let me fix the alignment:
+
+  1. Line numbers should come first
+  2. Labels should have L0: format
+  3. Better column alignment for comments
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 9 lines, removed 6 lines                                      
+      158                                                                
+      159      def format_label(id, idx)                                 
+      160        name = @label_names[id] || "L?"                         
+      161 -      "#{c(:label)}#{name.ljust(4)}#{c(:reset)}#{dim_idx(idx)}
+          -"                                                             
+      161 +      "#{idx_prefix(idx)}  #{c(:label)}#{name}:#{c(:reset)}"  
+      162      end                                                       
+      163                                                                
+      164      def format_simple(opcode, args, idx, comment: nil)        
+      165 -      line = "     #{c(:opcode)}#{opcode.ljust(20             
+          -)}#{c(:reset)}"                                               
+      166 -      line += args.join(", ") unless args.empty?              
+      165 +      line = "#{idx_prefix(idx)}                              
+          +     #{c(:opcode)}#{opcode.ljust(18)}#{c(:reset)}"            
+      166 +      args_str = args.join(", ")                              
+      167 +      line += args_str.ljust(20) unless args.empty?           
+      168 +      line += " " * 20 if args.empty?                         
+      169        line += "  #{c(:comment)}# #{comment}#{c(:reset)}" if   
+           comment                                                       
+      170 -      line + dim_idx(idx)                                     
+      170 +      line                                                    
+      171      end                                                       
+      172                                                                
+      173      def format_jump(opcode, target, idx, comment: nil)        
+     ...
+      186          end                                                   
+      187        end                                                     
+      188                                                                
+      189 -      line = "     #{c(:                                      
+          -opcode)}#{opcode.ljust(20)}#{c(:reset)}#{c(:                  
+          -label)}#{target_name}#{c(:reset)}"                            
+      189 +      args_str = "#{c(:label)}#{target_name}#{c(:reset)}"     
+      190 +      line = "#{idx_prefix(idx)}     #{c(:opcode)}#{opcode.lj 
+          +ust(18)}#{c(:reset)}#{args_str.ljust(20)}"                    
+      191        line += "  #{c(:comment)}# #{comment}#{c(:reset)}" if   
+           comment                                                       
+      192 -      line + dim_idx(idx)                                     
+      192 +      line                                                    
+      193      end                                                       
+      194                                                                
+      195      def format_for_next(args, idx)                            
+
+⏺ Now I need to replace dim_idx with idx_prefix:
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 2 lines, removed 2 lines                                      
+      232        "#{c(:number)}#{n}#{c(:reset)}"                         
+      233      end                                                       
+      234                                                                
+      235 -    def dim_idx(idx)                                          
+      236 -      "#{c(:comment)}".rjust(40 - idx.to_s.length) + " [#{idx 
+          -}]#{c(:reset)}"                                               
+      235 +    def idx_prefix(idx)                                       
+      236 +      "#{c(:comment)}[#{idx.to_s.rjust(3)}]#{c(:reset)}"      
+      237      end                                                       
+      238                                                                
+      239      def op_symbol(op)                                         
+
+⏺ Now update format_for_next to use the new format:
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 4 lines, removed 1 line                                       
+      199        brk = args[1]                                           
+      200        cont_name = find_label_at(cont)                         
+      201        brk_name = find_label_at(brk)                           
+      202 -      format_simple("FOR_NEXT", [                             
+          -"#{c(:label)}#{cont_name}#{c(:reset)}", "                     
+          -#{c(:label)}#{brk_name}#{c(:reset)}"                          
+          -], idx, comment: "continue, break")                           
+      202 +      args_str = "#{c(:label)}#{cont_name}#{c(:reset)},       
+          +#{c(:label)}#{brk_name}#{c(:reset)}"                          
+      203 +      line = "#{idx_prefix(idx)}     #{c(:opcode)}#{"FOR_NEXT 
+          +".ljust(18)}#{c(:reset)}#{args_str.ljust(20)}"                
+      204 +      line += "  #{c(:comment)}# continue, break#{c(:reset)}" 
+      205 +      line                                                    
+      206      end                                                       
+      207                                                                
+      208      def find_label_at(target)                                 
+
+⏺ Let me test the output:
+
+⏺ Bash(bundle exec liquid-spec eval adapter.rb -l "{{ x | plus: y }}\t{% if true
+       %}yes{% endif %}")
+  ⎿  Error: Exit code 1
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=strscan version=3.1.6 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=prism version=1.7.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=liquid-c version=4.2.0 platform=ruby> because it is missing extensions
+     Source locally installed gems is ignoring #<Bundler::StubSpecification 
+     name=json version=2.18.0 platform=ruby> because it is missing extensions
+     bundler: failed to load command: liquid-spec (/Users/tobi/.local/share/mise/
+     installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bin/liquid-spec)
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/bundle
+     r/gems/liquid-spec-c1cc7139f9b5/lib/liquid/spec/cli/eval.rb:445:in 
+     'Liquid::Spec::CLI::Eval.load_spec_from_string': undefined method '[]' for 
+     nil (NoMethodError)
+
+                 options[:liquid] = spec["template"] || spec[:template]
+                                        ^^^^^^^^^^^^
+     … +23 lines (ctrl+o to see all)
+
+⏺ Let me write a quick test script instead:
+
+⏺ Bash(bundle exec ruby -r./lib/liquid_il -e '
+      t = LiquidIL::Template.new("{{ x | plus: y }}\t{% if true %}yes{% endif
+      %}")…)
+  ⎿  Error: Exit code 1
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already initialized 
+     constant Gem::Platform::JAVA
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:279: warning: previous definition of JAVA was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:295: warning: already initialized 
+     constant Gem::Platform::MSWIN
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:280: warning: previous definition of MSWIN was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:296: warning: already initialized 
+     constant Gem::Platform::MSWIN64
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:281: warning: previous definition of MSWIN64 was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:297: warning: already initialized 
+     constant Gem::Platform::MINGW
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/4.0.0/rubygems/pl
+     atform.rb:282: warning: previous definition of MINGW was here
+     /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/gems/b
+     undler-2.6.2/lib/bundler/rubygems_ext.rb:298: warning: already initialized 
+     constant Gem::Platform::X64_MINGW
+
+
+
+
+
+     … +18 lines (ctrl+o to see all)
+
+⏺ Bash(bundle exec ruby -r./lib/liquid_il -e '
+      t = LiquidIL.compile("{{ x | plus: y }}\t{% if true %}yes{% endif %}")…)
+  ⎿  Error: Exit code 1
+
+⏺ Read(lib/liquid_il.rb)
+  ⎿  Read 100 lines
+
+⏺ Bash(bundle exec ruby -r./lib/liquid_il -e '
+      t = LiquidIL::Template.parse("{{ x | plus: y }}\t{% if true %}yes{% endif
+      %}")…)
+  ⎿  Running in the background (↓ to manage)
+
+⏺ Task Output b312513
+  ⎿  (No content)
+
+⏺ Kill Shell(Kill shell: b312513)
+  ⎿  Shell b312513 killed
+
+⏺ Read(adapter.rb)
+  ⎿  Read 53 lines
+
+⏺ Let me check for LiquidIL.parse:
+
+⏺ Search(pattern: "def self\.parse|def parse", path: "lib", output_mode:
+        "content")
+  ⎿  Found 42 lines (ctrl+o to expand)
+
+⏺ Read(lib/liquid_il.rb)
+  ⎿  Read 22 lines
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿ /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/g
+    ems/bundler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already ini
+    tialized constant Gem::Platform::JAVA
+    … +50 lines (ctrl+o to expand)
+
+
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿ /Users/tobi/.local/share/mise/installs/ruby/4.0.0/lib/ruby/gems/4.0.0/g
+    ems/bundler-2.6.2/lib/bundler/rubygems_ext.rb:294: warning: already ini
+    tialized constant Gem::Platform::JAVA
+    … +53 lines (ctrl+o to expand)
+
+
+
+⏺ That looks much better! Let me test with a more complex template:
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿  [  0]     FIND_VAR          "x"                   # → x   
+     [  1]     FIND_VAR          "y"                   # → y
+     [  2]     CALL_FILTER       "plus", 1             # 1 args
+     … +8 lines (ctrl+o to expand)
+
+⏺ Let me also test with a for loop:
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿  parse_block_body: START            
+     parse_block_body: iter=1, type=:TAG
+     parse_block_body: START
+     … +31 lines (ctrl+o to expand)
+
+⏺ Let me test with colors to make sure alignment still works:
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿    -> parse_variable_output    
+       -> parse_raw
+     parse_raw: content="yes"
+     … +13 lines (ctrl+o to expand)
+
+⏺ I see the color codes are affecting alignment. Let me fix that by calculating visible width:
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      164      def format_simple(opcode, args, idx, comment: nil)        
+      165        line = "#{idx_prefix(idx)}                              
+           #{c(:opcode)}#{opcode.ljust(18)}#{c(:reset)}"                 
+      166        args_str = args.join(", ")                              
+      167 -      line += args_str.ljust(20) unless args.empty?           
+      167 +      line += ljust_visible(args_str, 20) unless args.empty?  
+      168        line += " " * 20 if args.empty?                         
+      169        line += "  #{c(:comment)}# #{comment}#{c(:reset)}" if   
+           comment                                                       
+      170        line                                                    
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      189        end                                                     
+      190                                                                
+      191        args_str = "#{c(:label)}#{target_name}#{c(:reset)}"     
+      192 -      line = "#{idx_prefix(idx)}                              
+          -#{c(:opcode)}#{opcode.ljust(18)}#{c(:reset)}#{args_str.ljust( 
+          -20)}"                                                         
+      192 +      line = "#{idx_prefix(idx)}                              
+          +#{c(:opcode)}#{opcode.ljust(18)}#{c(:reset)}#{ljust_visible(  
+          +args_str, 20)}"                                               
+      193        line += "  #{c(:comment)}# #{comment}#{c(:reset)}" if   
+           comment                                                       
+      194        line                                                    
+      195      end                                                       
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      200        cont_name = find_label_at(cont)                         
+      201        brk_name = find_label_at(brk)                           
+      202        args_str = "#{c(:label)}#{cont_name}#{c(:reset)},       
+           #{c(:label)}#{brk_name}#{c(:reset)}"                          
+      203 -      line = "#{idx_prefix(idx)}                              
+          -#{c(:opcode)}#{"FOR_NEXT".ljust(18)}#{c(:reset)}#{            
+          -args_str.ljust(20)}"                                          
+      203 +      line = "#{idx_prefix(idx)}                              
+          +#{c(:opcode)}#{"FOR_NEXT".ljust(18)}#{c(:reset)}#{            
+          +ljust_visible(args_str, 20)}"                                 
+      204        line += "  #{c(:comment)}# continue, break#{c(:reset)}" 
+      205        line                                                    
+      206      end                                                       
+
+⏺ Now add the ljust_visible helper:
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 6 lines                                                       
+      239        "#{c(:comment)}[#{idx.to_s.rjust(3)}]#{c(:reset)}"      
+      240      end                                                       
+      241                                                                
+      242 +    # Left-justify accounting for ANSI codes (which don't     
+          +take visual space)                                            
+      243 +    def ljust_visible(str, width)                             
+      244 +      visible_len = str.gsub(/\e\[[0-9;]*m/, "").length       
+      245 +      str + " " * [width - visible_len, 0].max                
+      246 +    end                                                       
+      247 +                                                              
+      248      def op_symbol(op)                                         
+      249        case op                                                 
+      250        when :eq then "=="                                      
+
+⏺ Now let me test again:
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿  [  0]     FIND_VAR          "x"                   # → x   
+     [  1]     FIND_VAR          "y"                   # → y
+     [  2]     CALL_FILTER       "plus", 1             # 1 args
+     … +8 lines (ctrl+o to expand)
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿  Error: Exit code 1
+     cat: illegal option -- A
+     usage: cat [-belnstuv] [file ...]
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿  (No content)
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿  parse_raw: token now=[:TAG, "endif", false, false]
+       <- parse_raw AFTER: false
+     parse_block_body: iter=2, type=:TAG
+     … +12 lines (ctrl+o to expand)
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿ [  0]     CONST_INT         1                     # → 1                
+    [  1]     CONST_INT         3                     # → 3
+    [  2]     NEW_RANGE                               # pop end, start → ra
+    … +24 lines (ctrl+o to expand)
+
+
+⏺ The alignment is now fixed. The user is asking for another feature - showing the original template code in comments.
+                                                                           
+⏺ User answered Claude's questions:
+  ⎿  · How should I track source locations to show the original template 
+     code in comments? → Store source spans in IL instructions
+
+⏺ I'll implement source span tracking. Let me first look at how instructions are currently structured:
+
+⏺ Read(lib/liquid_il/il.rb)
+  ⎿  Read 350 lines
+
+⏺ Let me look at the Parser to understand how positions are tracked:
+
+⏺ Read(lib/liquid_il/parser.rb)
+  ⎿  Read 100 lines
+
+⏺ Read(lib/liquid_il/lexer.rb)
+  ⎿  Read 100 lines
+
+⏺ Read(lib/liquid_il/lexer.rb)
+  ⎿  Read 80 lines
+
+⏺ Let me take a simpler approach - modify the lexer to include positions, then track them through:
+
+⏺ Update(lib/liquid_il/lexer.rb)
+  ⎿  Added 2 lines, removed 2 lines                                      
+      31        @trim_next = false                                       
+      32      end                                                        
+      33                                                                 
+      34 -    # Returns [type, content, trim_left, trim_right]           
+      34 +    # Returns [type, content, trim_left, trim_right            
+         +, start_pos, end_pos]                                          
+      35      # Uses lazy extraction - only extracts content when needed 
+      36      def next_token                                             
+      37 -      return [EOF, nil, false, false] if @scanner.eos?         
+      37 +      return [EOF, nil, false, false                           
+         +, @scanner.pos, @scanner.pos] if @scanner.eos?                 
+      38                                                                 
+      39        # Try to find next delimiter                             
+      40        if @scanner.check(NEXT_DELIM)                            
+
+⏺ Update(lib/liquid_il/lexer.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      81          @trim_next = false                                     
+      82        end                                                      
+      83                                                                 
+      84 -      [RAW, content, false, false]                             
+      84 +      [RAW, content, false, false, start_pos, end_pos]         
+      85      end                                                        
+      86                                                                 
+      87      def scan_liquid_token                                      
+
+⏺ Update(lib/liquid_il/lexer.rb)
+  ⎿  Added 2 lines, removed 1 line                                       
+      114          match = @scanner.matched                              
+      115          content_end = @scanner.pos - match.length             
+      116          content = @source.byteslice(content_start,            
+           content_end - content_start)                                  
+      117 +        end_pos = @scanner.pos                                
+      118                                                                
+      119          # Determine trim_right                                
+      120          trim_right = match.start_with?("-")                   
+      121          @trim_next = trim_right                               
+      122                                                                
+      123 -        [type, content.strip, trim_left, trim_right]          
+      123 +        [type, content.strip, trim_left, trim_right           
+          +, start_pos, end_pos]                                         
+      124        else                                                    
+      125          raise SyntaxError, "Unterminated #{type == VAR ?      
+           'variable' : 'tag'} at position #{start_pos}"                 
+      126        end                                                     
+
+⏺ Now update the Parser to access the position fields:
+
+⏺ Update(lib/liquid_il/parser.rb)
+  ⎿  Added 8 lines                                                       
+      50        @current_token[3]                                        
+      51      end                                                        
+      52                                                                 
+      53 +    def current_template_start_pos                             
+      54 +      @current_token[4]                                        
+      55 +    end                                                        
+      56 +                                                               
+      57 +    def current_template_end_pos                               
+      58 +      @current_token[5]                                        
+      59 +    end                                                        
+      60 +                                                               
+      61      def parse_block_body(end_tags)                             
+      62        blank = true                                             
+      63        raw_indices = push_blank_raw_indices                     
+
+⏺ Now update the IL Builder to track spans:
+
+⏺ Update(lib/liquid_il/il.rb)
+  ⎿  Added 16 lines                                                      
+       88                                                                
+       89      # Instruction builder - creates instructions with minimal 
+            allocation                                                   
+       90      class Builder                                             
+       91 +      attr_reader :spans                                      
+       92 +                                                              
+       93        def initialize                                          
+       94          @instructions = []                                    
+       95 +        @spans = []  # Parallel array: [start_pos, end_pos]   
+          +or nil                                                        
+       96          @label_counter = 0                                    
+       97 +        @current_span = nil                                   
+       98        end                                                     
+       99                                                                
+      100        def instructions                                        
+     ...
+      101          @label_counter += 1                                   
+      102        end                                                     
+      103                                                                
+      104 +      # Set span for subsequent emits until cleared           
+      105 +      def with_span(start_pos, end_pos)                       
+      106 +        @current_span = [start_pos, end_pos]                  
+      107 +        self                                                  
+      108 +      end                                                     
+      109 +                                                              
+      110 +      def clear_span                                          
+      111 +        @current_span = nil                                   
+      112 +        self                                                  
+      113 +      end                                                     
+      114 +                                                              
+      115        def emit(opcode, *args)                                 
+      116          if args.empty?                                        
+      117            @instructions << [opcode]                           
+      118          else                                                  
+      119            @instructions << [opcode, *args]                    
+      120          end                                                   
+      121 +        @spans << @current_span                               
+      122          self                                                  
+      123        end                                                     
+      124                                                                
+
+⏺ Update(lib/liquid_il/il.rb)
+  ⎿  Added 1 line                                                        
+      128                                                                
+      129        def emit_label(id)                                      
+      130          @instructions << [LABEL, id]                          
+      131 +        @spans << nil  # Labels don't have source spans       
+      132          self                                                  
+      133        end                                                     
+      134                                                                
+
+⏺ Now update the Parser to set spans when parsing variables:
+
+⏺ Read(lib/liquid_il/parser.rb)
+  ⎿  Read 50 lines
+
+⏺ Update(lib/liquid_il/parser.rb)
+  ⎿  Added 3 lines                                                       
+      106                                                                
+      107      def parse_variable_output                                 
+      108        content = current_template_content                      
+      109 +      @builder.with_span(current_template_start_pos,          
+          +current_template_end_pos)                                     
+      110 +                                                              
+      111        expr_lexer = ExpressionLexer.new(content)               
+      112        expr_lexer.advance                                      
+      113                                                                
+     ...
+      113        parse_filters(expr_lexer)                               
+      114        @builder.write_value                                    
+      115                                                                
+      116 +      @builder.clear_span                                     
+      117        expect_eos(expr_lexer)                                  
+      118        advance_template                                        
+      119        false                                                   
+
+⏺ Update(lib/liquid_il/parser.rb)
+  ⎿  Added 4 lines                                                       
+      123                                                                
+      124      def parse_tag                                             
+      125        content = current_template_content                      
+      126 +      start_pos = current_template_start_pos                  
+      127 +      end_pos = current_template_end_pos                      
+      128        parts = content.split(/\s+/, 2)                         
+      129        tag_name = parts[0]&.downcase                           
+      130        tag_args = parts[1] || ""                               
+      131                                                                
+      132 +      @builder.with_span(start_pos, end_pos)                  
+      133 +                                                              
+      134        case tag_name                                           
+      135        when "if"                                               
+      136          advance_template                                      
+
+⏺ Read(lib/liquid_il/parser.rb)
+  ⎿  Read 80 lines
+
+⏺ Update(lib/liquid_il/parser.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      199          # Unknown tag - skip for now                          
+      200          advance_template                                      
+      201          false                                                 
+      202 -      end                                                     
+      202 +      end.tap { @builder.clear_span }                         
+      203      end                                                       
+      204                                                                
+      205      def emit_raw(content)                                     
+
+⏺ Now update the Template and Compiler to pass spans through:
+
+⏺ Read(lib/liquid_il/compiler.rb)
+  ⎿  Read 64 lines
+
+⏺ Update(lib/liquid_il/compiler.rb)
+  ⎿  Added 5 lines, removed 2 lines                                      
+      13      def compile                                                
+      14        parser = Parser.new(@source)                             
+      15        instructions = parser.parse                              
+      16 +      spans = parser.builder.spans                             
+      17                                                                 
+      18        # Optional optimization passes                           
+      19 -      optimize(instructions) if @options[:optimize]            
+      19 +      if @options[:optimize]                                   
+      20 +        optimize(instructions, spans)                          
+      21 +      end                                                      
+      22                                                                 
+      23 -      instructions                                             
+      23 +      { instructions: instructions, spans: spans }             
+      24      end                                                        
+      25                                                                 
+      26      private                                                    
+
+⏺ Update(lib/liquid_il/compiler.rb)
+  ⎿  Added 7 lines, removed 5 lines                                      
+      25                                                                 
+      26      private                                                    
+      27                                                                 
+      28 -    def optimize(instructions)                                 
+      28 +    def optimize(instructions, spans)                          
+      29        # Optimization pass 1: Merge consecutive WRITE_RAW       
+      30 -      merge_raw_writes(instructions)                           
+      30 +      merge_raw_writes(instructions, spans)                    
+      31                                                                 
+      32        # Optimization pass 2: Remove unreachable code after     
+          unconditional jumps                                            
+      33 -      remove_unreachable(instructions)                         
+      33 +      remove_unreachable(instructions, spans)                  
+      34                                                                 
+      35        instructions                                             
+      36      end                                                        
+      37                                                                 
+      38 -    def merge_raw_writes(instructions)                         
+      38 +    def merge_raw_writes(instructions, spans)                  
+      39        i = 0                                                    
+      40        while i < instructions.length - 1                        
+      41          if instructions[i][0] == IL::WRITE_RAW &&              
+          instructions[i + 1][0] == IL::WRITE_RAW                        
+      42            # Merge the two writes                               
+      43            instructions[i] = [IL::WRITE_RAW, instructions[i][1] 
+           + instructions[i + 1][1]]                                     
+      44            instructions.delete_at(i + 1)                        
+      45 +          spans.delete_at(i + 1)                               
+      46          else                                                   
+      47            i += 1                                               
+      48          end                                                    
+      49        end                                                      
+      50      end                                                        
+      51                                                                 
+      52 -    def remove_unreachable(instructions)                       
+      52 +    def remove_unreachable(instructions, spans)                
+      53        # Remove instructions after unconditional jumps until we 
+           hit a label                                                   
+      54        i = 0                                                    
+      55        while i < instructions.length - 1                        
+     ...
+      57            j = i + 1                                            
+      58            while j < instructions.length && instructions[j][0]  
+          != IL::LABEL                                                   
+      59              instructions.delete_at(j)                          
+      60 +            spans.delete_at(j)                                 
+      61            end                                                  
+      62          end                                                    
+      63          i += 1                                                 
+
+⏺ Now update the Template class and the code that creates templates:
+
+⏺ Update(lib/liquid_il.rb)
+  ⎿  Added 3 lines, removed 2 lines                                      
+      71                                                                 
+      72    # A parsed template ready for rendering                      
+      73    class Template                                               
+      74 -    attr_reader :source, :instructions                         
+      74 +    attr_reader :source, :instructions, :spans                 
+      75                                                                 
+      76 -    def initialize(source, instructions, context = nil)        
+      76 +    def initialize(source, instructions, spans = nil,          
+         +context = nil)                                                 
+      77        @source = source                                         
+      78        @instructions = instructions                             
+      79 +      @spans = spans                                           
+      80        @context = context                                       
+      81      end                                                        
+      82                                                                 
+
+⏺ Update(lib/liquid_il.rb)
+  ⎿  Added 2 lines, removed 1 line                                       
+      42      #   template.render(name: "World")                         
+      43      #                                                          
+      44      def parse(source, **options)                               
+      45 -      Template.new(source,                                     
+         -Compiler.new(source, **options).compile, self)                 
+      45 +      result = Compiler.new(source, **options).compile         
+      46 +      Template.new(source, result[:instructions],              
+         +result[:spans], self)                                          
+      47      end                                                        
+      48                                                                 
+      49      # One-shot render - parse and render in a single call      
+
+⏺ Update(lib/liquid_il.rb)
+  ⎿  Added 2 lines, removed 1 line                                       
+       96      class << self                                             
+       97        # Standalone parse (creates an unbound template)        
+       98        def parse(source, **options)                            
+       99 -        new(source, Compiler.new(source, **options).compile)  
+       99 +        result = Compiler.new(source, **options).compile      
+      100 +        new(source, result[:instructions], result[:spans])    
+      101        end                                                     
+      102      end                                                       
+      103    end                                                         
+
+⏺ Now update the PrettyPrinter:
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 3 lines, removed 1 line                                       
+      12        reset: "\e[0m"                                           
+      13      }.freeze                                                   
+      14                                                                 
+      15 -    def initialize(instructions, color: true)                  
+      15 +    def initialize(instructions, color: true                   
+         +, source: nil, spans: nil)                                     
+      16        @instructions = instructions                             
+      17        @color = color                                           
+      18 +      @source = source                                         
+      19 +      @spans = spans                                           
+      20        @label_names = build_label_names                         
+      21      end                                                        
+      22                                                                 
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 11 lines                                                      
+      247        str + " " * [width - visible_len, 0].max                
+      248      end                                                       
+      249                                                                
+      250 +    # Get source slice for instruction, if available          
+      251 +    def source_slice(idx)                                     
+      252 +      return nil unless @source && @spans && @spans[idx]      
+      253 +      start_pos, end_pos = @spans[idx]                        
+      254 +      slice = @source[start_pos...end_pos]                    
+      255 +      # Clean up for display: collapse whitespace, truncate   
+          +if long                                                       
+      256 +      slice = slice.gsub(/\s+/, " ").strip                    
+      257 +      slice = slice[0, 40] + "..." if slice.length > 43       
+      258 +      slice                                                   
+      259 +    end                                                       
+      260 +                                                              
+      261      def op_symbol(op)                                         
+      262        case op                                                 
+      263        when :eq then "=="                                      
+
+⏺ Now I'll modify the format methods to show source slices. First, let me update format_simple:
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 8 lines, removed 1 line                                       
+      168        args_str = args.join(", ")                              
+      169        line += ljust_visible(args_str, 20) unless args.empty?  
+      170        line += " " * 20 if args.empty?                         
+      171 -      line += "  #{c(:comment)}# #{comment}#{c(:reset)}" if   
+          -comment                                                       
+      171 +      line += format_comment(idx, comment)                    
+      172        line                                                    
+      173      end                                                       
+      174                                                                
+      175 +    def format_comment(idx, extra = nil)                      
+      176 +      slice = source_slice(idx)                               
+      177 +      parts = [slice, extra].compact                          
+      178 +      return "" if parts.empty?                               
+      179 +      "  #{c(:comment)}# #{parts.join("  ")}#{c(:reset)}"     
+      180 +    end                                                       
+      181 +                                                              
+      182      def format_jump(opcode, target, idx, comment: nil)        
+      183        target_name = if target.is_a?(Integer) && target <      
+           @instructions.length                                          
+      184          # Linked - find which label this points to            
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      199                                                                
+      200        args_str = "#{c(:label)}#{target_name}#{c(:reset)}"     
+      201        line = "#{idx_prefix(idx)}     #{c(:opcode)}#{opcode.lj 
+           ust(18)}#{c(:reset)}#{ljust_visible(args_str, 20)}"           
+      202 -      line += "  #{c(:comment)}# #{comment}#{c(:reset)}" if   
+          -comment                                                       
+      202 +      line += format_comment(idx, comment)                    
+      203        line                                                    
+      204      end                                                       
+      205                                                                
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      210        brk_name = find_label_at(brk)                           
+      211        args_str = "#{c(:label)}#{cont_name}#{c(:reset)},       
+           #{c(:label)}#{brk_name}#{c(:reset)}"                          
+      212        line = "#{idx_prefix(idx)}     #{c(:opcode)}#{"FOR_NEXT 
+           ".ljust(18)}#{c(:reset)}#{ljust_visible(args_str, 20)}"       
+      213 -      line += "  #{c(:comment)}# continue, break#{c(:reset)}" 
+      213 +      line += format_comment(idx, "continue, break")          
+      214        line                                                    
+      215      end                                                       
+      216                                                                
+
+⏺ Now update Template#pretty_print to pass source and spans:
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      285    class Template                                              
+      286      # Pretty print the IL instructions                        
+      287      def pretty_print(color: true)                             
+      288 -      PrettyPrinter.new(@instructions, color: color).to_s     
+      288 +      PrettyPrinter.new(@instructions, color: color           
+          +, source: @source, spans: @spans).to_s                        
+      289      end                                                       
+      290                                                                
+      291      def dump_il(io = $stdout, color: true)                    
+
+⏺ Let me test the changes:
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿  [  0]     FIND_VAR          "x"                   # {{ x | plus: y }}
+     → x
+     [  1]     FIND_VAR          "y"                   # {{ x | plus: y }}
+     … +15 lines (ctrl+o to expand)
+
+⏺ The source slices are working. Let me fix one issue - the body content shouldn't inherit the tag's span. Let me look at the if tag parser:
+
+⏺ Read(lib/liquid_il/parser.rb)
+  ⎿  Read 60 lines
+
+⏺ Update(lib/liquid_il/parser.rb)
+  ⎿  Added 1 line                                                        
+      59      end                                                        
+      60                                                                 
+      61      def parse_block_body(end_tags)                             
+      62 +      @builder.clear_span  # Body content shouldn't inherit    
+         +tag's span                                                     
+      63        blank = true                                             
+      64        raw_indices = push_blank_raw_indices                     
+      65        begin                                                    
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿  [  0]     FIND_VAR          "x"                   # {{ x | plus: y }}
+     → x
+     [  1]     FIND_VAR          "y"                   # {{ x | plus: y }}
+     … +15 lines (ctrl+o to expand)
+
+⏺ Let me test with a for loop:
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿  [  0]     CONST_INT         1                     # {% for i in (1..3)
+     %}  → 1
+     [  1]     CONST_INT         3                     # {% for i in (1..3)
+     … +33 lines (ctrl+o to expand)
+
+⏺ Excellent! Let me run a quick test to make sure everything still works:
+
+⏺ Bash(timeout 30 bundle exec liquid-spec run adapter.rb -n "for"     timeout: 
+      2>&1 | head -30)                                                40s
+  ⎿ Source locally installed gems is ignoring #<Bundler::StubSpecification 
+    name=strscan version=3.1.6 platform=ruby> because it is missing extensi
+    ons
+    … +36 lines (ctrl+o to expand)
+
+
+⏺ There are some debug statements in the parser. Let me clean those up:
+
+⏺ Read(lib/liquid_il/parser.rb)
+  ⎿  Read 60 lines
+
+⏺ Update(lib/liquid_il/parser.rb)
+  ⎿  Removed 3 lines                                                     
+      63        blank = true                                             
+      64        raw_indices = push_blank_raw_indices                     
+      65        begin                                                    
+      66 -      $stderr.puts "DEBUG parse_block_body: starting loop"     
+      66        until template_eos?                                      
+      67 -        $stderr.puts "DEBUG parse_block_body:                  
+         -type=#{current_template_type.inspect}"                         
+      67          case current_template_type                             
+      68          when TemplateLexer::RAW                                
+      69 -          $stderr.puts "DEBUG parse_block_body: matched RAW,   
+         -calling parse_raw"                                             
+      69            blank &&= parse_raw                                  
+      70          when TemplateLexer::VAR                                
+      71            trim_previous_raw if current_template_trim_left      
+
+⏺ Update(lib/liquid_il/parser.rb)
+  ⎿  Removed 3 lines                                                     
+      100                                                                
+      101      def parse_raw                                             
+      102        content = current_template_content                      
+      103 -      $stderr.puts "DEBUG parse_raw:                          
+          -content=#{content.inspect}"                                   
+      103        emit_raw(content) unless content.empty?                 
+      104 -      $stderr.puts "DEBUG parse_raw: calling                  
+          -advance_template"                                             
+      104        advance_template                                        
+      105 -      $stderr.puts "DEBUG parse_raw: after advance,           
+          -type=#{current_template_type.inspect}"                        
+      105        content.empty? || content.match?(WHITESPACE_ONLY)       
+      106      end                                                       
+      107                                                                
+
+⏺ Search(pattern: "\$stderr\.puts|puts.*DEBUG|print.*DEBUG", path:
+        "lib/liquid_il/parser.rb", output_mode: "content")
+  ⎿  Found 0 lines 
+
+⏺ Bash(timeout 30 bundle exec liquid-spec run adapter.rb -n "for"     timeout: 
+      2>&1 | tail -20)                                                40s
+  ⎿ Source locally installed gems is ignoring #<Bundler::StubSpecification 
+    name=strscan version=3.1.6 platform=ruby> because it is missing extensi
+    ons
+    … +12 lines (ctrl+o to expand)
+
+
+⏺ Bash(timeout 60 bundle exec liquid-spec run adapter.rb -n "for"   timeout: 1m 
+      2>&1 | tail -50)                                              10s
+  ⎿     Error:    NoMethodError: undefined method 'to_a' for an instance of
+     LoaderDrop
+     … +64 lines (ctrl+o to expand)
+
+⏺ Let me show the final output:
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿  [  0]     FIND_VAR          "x"                   # {{ x | plus: y }}
+     → x
+     [  1]     FIND_VAR          "y"                   # {{ x | plus: y }}
+     … +54 lines (ctrl+o to expand)
+
+⏺ Done! Here's a summary of the changes:
+
+  Alignment Fixes:
+  - Line numbers now come first: [  0] instead of at the end
+  - Labels use L0: format
+  - Consistent column alignment using visible-width-aware padding
+
+  Source Slice Comments:
+  - Added source span tracking to the IL Builder
+  - Modified the lexer to include position info in tokens
+  - Updated the parser to set spans for tags and variable outputs
+  - Pretty printer now shows the original template code in comments
+
+  The output format is now:
+  [  0]     FIND_VAR          "x"                   # {{ x | plus: y }}  → x
+  [  1]     FIND_VAR          "y"                   # {{ x | plus: y }}  → y
+  ...
+  [  4]     CONST_TRUE                              # {% if true %}  → true
+  ...
+  [  7]     WRITE_RAW         "yes"
+  [  8]  L0:
+  [ 10]     FIND_VAR          "i"                   # {{ i }}  → i
+
+> I think you can write teh comment with the code line once before emitting 
+the IL on a dedicated line 
+
+⏺ Good idea - show the source once as a header line instead of repeating it. Let me update the pretty printer:
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 9 lines                                                       
+      22                                                                 
+      23      def to_s                                                   
+      24        lines = []                                               
+      25 +      last_span = :none  # Track when span changes             
+      26        @instructions.each_with_index do |inst, idx|             
+      27 +        # Emit source line when span changes                   
+      28 +        current_span = @spans && @spans[idx]                   
+      29 +        if current_span && current_span != last_span           
+      30 +          slice = source_slice(idx)                            
+      31 +          lines << "#{c(:comment)}     # #{slice}#{c(:reset)}" 
+         + if slice                                                      
+      32 +        end                                                    
+      33 +        last_span = current_span                               
+      34 +                                                               
+      35          lines << format_instruction(inst, idx)                 
+      36        end                                                      
+      37        lines.join("\n")                                         
+
+⏺ Now update format_comment to not include the source slice anymore:
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 2 lines, removed 4 lines                                      
+      182      end                                                       
+      183                                                                
+      184      def format_comment(idx, extra = nil)                      
+      185 -      slice = source_slice(idx)                               
+      186 -      parts = [slice, extra].compact                          
+      187 -      return "" if parts.empty?                               
+      188 -      "  #{c(:comment)}# #{parts.join("  ")}#{c(:reset)}"     
+      185 +      return "" unless extra                                  
+      186 +      "  #{c(:comment)}# #{extra}#{c(:reset)}"                
+      187      end                                                       
+      188                                                                
+      189      def format_jump(opcode, target, idx, comment: nil)        
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿       # {{ x | plus: y }}                               
+     [  0]     FIND_VAR          "x"                   # → x
+     [  1]     FIND_VAR          "y"                   # → y
+     … +10 lines (ctrl+o to expand)
+
+⏺ Much cleaner! Let me test the for loop too:
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿       # {% for i in (1..3) %}                           
+     [  0]     CONST_INT         1                     # → 1
+     [  1]     CONST_INT         3                     # → 3
+     … +27 lines (ctrl+o to expand)
+
+⏺ I see the for tag header appears twice because of the label interrupting the span sequence. Let me fix that:
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 4 lines, removed 4 lines                                      
+      22                                                                 
+      23      def to_s                                                   
+      24        lines = []                                               
+      25 -      last_span = :none  # Track when span changes             
+      25 +      last_source_span = nil  # Track last non-nil span        
+      26        @instructions.each_with_index do |inst, idx|             
+      27 -        # Emit source line when span changes                   
+      27 +        # Emit source line when span changes                   
+         + to a new source location                                      
+      28          current_span = @spans && @spans[idx]                   
+      29 -        if current_span && current_span != last_span           
+      29 +        if current_span && current_span != last_source_span    
+      30            slice = source_slice(idx)                            
+      31            lines << "#{c(:comment)}     # #{slice}#{c(:reset)}" 
+           if slice                                                      
+      32 +          last_source_span = current_span                      
+      33          end                                                    
+      34 -        last_span = current_span                               
+      34                                                                 
+      35          lines << format_instruction(inst, idx)                 
+      36        end                                                      
+
+⏺ Update(lib/liquid_il/pretty_printer.rb)
+  ⎿  Added 1 line, removed 1 line                                        
+      28          current_span = @spans && @spans[idx]                   
+      29          if current_span && current_span != last_source_span    
+      30            slice = source_slice(idx)                            
+      31 -          lines << "#{c(:comment)}                             
+         -# #{slice}#{c(:reset)}" if slice                               
+      31 +          lines << "#{c(:comment)}                             
+         +# #{slice}#{c(:reset)}" if slice                               
+      32            last_source_span = current_span                      
+      33          end                                                    
+      34                                                                 
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿           # {{ x | plus: y }}                           
+     [  0]     FIND_VAR          "x"                   # → x
+     [  1]     FIND_VAR          "y"                   # → y
+     … +10 lines (ctrl+o to expand)
+
+⏺ Bash(timeout 5 bundle exec ruby -e '   timeout: 10s
+      require_relative "lib/liquid_il"…)
+  ⎿           # {% for i in (1..3) %}                       
+     [  0]     CONST_INT         1                     # → 1
+     [  1]     CONST_INT         3                     # → 3
+     … +26 lines (ctrl+o to expand)
+
+⏺ The duplicate header is fixed. The output now shows:
+  - # {% for i in (1..3) %} once for the for loop setup
+  - # {{ i }} for the inner expression
+  - No duplicate headers when spans resume after labels
+
+> /export docs/mid.md 
+  ⎿  Failed to export conversation: ENOENT: no such file or directory, open '/Users/tobi/src/tries/2026-01-05-liquid-il/docs/mid.txt'
+
+! mkdir -p docs/chats 
+  ⎿  (No content)
+
+> /export docs/chats/mid.md 
+  ⎿  Conversation exported to: docs/chats/mid.txt
+
+
+
