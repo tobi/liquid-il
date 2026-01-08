@@ -505,7 +505,7 @@ module LiquidIL
       loop_var = loop_info[:loop_var]
 
       # Find all variables written inside the loop
-      written_vars = Set.new([loop_var, "forloop", "tablerow"])
+      written_vars = Set.new([loop_var, "forloop", "tablerowloop"])
       (start_idx..end_idx).each do |i|
         inst = instructions[i]
         case inst[0]

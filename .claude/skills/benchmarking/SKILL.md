@@ -1,6 +1,5 @@
 ---
-user_invocable: true
-name: benchmarking
+name: Benchmarking & Optimization
 description: This skill should be used when the user asks to "run benchmarks", "profile performance", "measure allocations", "optimize render speed", "find hot paths", "generate flamegraph", or mentions stackprof, memory profiler, or performance optimization.
 ---
 
@@ -13,10 +12,23 @@ Guide for measuring and improving LiquidIL render performance.
 ### Official Benchmark Suite (Primary)
 
 ```bash
-bundle exec rake bench
+rake bench
 ```
 
 Runs 11 real-world templates comparing liquid_ruby, liquid_il (VM), liquid_il_compiled, and liquid_il_optimized_compiled. Shows compile time, render time, and speedup ratios.
+
+### Partials Microbenchmark (with allocations)
+
+```bash
+bundle exec ruby bench_partials.rb
+```
+
+Focused on partial rendering performance with allocation tracking. Useful for optimizing isolated scope / render tag performance.
+
+```bash
+bundle exec ruby bench_partials.rb --iterations 100    # Quick runs
+bundle exec ruby bench_partials.rb --help              # All options
+```
 
 ## Profiling
 
@@ -24,12 +36,12 @@ Runs 11 real-world templates comparing liquid_ruby, liquid_il (VM), liquid_il_co
 
 Profile all benchmarks:
 ```bash
-bundle exec liquid-spec run ./spec/liquid_il_optimized_compiled --bench --profile
+bundle exec ruby bench_partials.rb --profile stackprof --iterations 500
 ```
 
 Profile a specific benchmark (recommended for focused analysis):
 ```bash
-bundle exec liquid-spec run ./spec/liquid_il_optimized_compiled --bench --profile -n {testname}
+bundle exec ruby bench_partials.rb --profile stackprof --profile-benchmark bench_ecommerce_product_page --iterations 1000
 ```
 
 View results:
@@ -51,7 +63,7 @@ open tmp/flamegraph.html
 ### Memory Profiling
 
 ```bash
-bundle exec liquid-spec run ./spec/liquid_il_optimized_compiled --bench --profile -n {testname}
+bundle exec ruby bench_partials.rb --profile memory --profile-benchmark bench_ecommerce_product_page --iterations 100
 ```
 
 Results saved to `tmp/memory_*.txt`.
@@ -60,13 +72,7 @@ Results saved to `tmp/memory_*.txt`.
 
 For profiling just the render phase (excluding compile time):
 ```bash
-bundle exec liquid-spec run ./spec/liquid_il_optimized_compiled --bench --profile
-```
-
-You can use `-n {testname}` to reduce it down to a specific test:
-
-```bash
-bundle exec liquid-spec run ./spec/liquid_il_optimized_compiled --bench --profile -n {testname}
+bundle exec ruby profile_render.rb
 ```
 
 ## Interpreting Stackprof Output
@@ -88,10 +94,11 @@ bundle exec liquid-spec run ./spec/liquid_il_optimized_compiled --bench --profil
 
 ## Optimization Workflow
 
-1. **Profile hot path**: Use stackprof to identify time sinks
-2. **Identify targets**: Look for high self% methods
-3. **Apply optimization patterns** (see below)
-4. **Verify improvement**: Re-run benchmarks and compare
+1. **Establish baseline**: Run `bench_partials.rb` to get current numbers
+2. **Profile hot path**: Use stackprof to identify time sinks
+3. **Identify targets**: Look for high self% methods
+4. **Apply optimization patterns** (see below)
+5. **Verify improvement**: Re-run benchmarks and compare
 
 ## Optimization Patterns
 
@@ -143,18 +150,12 @@ end
 
 | File | Purpose |
 |------|---------|
-| `spec/liquid_il_optimized_compiled` | Render-only profiling/benching via liquid-spec (`--bench --profile`) |
+| `bench_partials.rb` | Main benchmark runner with allocation tracking |
+| `profile_render.rb` | Focused render-only profiling |
 | `benchmarks/partials.yml` | Benchmark test cases |
 | `lib/liquid_il/context.rb` | RenderScope (hot path for partials) |
 | `lib/liquid_il/utils.rb` | output_string, to_s (called on every output) |
 | `lib/liquid_il/ruby_compiler.rb` | __write_output__ and compiled helpers |
-
-## Preallocate when it makes sense
-
-```ruby
-# use sensible output sizes
-output = String.new(capacity: 8192)
-```
 
 ## Performance Targets
 

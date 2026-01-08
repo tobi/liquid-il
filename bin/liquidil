@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require_relative "../lib/liquid_il"
+require "yaml"
+require "shellwords"
 
 def usage
   puts <<~USAGE
@@ -12,22 +14,30 @@ def usage
       parse <template>      Parse and show IL instructions
       file <path>           Parse file and show IL instructions
       eval <template>       Parse, show IL, then render
+      inspect <pattern>     Inspect specs (from liquid-spec or -s file)
 
     Options:
       -e, --env KEY=VALUE   Set environment variable (can be repeated)
+      -s, --specs FILE      Load specs from YAML file (otherwise uses liquid-spec)
+      --print-il            Print IL instructions (default for parse/inspect)
+      --print-ruby          Print generated Ruby code
+      --no-optimize         Disable IL optimizations (optimizations enabled by default)
       --no-color            Disable colored output
       -h, --help            Show this help
 
     Examples:
       liquidil render "Hello {{ name }}" -e name=World
       liquidil parse "{% for i in (1..3) %}{{ i }}{% endfor %}"
-      liquidil file template.liquid
+      liquidil parse "{{ x | upcase }}" --print-ruby
+      liquidil file template.liquid --print-ruby
+      liquidil inspect "for loop" --print-ruby
+      liquidil inspect bench_ecommerce -s benchmarks/partials.yml --print-ruby
       liquidil eval "{{ x | plus: y }}" -e x=2 -e y=3
   USAGE
 end
 
 def parse_args(args)
-  options = { env: {}, color: true }
+  options = { env: {}, color: true, print_il: false, print_ruby: false, optimize: true }
   positional = []
 
   i = 0
@@ -41,6 +51,15 @@ def parse_args(args)
         # Try to parse as JSON for arrays/hashes, otherwise use string
         options[:env][key] = parse_value(value)
       end
+    when "-s", "--specs"
+      i += 1
+      options[:specs_file] = args[i]
+    when "--print-il"
+      options[:print_il] = true
+    when "--print-ruby"
+      options[:print_ruby] = true
+    when "--no-optimize"
+      options[:optimize] = false
     when "--no-color"
       options[:color] = false
     when "-h", "--help"
@@ -72,31 +91,196 @@ def parse_value(str)
   str
 end
 
-def cmd_render(input, env, _color)
+def cmd_render(input, env, options)
   puts LiquidIL.render(input, env)
 end
 
-def cmd_parse(input, _env, color)
-  template = LiquidIL.parse(input)
-  template.dump_il(color: color)
+def cmd_parse(input, _env, options)
+  context = LiquidIL::Context.new
+  context = LiquidIL::Optimizer.optimize(context) if options[:optimize]
+  template = context.parse(input)
+
+  print_il = options[:print_il] || !options[:print_ruby]
+
+  if print_il
+    puts "IL Instructions:"
+    puts "=" * 60
+    template.dump_il(color: options[:color])
+  end
+
+  if options[:print_ruby]
+    puts if print_il
+    puts "Generated Ruby:"
+    puts "=" * 60
+    compiled = LiquidIL::Compiler::Ruby.compile(template)
+    puts compiled.compiled_source
+  end
 end
 
-def cmd_file(path, _env, color)
+def cmd_file(path, _env, options)
   source = File.read(path)
-  template = LiquidIL.parse(source)
+  context = LiquidIL::Context.new
+  context = LiquidIL::Optimizer.optimize(context) if options[:optimize]
+  template = context.parse(source)
+
+  print_il = options[:print_il] || !options[:print_ruby]
+
   puts "Source: #{path}"
   puts "=" * 60
-  template.dump_il(color: color)
+
+  if print_il
+    puts "IL Instructions:"
+    puts "-" * 60
+    template.dump_il(color: options[:color])
+  end
+
+  if options[:print_ruby]
+    puts if print_il
+    puts "Generated Ruby:"
+    puts "-" * 60
+    compiled = LiquidIL::Compiler::Ruby.compile(template)
+    puts compiled.compiled_source
+  end
 end
 
-def cmd_eval(input, env, color)
-  template = LiquidIL.parse(input)
+def cmd_eval(input, env, options)
+  context = LiquidIL::Context.new
+  context = LiquidIL::Optimizer.optimize(context) if options[:optimize]
+  template = context.parse(input)
 
   puts "Template: #{input}"
   puts "=" * 60
-  template.dump_il(color: color)
+  template.dump_il(color: options[:color])
   puts "=" * 60
   puts "Output: #{template.render(env)}"
+end
+
+# File system adapter for specs with filesystem
+class SpecFileSystem
+  def initialize(files)
+    @files = files || {}
+  end
+
+  def read_template_file(name)
+    @files[name] || ""
+  end
+end
+
+def cmd_inspect(pattern, _env, options)
+  specs = if options[:specs_file]
+    load_specs_from_file(options[:specs_file], pattern)
+  else
+    load_specs_from_liquid_spec(pattern)
+  end
+
+  if specs.empty?
+    puts "No specs matching: #{pattern}"
+    exit 1
+  end
+
+  specs.each do |spec|
+    puts "=" * 80
+    puts "Spec: #{spec["name"]}"
+    puts "=" * 80
+
+    puts "\nTemplate:"
+    puts "-" * 40
+    puts spec["template"]
+
+    if spec["environment"] && !spec["environment"].empty?
+      puts "\nEnvironment:"
+      puts "-" * 40
+      puts spec["environment"].inspect
+    end
+
+    if spec["filesystem"] && !spec["filesystem"].empty?
+      puts "\nFilesystem:"
+      puts "-" * 40
+      spec["filesystem"].each do |name, content|
+        puts "  #{name}:"
+        content.to_s.lines.each { |l| puts "    #{l}" }
+      end
+    end
+
+    fs = SpecFileSystem.new(spec["filesystem"])
+    context = LiquidIL::Context.new(file_system: fs)
+    context = LiquidIL::Optimizer.optimize(context) if options[:optimize]
+    template = context.parse(spec["template"])
+
+    print_il = options[:print_il] || !options[:print_ruby]
+
+    if print_il
+      puts "\nIL Instructions:"
+      puts "-" * 40
+      template.dump_il(color: options[:color])
+    end
+
+    if options[:print_ruby]
+      puts "\nGenerated Ruby:"
+      puts "-" * 40
+      compiled = LiquidIL::Compiler::Ruby.compile(template, context: context)
+      puts compiled.compiled_source
+
+      # Show compiled partials if any
+      if compiled.partials && !compiled.partials.empty?
+        puts "\nCompiled Partials:"
+        compiled.partials.each do |name, partial|
+          puts "\n--- #{name} ---"
+          if partial.is_a?(Hash) && partial[:compiled_body]
+            puts partial[:compiled_body]
+          end
+        end
+      end
+    end
+
+    puts
+  end
+end
+
+def load_specs_from_file(file, pattern)
+  unless File.exist?(file)
+    puts "Error: Specs file not found: #{file}"
+    exit 1
+  end
+
+  data = YAML.load_file(file)
+  specs = data["specs"] || data
+  specs = [specs] unless specs.is_a?(Array)
+  matching = specs.select { |s| s["name"] =~ /#{pattern}/i }
+
+  if matching.empty?
+    puts "Available specs in #{file}:"
+    specs.each { |s| puts "  - #{s["name"]}" }
+  end
+
+  matching
+end
+
+def load_specs_from_liquid_spec(pattern)
+  # Run liquid-spec inspect with --print-actual to get YAML output
+  cmd = "bundle exec liquid-spec inspect spec/liquid_il_optimized_compiled.rb -n #{pattern.shellescape} --print-actual 2>&1"
+  output = `#{cmd}`
+
+  # Filter out Source warnings
+  lines = output.lines.reject { |l| l.start_with?("Source locally installed") }
+  yaml_output = lines.join
+
+  if yaml_output.include?("No specs matching")
+    puts yaml_output
+    return []
+  end
+
+  # Parse YAML output (it's an array of specs)
+  begin
+    specs = YAML.safe_load(yaml_output, permitted_classes: [Symbol])
+    specs = [specs] unless specs.is_a?(Array)
+    specs.compact
+  rescue => e
+    puts "Error parsing liquid-spec output: #{e.message}"
+    puts "Raw output:"
+    puts yaml_output
+    []
+  end
 end
 
 # Main
@@ -109,13 +293,15 @@ end
 
 case options[:command]
 when "render"
-  cmd_render(options[:input], options[:env], options[:color])
+  cmd_render(options[:input], options[:env], options)
 when "parse"
-  cmd_parse(options[:input], options[:env], options[:color])
+  cmd_parse(options[:input], options[:env], options)
 when "file"
-  cmd_file(options[:input], options[:env], options[:color])
+  cmd_file(options[:input], options[:env], options)
 when "eval"
-  cmd_eval(options[:input], options[:env], options[:color])
+  cmd_eval(options[:input], options[:env], options)
+when "inspect"
+  cmd_inspect(options[:input], options[:env], options)
 else
   puts "Unknown command: #{options[:command]}"
   usage
