@@ -8,7 +8,7 @@ timings: true
 default_iteration_seconds: 5
 
 hint: |
-  These specs test partial rendering performance.
+  These specs test rendering performance.
 
 required_features:
   - core

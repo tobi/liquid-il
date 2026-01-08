@@ -27,6 +27,12 @@ module LiquidIL
       @label_to_block = {}  # label_id -> block index where label appears
       @partials = partials || {}  # Shared partial cache across recursive compilations
       @partial_names_in_progress = partial_names_in_progress || Set.new  # Shared to prevent infinite recursion
+      @uses_capture = detect_uses_capture
+    end
+
+    # Check if template uses capture blocks (enables simpler output code when not)
+    def detect_uses_capture
+      @instructions.any? { |inst| inst[0] == IL::PUSH_CAPTURE }
     end
 
     def compile
@@ -304,7 +310,11 @@ module LiquidIL
             if raw_strings.length > 1
               # Batch multiple raw strings into one output call
               combined = raw_strings.join
-              code << "  __write_output__(#{combined.inspect}, __output__, __scope__)\n"
+              if @uses_capture
+                code << "  __write_output__(#{combined.inspect}, __output__, __scope__)\n"
+              else
+                code << "  __output__ << #{combined.inspect} unless __scope__.has_interrupt?\n"
+              end
               i = j
             else
               code << generate_instruction(inst, block.indices[i])
@@ -351,7 +361,11 @@ module LiquidIL
             if raw_strings.length > 1
               # Batch multiple raw strings into one output call
               combined = raw_strings.join
-              code << "      __write_output__(#{combined.inspect}, __output__, __scope__)\n"
+              if @uses_capture
+                code << "      __write_output__(#{combined.inspect}, __output__, __scope__)\n"
+              else
+                code << "      __output__ << #{combined.inspect} unless __scope__.has_interrupt?\n"
+              end
               i = j
             else
               inst_code = generate_instruction_for_state_machine(inst, global_idx, block)
@@ -400,9 +414,19 @@ module LiquidIL
       when IL::NOOP
         ""
       when IL::WRITE_RAW
-        "  __write_output__(#{inst[1].inspect}, __output__, __scope__)\n"
+        if @uses_capture
+          "  __write_output__(#{inst[1].inspect}, __output__, __scope__)\n"
+        else
+          # Fast path: no capture blocks, write directly (still check interrupts)
+          "  __output__ << #{inst[1].inspect} unless __scope__.has_interrupt?\n"
+        end
       when IL::WRITE_VALUE
-        "  __v__ = __stack__.pop; __write_output__(__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__), __output__, __scope__)\n"
+        if @uses_capture
+          "  __v__ = __stack__.pop; __write_output__(__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__), __output__, __scope__)\n"
+        else
+          # Fast path: no capture blocks, write directly
+          "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__)) unless __scope__.has_interrupt?\n"
+        end
       when IL::CONST_NIL
         "  __stack__ << nil\n"
       when IL::CONST_TRUE
@@ -438,14 +462,26 @@ module LiquidIL
         "  __stack__ << __scope__.lookup(__stack__.pop.to_s)\n"
       when IL::FIND_VAR_PATH
         name, path = inst[1], inst[2]
-        "  __obj__ = __scope__.lookup(#{name.inspect}); #{path.map { |k| "__obj__ = __lookup_property__(__obj__, #{k.inspect})" }.join("; ")}; __stack__ << __obj__\n"
+        if path.length == 1
+          # Single property - use direct lookup
+          "  __obj__ = __scope__.lookup(#{name.inspect}); __stack__ << __lookup_property__(__obj__, #{path[0].inspect})\n"
+        else
+          # Multiple properties - use optimized path lookup
+          "  __stack__ << __lookup_path__(__scope__.lookup(#{name.inspect}), #{path.map(&:inspect).join(", ")})\n"
+        end
       when IL::LOOKUP_KEY
         "  __k__ = __stack__.pop; __o__ = __stack__.pop; __stack__ << __lookup_key__(__o__, __k__)\n"
       when IL::LOOKUP_CONST_KEY
         "  __stack__ << __lookup_property__(__stack__.pop, #{inst[1].inspect})\n"
       when IL::LOOKUP_CONST_PATH
         path = inst[1]
-        "  __obj__ = __stack__.pop; #{path.map { |k| "__obj__ = __lookup_property__(__obj__, #{k.inspect})" }.join("; ")}; __stack__ << __obj__\n"
+        if path.length == 1
+          # Single property - use direct lookup
+          "  __stack__ << __lookup_property__(__stack__.pop, #{path[0].inspect})\n"
+        else
+          # Multiple properties - use optimized path lookup
+          "  __stack__ << __lookup_path__(__stack__.pop, #{path.map(&:inspect).join(", ")})\n"
+        end
       when IL::LOOKUP_COMMAND
         "  __stack__ << __execute_command__(__stack__.pop, #{inst[1].inspect})\n"
       when IL::PUSH_CAPTURE
@@ -473,7 +509,13 @@ module LiquidIL
       when IL::NEW_RANGE
         "  __e__ = __stack__.pop; __s__ = __stack__.pop; __stack__ << __new_range__(__s__, __e__, __output__, __scope__)\n"
       when IL::CALL_FILTER
-        "  __args__ = __stack__.pop(#{inst[2]}); __input__ = __stack__.pop; __stack__ << __call_filter__(#{inst[1].inspect}, __input__, __args__, __scope__, __spans__, __template_source__, #{idx})\n"
+        arg_count = inst[2]
+        if arg_count == 0
+          # Avoid allocating empty array for zero-arg filters
+          "  __input__ = __stack__.pop; __stack__ << __call_filter__(#{inst[1].inspect}, __input__, [], __scope__, __spans__, __template_source__, #{idx})\n"
+        else
+          "  __args__ = __stack__.pop(#{arg_count}); __input__ = __stack__.pop; __stack__ << __call_filter__(#{inst[1].inspect}, __input__, __args__, __scope__, __spans__, __template_source__, #{idx})\n"
+        end
       when IL::INCREMENT
         "  __stack__ << __scope__.increment(#{inst[1].inspect})\n"
       when IL::DECREMENT
@@ -969,6 +1011,21 @@ module LiquidIL
               obj[key.to_s]
             end
           end
+        end
+
+        # Optimized path lookup - inline Hash fast path, single method call for chains
+        def __lookup_path__(obj, *keys)
+          keys.each do |k|
+            return nil if obj.nil?
+            if obj.is_a?(Hash)
+              # Fast path: Hash is most common
+              result = obj[k]
+              obj = result.nil? ? obj[k.to_sym] : result
+            else
+              obj = __lookup_property__(obj, k)
+            end
+          end
+          obj
         end
 
         def __execute_command__(obj, command)
@@ -1695,6 +1752,21 @@ module LiquidIL
               obj[key.to_s]
             end
           end
+        end
+
+        # Optimized path lookup - inline Hash fast path, single method call for chains
+        def __lookup_path__(obj, *keys)
+          keys.each do |k|
+            return nil if obj.nil?
+            if obj.is_a?(Hash)
+              # Fast path: Hash is most common
+              result = obj[k]
+              obj = result.nil? ? obj[k.to_sym] : result
+            else
+              obj = __lookup_property__(obj, k)
+            end
+          end
+          obj
         end
 
         def __execute_command__(obj, command)

@@ -721,3 +721,216 @@ class IncludeRenderTest < Minitest::Test
     assert_equal "HEADER", @ctx.render("{% render 'header' %}")
   end
 end
+
+class ConstantPropagationTest < Minitest::Test
+  def setup
+    @ctx = LiquidIL::Context.new
+  end
+
+  def test_propagate_integer_constant
+    # {% assign x = 5 %}{{ x | plus: 3 }} should fold to 8
+    result = @ctx.render("{% assign x = 5 %}{{ x | plus: 3 }}")
+    assert_equal "8", result
+  end
+
+  def test_propagate_string_constant
+    # {% assign s = 'hello' %}{{ s | upcase }} should fold to HELLO
+    result = @ctx.render("{% assign s = 'hello' %}{{ s | upcase }}")
+    assert_equal "HELLO", result
+  end
+
+  def test_propagate_multiple_uses
+    # Same constant used multiple times
+    result = @ctx.render("{% assign x = 10 %}{{ x | plus: 1 }}-{{ x | plus: 2 }}")
+    assert_equal "11-12", result
+  end
+
+  def test_no_propagate_after_reassignment
+    # After reassignment, propagation should stop
+    result = @ctx.render("{% assign x = 5 %}{% assign x = y %}{{ x }}", y: 10)
+    assert_equal "10", result
+  end
+
+  def test_no_propagate_non_constant
+    # Non-constant assignment should not be propagated
+    result = @ctx.render("{% assign x = y %}{{ x | plus: 1 }}", y: 5)
+    assert_equal "6", result
+  end
+
+  def test_constant_folding_chain
+    # Multiple constants in a chain should fold
+    result = @ctx.render("{% assign x = 2 %}{% assign y = 3 %}{{ x | plus: y }}")
+    assert_equal "5", result
+  end
+
+  def test_il_shows_constant_propagation
+    # Verify the IL is actually optimized
+    compiler = LiquidIL::Compiler.new("{% assign x = 5 %}{{ x | plus: 3 }}", optimize: true)
+    result = compiler.compile
+    instructions = result[:instructions]
+
+    # Should have WRITE_RAW "8" (folded), not FIND_VAR "x"
+    write_raw = instructions.find { |i| i[0] == :WRITE_RAW && i[1] == "8" }
+    assert write_raw, "Expected WRITE_RAW '8' from constant propagation + folding"
+
+    # Should NOT have FIND_VAR "x"
+    find_var_x = instructions.find { |i| i[0] == :FIND_VAR && i[1] == "x" }
+    refute find_var_x, "FIND_VAR 'x' should be replaced by constant propagation"
+  end
+end
+
+class LoopInvariantHoistingTest < Minitest::Test
+  def setup
+    @ctx = LiquidIL::Context.new
+  end
+
+  def test_hoist_invariant_variable
+    # currency is loop-invariant, should be hoisted
+    result = @ctx.render(
+      "{% for i in items %}{{ currency }}{{ i }}{% endfor %}",
+      items: [1, 2, 3], currency: "$"
+    )
+    assert_equal "$1$2$3", result
+  end
+
+  def test_loop_variable_not_hoisted
+    # Loop variable 'item' should NOT be hoisted
+    result = @ctx.render(
+      "{% for item in items %}{{ item }}{% endfor %}",
+      items: ["a", "b", "c"]
+    )
+    assert_equal "abc", result
+  end
+
+  def test_modified_variable_not_hoisted
+    # Variable assigned inside loop should not be hoisted
+    result = @ctx.render(
+      "{% for i in items %}{% assign x = i %}{{ x }}{% endfor %}",
+      items: [1, 2, 3]
+    )
+    assert_equal "123", result
+  end
+
+  def test_multiple_invariants
+    # Multiple invariant variables
+    result = @ctx.render(
+      "{% for i in items %}{{ prefix }}{{ i }}{{ suffix }}{% endfor %}",
+      items: [1, 2], prefix: "[", suffix: "]"
+    )
+    assert_equal "[1][2]", result
+  end
+
+  def test_il_shows_hoisting
+    # Verify the IL shows hoisting happened
+    compiler = LiquidIL::Compiler.new(
+      "{% for i in items %}{{ currency }}{% endfor %}",
+      optimize: true
+    )
+    result = compiler.compile
+    instructions = result[:instructions]
+
+    # Find FOR_INIT index
+    for_init_idx = instructions.index { |i| i[0] == :FOR_INIT }
+    assert for_init_idx, "Expected FOR_INIT instruction"
+
+    # FIND_VAR "currency" and STORE_TEMP should come BEFORE FOR_INIT
+    find_currency_idx = instructions.index { |i| i[0] == :FIND_VAR && i[1] == "currency" }
+    store_temp_idx = instructions.index { |i| i[0] == :STORE_TEMP }
+
+    if find_currency_idx && store_temp_idx
+      assert find_currency_idx < for_init_idx, "FIND_VAR 'currency' should be hoisted before loop"
+      assert store_temp_idx < for_init_idx, "STORE_TEMP should be before loop"
+    end
+
+    # Inside loop should use LOAD_TEMP, not FIND_VAR
+    load_temp = instructions.find { |i| i[0] == :LOAD_TEMP }
+    assert load_temp, "Expected LOAD_TEMP inside loop for hoisted variable"
+  end
+
+  def test_nested_loops_inner_invariant
+    # Variable invariant in inner loop but defined in outer scope
+    result = @ctx.render(
+      "{% for i in outer %}{% for j in inner %}{{ prefix }}{% endfor %}{% endfor %}",
+      outer: [1, 2], inner: [1, 2], prefix: "X"
+    )
+    assert_equal "XXXX", result
+  end
+end
+
+class NestedLoopDynamicAccessTest < Minitest::Test
+  def setup
+    @ctx = LiquidIL::Context.new
+  end
+
+  def test_nested_loop_with_dynamic_bracket_access
+    # This is a regression test for a bug where the second outer iteration
+    # would receive corrupted data for the inner loop
+    env = {
+      "headers" => ["name", "email"],
+      "rows" => [
+        { "name" => "Alice", "email" => "alice@example.com" },
+        { "name" => "Bob", "email" => "bob@example.com" }
+      ]
+    }
+
+    template = '{% for row in rows %}[{% for header in headers %}{{ row[header] }}|{% endfor %}]{% endfor %}'
+    result = @ctx.render(template, env)
+    assert_equal "[Alice|alice@example.com|][Bob|bob@example.com|]", result
+  end
+
+  def test_nested_loop_with_dynamic_bracket_access_compiled
+    # Same test but explicitly using the Ruby compiled version
+    env = {
+      "headers" => ["name", "email"],
+      "rows" => [
+        { "name" => "Alice", "email" => "alice@example.com" },
+        { "name" => "Bob", "email" => "bob@example.com" }
+      ]
+    }
+
+    template = '{% for row in rows %}[{% for header in headers %}{{ row[header] }}|{% endfor %}]{% endfor %}'
+    ctx = LiquidIL::Context.new
+    compiled = LiquidIL::Compiler::Ruby.compile(template, context: ctx)
+    result = compiled.render(env)
+    assert_equal "[Alice|alice@example.com|][Bob|bob@example.com|]", result
+  end
+
+  def test_nested_loop_three_iterations
+    # Test with more outer iterations to ensure the bug is caught
+    env = {
+      "keys" => ["a", "b"],
+      "items" => [
+        { "a" => "1a", "b" => "1b" },
+        { "a" => "2a", "b" => "2b" },
+        { "a" => "3a", "b" => "3b" }
+      ]
+    }
+
+    template = '{% for item in items %}{% for key in keys %}{{ item[key] }}{% endfor %}-{% endfor %}'
+    result = @ctx.render(template, env)
+    assert_equal "1a1b-2a2b-3a3b-", result
+  end
+
+  def test_vm_vs_compiled_nested_loop
+    # Ensure VM and compiled give same results
+    env = {
+      "headers" => ["x", "y"],
+      "rows" => [{ "x" => "1", "y" => "2" }, { "x" => "3", "y" => "4" }]
+    }
+
+    template = '{% for row in rows %}{{ row[headers[0]] }}{{ row[headers[1]] }}|{% endfor %}'
+
+    ctx = LiquidIL::Context.new
+    il = ctx.parse(template)
+
+    # VM execution
+    scope_vm = LiquidIL::Scope.new(env)
+    vm_result = LiquidIL::VM.execute(il.instructions, scope_vm, spans: il.spans)
+
+    # Compiled execution
+    compiled = LiquidIL::Compiler::Ruby.compile(template, context: ctx)
+    compiled_result = compiled.render(env)
+
+    assert_equal vm_result, compiled_result, "VM and compiled results should match"
+  end
+end

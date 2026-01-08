@@ -110,6 +110,13 @@ puts "Iterations: #{options[:iterations]}, Warmup: #{options[:warmup]}"
 puts "Profile mode: #{options[:profile] || 'none'}"
 puts
 
+# Track totals for summary
+totals = {
+  liquid_ruby: { compile_time: 0, compile_allocs: 0, render_time: 0, render_allocs: 0 },
+  liquid_il: { compile_time: 0, compile_allocs: 0, render_time: 0, render_allocs: 0 }
+}
+benchmark_count = 0
+
 specs.each do |spec|
   name = spec["name"]
   template = spec["template"]
@@ -127,10 +134,19 @@ specs.each do |spec|
 
   context = LiquidIL::Context.new(file_system: BenchFS.new(fs))
 
-  # Compile with liquid_ruby (reference)
-  liquid_ruby_template = Liquid::Template.parse(template)
+  # Measure compile time and allocations
+  liquid_ruby_compile_allocs = measure_allocations do
+    Liquid::Template.parse(template)
+  end
+  liquid_ruby_compile_time = measure { Liquid::Template.parse(template) }
 
-  # Compile with liquid_il_compiled
+  compiled_compile_allocs = measure_allocations do
+    LiquidIL::Compiler::Ruby.compile(template, context: context)
+  end
+  compiled_compile_time = measure { LiquidIL::Compiler::Ruby.compile(template, context: context) }
+
+  # Now create templates for rendering
+  liquid_ruby_template = Liquid::Template.parse(template)
   compiled_template = LiquidIL::Compiler::Ruby.compile(template, context: context)
 
   # Warmup
@@ -141,12 +157,12 @@ specs.each do |spec|
 
   iterations = options[:iterations]
 
-  # Measure allocations (single iteration for accuracy)
-  liquid_ruby_allocs = measure_allocations do
+  # Measure render allocations (single iteration for accuracy)
+  liquid_ruby_render_allocs = measure_allocations do
     liquid_ruby_template.render(env, registers: { file_system: BenchFS.new(fs) })
   end
 
-  compiled_allocs = measure_allocations do
+  compiled_render_allocs = measure_allocations do
     compiled_template.render(env)
   end
 
@@ -169,23 +185,99 @@ specs.each do |spec|
     end
   end
 
-  liquid_ruby_us = (liquid_ruby_time / iterations) * 1_000_000
-  compiled_us = (compiled_time / iterations) * 1_000_000
-  speedup = liquid_ruby_us / compiled_us
-  alloc_diff = liquid_ruby_allocs - compiled_allocs
+  liquid_ruby_render_us = (liquid_ruby_time / iterations) * 1_000_000
+  compiled_render_us = (compiled_time / iterations) * 1_000_000
+  render_speedup = liquid_ruby_render_us / compiled_render_us
+  render_alloc_diff = liquid_ruby_render_allocs - compiled_render_allocs
+
+  # Update totals
+  totals[:liquid_ruby][:compile_time] += liquid_ruby_compile_time * 1_000_000
+  totals[:liquid_ruby][:compile_allocs] += liquid_ruby_compile_allocs
+  totals[:liquid_ruby][:render_time] += liquid_ruby_render_us
+  totals[:liquid_ruby][:render_allocs] += liquid_ruby_render_allocs
+
+  totals[:liquid_il][:compile_time] += compiled_compile_time * 1_000_000
+  totals[:liquid_il][:compile_allocs] += compiled_compile_allocs
+  totals[:liquid_il][:render_time] += compiled_render_us
+  totals[:liquid_il][:render_allocs] += compiled_render_allocs
+
+  benchmark_count += 1
 
   puts
-  puts "  Results:"
-  puts "    %-20s %10.2f µs/render   %6d allocs/render" % ["liquid_ruby:", liquid_ruby_us, liquid_ruby_allocs]
-  puts "    %-20s %10.2f µs/render   %6d allocs/render" % ["liquid_il_compiled:", compiled_us, compiled_allocs]
+  puts "  Compile (one-time):"
+  puts "    %-20s %10.2f µs   %6d allocs" % ["liquid_ruby:", liquid_ruby_compile_time * 1_000_000, liquid_ruby_compile_allocs]
+  puts "    %-20s %10.2f µs   %6d allocs" % ["liquid_il_compiled:", compiled_compile_time * 1_000_000, compiled_compile_allocs]
   puts
-  puts "    Speedup: %.2fx faster" % speedup
-  if alloc_diff > 0
-    puts "    Allocations: %d fewer (%.1f%%)" % [alloc_diff, (alloc_diff.to_f / liquid_ruby_allocs) * 100]
-  elsif alloc_diff < 0
-    puts "    Allocations: %d more (+%.1f%%)" % [-alloc_diff, (-alloc_diff.to_f / liquid_ruby_allocs) * 100]
+  puts "  Render (per call):"
+  puts "    %-20s %10.2f µs/render   %6d allocs/render" % ["liquid_ruby:", liquid_ruby_render_us, liquid_ruby_render_allocs]
+  puts "    %-20s %10.2f µs/render   %6d allocs/render" % ["liquid_il_compiled:", compiled_render_us, compiled_render_allocs]
+  puts
+  puts "    Render speedup: %.2fx faster" % render_speedup
+  if render_alloc_diff > 0
+    puts "    Render allocations: %d fewer (%.1f%%)" % [render_alloc_diff, (render_alloc_diff.to_f / liquid_ruby_render_allocs) * 100]
+  elsif render_alloc_diff < 0
+    puts "    Render allocations: %d more (+%.1f%%)" % [-render_alloc_diff, (-render_alloc_diff.to_f / liquid_ruby_render_allocs) * 100]
   else
-    puts "    Allocations: same"
+    puts "    Render allocations: same"
+  end
+  puts
+end
+
+# Print summary
+if benchmark_count > 0
+  puts "=" * 80
+  puts "Summary (#{benchmark_count} benchmarks)"
+  puts "=" * 80
+  puts
+
+  # Compile totals (one-time cost)
+  puts "Compile (one-time cost per template):"
+  puts "  %-20s %10.2f µs total   %6d allocs total" % [
+    "liquid_ruby:",
+    totals[:liquid_ruby][:compile_time],
+    totals[:liquid_ruby][:compile_allocs]
+  ]
+  puts "  %-20s %10.2f µs total   %6d allocs total" % [
+    "liquid_il_compiled:",
+    totals[:liquid_il][:compile_time],
+    totals[:liquid_il][:compile_allocs]
+  ]
+  if totals[:liquid_ruby][:compile_time] < totals[:liquid_il][:compile_time]
+    compile_speedup = totals[:liquid_il][:compile_time] / totals[:liquid_ruby][:compile_time]
+    puts "  liquid_ruby compiles %.2fx faster (expected: IL does more work)" % compile_speedup
+  else
+    compile_speedup = totals[:liquid_ruby][:compile_time] / totals[:liquid_il][:compile_time]
+    puts "  liquid_il compiles %.2fx faster" % compile_speedup
+  end
+  puts
+
+  # Render totals (repeated cost)
+  puts "Render (per-call cost, matters most for production):"
+  puts "  %-20s %10.2f µs avg   %6d allocs avg" % [
+    "liquid_ruby:",
+    totals[:liquid_ruby][:render_time] / benchmark_count,
+    totals[:liquid_ruby][:render_allocs] / benchmark_count
+  ]
+  puts "  %-20s %10.2f µs avg   %6d allocs avg" % [
+    "liquid_il_compiled:",
+    totals[:liquid_il][:render_time] / benchmark_count,
+    totals[:liquid_il][:render_allocs] / benchmark_count
+  ]
+  render_speedup = totals[:liquid_ruby][:render_time] / totals[:liquid_il][:render_time]
+  puts "  liquid_il renders %.2fx faster" % render_speedup
+  puts
+
+  # Break-even analysis
+  puts "Break-even analysis:"
+  compile_overhead = totals[:liquid_il][:compile_time] - totals[:liquid_ruby][:compile_time]
+  render_savings = totals[:liquid_ruby][:render_time] - totals[:liquid_il][:render_time]
+  if render_savings > 0
+    break_even = (compile_overhead / render_savings).ceil
+    puts "  Compile overhead: %.2f µs" % compile_overhead
+    puts "  Render savings:   %.2f µs/render" % (render_savings / benchmark_count)
+    puts "  Break-even after: ~%d renders (then pure profit)" % break_even
+  else
+    puts "  liquid_ruby is faster at rendering in these benchmarks"
   end
   puts
 end

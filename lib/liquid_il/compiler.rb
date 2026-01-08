@@ -84,6 +84,17 @@ module LiquidIL
       # Optimization pass 13: Remove empty WRITE_RAW (no observable output)
       remove_empty_raw_writes(instructions, spans)
 
+      # Optimization pass 14: Constant propagation - replace FIND_VAR with known constants
+      propagate_constants(instructions, spans)
+
+      # Optimization pass 15: Re-run constant folding after propagation
+      fold_const_filters(instructions, spans)
+      fold_const_writes(instructions, spans)
+      merge_raw_writes(instructions, spans)
+
+      # Optimization pass 16: Loop invariant code motion - hoist invariant lookups outside loops
+      hoist_loop_invariants(instructions, spans)
+
       instructions
     end
 
@@ -436,6 +447,170 @@ module LiquidIL
         else
           i += 1
         end
+      end
+    end
+
+    # Loop invariant code motion: hoist invariant variable lookups outside loops
+    # Looks for FIND_VAR/FIND_VAR_PATH inside loops that don't depend on loop variables
+    def hoist_loop_invariants(instructions, spans)
+      # Find all loop ranges (FOR_INIT to FOR_END)
+      loops = find_loop_ranges(instructions)
+      return if loops.empty?
+
+      # Find the maximum temp index already in use to avoid conflicts
+      # Each loop processing needs to use unique temp slots
+      @hoist_temp_counter = find_max_temp_index(instructions) + 1
+
+      # Process loops from innermost to outermost (reverse order by start index)
+      loops.sort_by { |l| -l[:start] }.each do |loop_info|
+        hoist_invariants_for_loop(instructions, spans, loop_info)
+      end
+    end
+
+    def find_max_temp_index(instructions)
+      max_idx = -1
+      instructions.each do |inst|
+        case inst[0]
+        when IL::STORE_TEMP, IL::LOAD_TEMP
+          max_idx = [max_idx, inst[1]].max
+        end
+      end
+      max_idx
+    end
+
+    def find_loop_ranges(instructions)
+      loops = []
+      stack = []
+
+      instructions.each_with_index do |inst, i|
+        case inst[0]
+        when IL::FOR_INIT, IL::TABLEROW_INIT
+          # Push loop start - loop var is inst[1]
+          stack.push({ start: i, loop_var: inst[1], type: inst[0] })
+        when IL::FOR_END, IL::TABLEROW_END
+          if stack.any?
+            loop_info = stack.pop
+            loop_info[:end] = i
+            loops << loop_info
+          end
+        end
+      end
+
+      loops
+    end
+
+    def hoist_invariants_for_loop(instructions, spans, loop_info)
+      start_idx = loop_info[:start]
+      end_idx = loop_info[:end]
+      loop_var = loop_info[:loop_var]
+
+      # Find all variables written inside the loop
+      written_vars = Set.new([loop_var, "forloop", "tablerow"])
+      (start_idx..end_idx).each do |i|
+        inst = instructions[i]
+        case inst[0]
+        when IL::ASSIGN, IL::ASSIGN_LOCAL
+          written_vars << inst[1]
+        when IL::INCREMENT, IL::DECREMENT
+          written_vars << inst[1]
+        end
+      end
+
+      # Find hoistable FIND_VAR instructions (not referencing written vars)
+      # and track which we've already hoisted to avoid duplicates
+      hoisted = {}  # var_name -> temp_index
+      insertions = []  # [instruction, span] pairs to insert before loop
+
+      i = start_idx + 1  # Start after FOR_INIT
+      while i < end_idx
+        inst = instructions[i]
+
+        if inst[0] == IL::FIND_VAR && !written_vars.include?(inst[1])
+          var_name = inst[1]
+
+          if hoisted.key?(var_name)
+            # Already hoisted - replace with LOAD_TEMP
+            instructions[i] = [IL::LOAD_TEMP, hoisted[var_name]]
+          else
+            # First occurrence - hoist and replace
+            # Use global counter to avoid conflicts with nested loops
+            temp_idx = @hoist_temp_counter
+            @hoist_temp_counter += 1
+            hoisted[var_name] = temp_idx
+
+            # Add hoisted instruction before loop
+            insertions << [[IL::FIND_VAR, var_name], spans[i]]
+            insertions << [[IL::STORE_TEMP, temp_idx], spans[i]]
+
+            # Replace original with LOAD_TEMP
+            instructions[i] = [IL::LOAD_TEMP, temp_idx]
+          end
+        end
+
+        i += 1
+      end
+
+      # Insert hoisted instructions before the loop (before FOR_INIT)
+      return if insertions.empty?
+
+      insertions.reverse.each do |inst, span|
+        instructions.insert(start_idx, inst)
+        spans.insert(start_idx, span)
+        # Adjust end_idx since we inserted before it
+        loop_info[:end] += 1
+      end
+    end
+
+    # Constant propagation: replace FIND_VAR with known constant values
+    # Only propagates in straight-line code (invalidates at control flow)
+    def propagate_constants(instructions, spans)
+      # Map of variable name -> [const_instruction, span]
+      known_constants = {}
+
+      i = 0
+      while i < instructions.length
+        inst = instructions[i]
+        opcode = inst[0]
+
+        case opcode
+        when IL::CONST_NIL, IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING
+          # Check if next instruction is ASSIGN
+          if i + 1 < instructions.length && instructions[i + 1][0] == IL::ASSIGN
+            var_name = instructions[i + 1][1]
+            known_constants[var_name] = [inst.dup, spans[i]]
+          end
+
+        when IL::ASSIGN, IL::ASSIGN_LOCAL
+          # Variable is being reassigned - if not from a constant we just saw, invalidate
+          var_name = inst[1]
+          # Check if previous was a constant (already handled above)
+          prev = i > 0 ? instructions[i - 1] : nil
+          unless prev && const_value(prev)
+            known_constants.delete(var_name)
+          end
+
+        when IL::FIND_VAR
+          # Replace with known constant if available
+          var_name = inst[1]
+          if (const_info = known_constants[var_name])
+            const_inst, const_span = const_info
+            instructions[i] = const_inst.dup
+            # Keep original span for error reporting
+          end
+
+        when IL::LABEL, IL::JUMP, IL::JUMP_IF_TRUE, IL::JUMP_IF_FALSE, IL::JUMP_IF_INTERRUPT,
+             IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END, IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
+             IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
+          # Control flow or partial render - invalidate all known constants
+          # (Variables could be modified in loops, branches, or partials)
+          known_constants.clear
+
+        when IL::INCREMENT, IL::DECREMENT
+          # These create/modify variables
+          known_constants.delete(inst[1])
+        end
+
+        i += 1
       end
     end
 
