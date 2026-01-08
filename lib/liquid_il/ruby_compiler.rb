@@ -376,25 +376,37 @@ module LiquidIL
 
       # Pattern: FIND_VAR [+ lookups/filters] + WRITE_VALUE
       if opcode == IL::FIND_VAR
-        expr, consumed = build_expression_chain(instructions, start_idx)
+        expr, consumed, preamble = build_expression_chain(instructions, start_idx)
         return nil unless expr && consumed > 1  # Must consume more than just FIND_VAR
 
         # Check if chain ends with WRITE_VALUE
         last_idx = start_idx + consumed - 1
         if last_idx < instructions.length && instructions[last_idx][0] == IL::WRITE_VALUE
-          output_code = generate_output_expression(expr, indent)
+          output_code = generate_output_expression(expr, indent, preamble)
           return { code: output_code, consumed: consumed }
         end
       end
 
       # Pattern: FIND_VAR_PATH [+ lookups/filters] + WRITE_VALUE
       if opcode == IL::FIND_VAR_PATH
-        expr, consumed = build_expression_chain(instructions, start_idx)
+        expr, consumed, preamble = build_expression_chain(instructions, start_idx)
         return nil unless expr && consumed > 1
 
         last_idx = start_idx + consumed - 1
         if last_idx < instructions.length && instructions[last_idx][0] == IL::WRITE_VALUE
-          output_code = generate_output_expression(expr, indent)
+          output_code = generate_output_expression(expr, indent, preamble)
+          return { code: output_code, consumed: consumed }
+        end
+      end
+
+      # Pattern: LOAD_TEMP [+ lookups/filters] + WRITE_VALUE (cached value)
+      if opcode == IL::LOAD_TEMP
+        expr, consumed, preamble = build_expression_chain(instructions, start_idx)
+        return nil unless expr && consumed > 1
+
+        last_idx = start_idx + consumed - 1
+        if last_idx < instructions.length && instructions[last_idx][0] == IL::WRITE_VALUE
+          output_code = generate_output_expression(expr, indent, preamble)
           return { code: output_code, consumed: consumed }
         end
       end
@@ -404,15 +416,16 @@ module LiquidIL
 
     # Build an expression chain from instructions starting at idx
     # Returns [expression_string, instructions_consumed] or nil
+    # Also returns optional preamble code for temp assignments
     def build_expression_chain(instructions, start_idx)
       return nil if start_idx >= instructions.length
 
       inst = instructions[start_idx]
       idx = start_idx
       expr = nil
-      temp_assigns = []  # Track temp assignments for caching
+      preamble = nil  # Optional code to run before the expression (for temp caching)
 
-      # Start with variable lookup
+      # Start with variable lookup or cached temp
       case inst[0]
       when IL::FIND_VAR
         expr = "__scope__.lookup(#{inst[1].inspect})"
@@ -424,6 +437,10 @@ module LiquidIL
         else
           expr = "__lookup_path__(__scope__.lookup(#{name.inspect}), #{path.map(&:inspect).join(", ")})"
         end
+        idx += 1
+      when IL::LOAD_TEMP
+        # Using cached value
+        expr = "__t#{inst[1]}__"
         idx += 1
       else
         return nil
@@ -456,12 +473,17 @@ module LiquidIL
           end
           idx += 1
         when IL::DUP
-          # DUP for caching - record that we need to cache this value
-          temp_assigns << expr
-          idx += 1
-        when IL::STORE_TEMP
-          # Complete the caching - but don't add to expr, just note the temp
-          idx += 1
+          # DUP for caching - check if followed by STORE_TEMP
+          if idx + 1 < instructions.length && instructions[idx + 1][0] == IL::STORE_TEMP
+            temp_idx = instructions[idx + 1][1]
+            # Generate preamble to cache the value and update expr to use the temp
+            preamble = "__t#{temp_idx}__ = #{expr}; "
+            expr = "__t#{temp_idx}__"
+            idx += 2  # Skip both DUP and STORE_TEMP
+          else
+            # Standalone DUP - bail out
+            break
+          end
         when IL::WRITE_VALUE
           # End of expression - include this in consumed count
           idx += 1
@@ -472,29 +494,27 @@ module LiquidIL
         end
       end
 
-      # Generate temp assignments if needed
-      if temp_assigns.any?
-        # For now, bail on complex caching patterns
-        # The expression we built doesn't include the temp handling
-        return nil
-      end
-
-      [expr, idx - start_idx]
+      [expr, idx - start_idx, preamble]
     end
 
     # Generate optimized output code for an expression
-    def generate_output_expression(expr, indent)
+    def generate_output_expression(expr, indent, preamble = nil)
       # Skip ErrorMarker check for simple lookups (they don't produce errors)
       # For now, keep the check for safety
       output_expr = "(__v__ = #{expr}; __v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__))"
 
+      code = String.new
+      code << "#{indent}#{preamble}\n" if preamble
+
       if @uses_capture
-        "#{indent}__write_output__(#{output_expr}, __output__, __scope__)\n"
+        code << "#{indent}__write_output__(#{output_expr}, __output__, __scope__)\n"
       elsif @uses_interrupts
-        "#{indent}__output__ << #{output_expr} unless __scope__.has_interrupt?\n"
+        code << "#{indent}__output__ << #{output_expr} unless __scope__.has_interrupt?\n"
       else
-        "#{indent}__output__ << #{output_expr}\n"
+        code << "#{indent}__output__ << #{output_expr}\n"
       end
+
+      code
     end
 
     def generate_state_machine(blocks)
