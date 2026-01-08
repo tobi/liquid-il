@@ -223,6 +223,68 @@ rake bench              # Core benchmarks
 ruby bench_partials.rb  # Partials/ecommerce benchmarks
 ```
 
+## Optimization Passes
+
+LiquidIL applies extensive optimizations at both IL compile time and Ruby code generation time.
+
+### IL Optimizer (compile-time)
+
+| Pass | Description |
+|------|-------------|
+| **Constant folding** | Evaluate `IS_TRUTHY`, `BOOL_NOT`, `COMPARE`, `CONTAINS` on constants |
+| **Constant filter folding** | Evaluate pure filters on constant inputs (e.g., `{{ "hello" \| upcase }}` → `"HELLO"`) |
+| **Constant write folding** | Merge `CONST_*` + `WRITE_VALUE` → `WRITE_RAW` |
+| **Path collapsing** | Merge `LOOKUP_CONST_KEY` chains into single `LOOKUP_CONST_PATH` |
+| **Variable path fusion** | Merge `FIND_VAR` + `LOOKUP_CONST_PATH` → `FIND_VAR_PATH` |
+| **Redundant truthy removal** | Remove `IS_TRUTHY` after `COMPARE`/`CONTAINS`/`BOOL_NOT` |
+| **Jump optimization** | Remove jumps to immediately following labels |
+| **Write merging** | Combine consecutive `WRITE_RAW` instructions |
+| **Dead code elimination** | Remove unreachable code after unconditional `JUMP`/`HALT` |
+| **Capture folding** | Fold `{% capture %}` blocks with only static content |
+| **Empty write removal** | Remove `WRITE_RAW` with empty strings |
+| **Constant propagation** | Replace `FIND_VAR` with known constant values |
+| **Loop invariant hoisting** | Hoist invariant lookups outside `{% for %}` loops |
+| **Repeated lookup caching** | Cache repeated variable lookups with `DUP`+`STORE_TEMP` |
+| **Partial inlining** | Pre-compile `{% render %}`/`{% include %}` partials |
+
+### Ruby Codegen (AOT compilation)
+
+| Optimization | Description |
+|--------------|-------------|
+| **Interrupt check elision** | Skip `has_interrupt?` guards when no `{% break %}`/`{% continue %}` in template |
+| **ForloopDrop elision** | Skip `ForloopDrop` allocation when `forloop` variable unused |
+| **Local temp variables** | Use Ruby locals (`__t0__`) instead of scope method calls |
+| **Direct expression generation** | Fold stack operations into single Ruby expressions |
+| **Write batching** | Combine consecutive raw writes into single `<<` |
+| **Capture mode detection** | Use simpler output code when no `{% capture %}` blocks |
+
+### Example: Before/After Optimization
+
+**Template:** `{{ product.name }} - ${{ product.price }}`
+
+**Unoptimized (stack-based):**
+```ruby
+__stack__ << __scope__.lookup("product")
+__stack__ << __stack__.last
+__scope__.store_temp(0, __stack__.pop)
+__stack__ << __lookup_property__(__stack__.pop, "name")
+__v__ = __stack__.pop
+__output__ << __v__.to_s unless __scope__.has_interrupt?
+__output__ << " - $" unless __scope__.has_interrupt?
+__stack__ << __scope__.load_temp(0)
+__stack__ << __lookup_property__(__stack__.pop, "price")
+__v__ = __stack__.pop
+__output__ << __v__.to_s unless __scope__.has_interrupt?
+```
+
+**Optimized (direct expressions):**
+```ruby
+__t0__ = __scope__.lookup("product")
+__output__ << __lookup_property__(__t0__, "name").to_s
+__output__ << " - $"
+__output__ << __lookup_property__(__t0__, "price").to_s
+```
+
 ## Limitations
 
 - **Limited error messages** - Some error formats differ from reference
