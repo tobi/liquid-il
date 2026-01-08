@@ -28,11 +28,39 @@ module LiquidIL
       @partials = partials || {}  # Shared partial cache across recursive compilations
       @partial_names_in_progress = partial_names_in_progress || Set.new  # Shared to prevent infinite recursion
       @uses_capture = detect_uses_capture
+      @uses_interrupts = detect_uses_interrupts
+      @forloop_usage = analyze_forloop_usage
     end
 
     # Check if template uses capture blocks (enables simpler output code when not)
     def detect_uses_capture
       @instructions.any? { |inst| inst[0] == IL::PUSH_CAPTURE }
+    end
+
+    # Check if template uses break/continue (enables simpler code without interrupt checks)
+    def detect_uses_interrupts
+      @instructions.any? { |inst| inst[0] == IL::PUSH_INTERRUPT }
+    end
+
+    # Check if any loop uses forloop variable
+    # Returns true if any forloop access exists in loops
+    def analyze_forloop_usage
+      loop_depth = 0
+
+      @instructions.each do |inst|
+        case inst[0]
+        when IL::FOR_INIT, IL::TABLEROW_INIT
+          loop_depth += 1
+        when IL::FOR_END, IL::TABLEROW_END
+          loop_depth -= 1
+        when IL::FIND_VAR
+          return true if loop_depth > 0 && (inst[1] == "forloop" || inst[1] == "tablerowloop")
+        when IL::FIND_VAR_PATH
+          return true if loop_depth > 0 && (inst[1] == "forloop" || inst[1] == "tablerowloop")
+        end
+      end
+
+      false
     end
 
     def compile
@@ -312,8 +340,10 @@ module LiquidIL
               combined = raw_strings.join
               if @uses_capture
                 code << "  __write_output__(#{combined.inspect}, __output__, __scope__)\n"
-              else
+              elsif @uses_interrupts
                 code << "  __output__ << #{combined.inspect} unless __scope__.has_interrupt?\n"
+              else
+                code << "  __output__ << #{combined.inspect}\n"
               end
               i = j
             else
@@ -363,8 +393,10 @@ module LiquidIL
               combined = raw_strings.join
               if @uses_capture
                 code << "      __write_output__(#{combined.inspect}, __output__, __scope__)\n"
-              else
+              elsif @uses_interrupts
                 code << "      __output__ << #{combined.inspect} unless __scope__.has_interrupt?\n"
+              else
+                code << "      __output__ << #{combined.inspect}\n"
               end
               i = j
             else
@@ -416,16 +448,22 @@ module LiquidIL
       when IL::WRITE_RAW
         if @uses_capture
           "  __write_output__(#{inst[1].inspect}, __output__, __scope__)\n"
-        else
-          # Fast path: no capture blocks, write directly (still check interrupts)
+        elsif @uses_interrupts
+          # Need interrupt check (break/continue possible)
           "  __output__ << #{inst[1].inspect} unless __scope__.has_interrupt?\n"
+        else
+          # Fast path: no capture, no interrupts - direct write
+          "  __output__ << #{inst[1].inspect}\n"
         end
       when IL::WRITE_VALUE
         if @uses_capture
           "  __v__ = __stack__.pop; __write_output__(__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__), __output__, __scope__)\n"
-        else
-          # Fast path: no capture blocks, write directly
+        elsif @uses_interrupts
+          # Need interrupt check (break/continue possible)
           "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__)) unless __scope__.has_interrupt?\n"
+        else
+          # Fast path: no capture, no interrupts - direct write
+          "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__))\n"
         end
       when IL::CONST_NIL
         "  __stack__ << nil\n"
@@ -541,15 +579,20 @@ module LiquidIL
       when IL::POP_INTERRUPT
         "  __scope__.pop_interrupt\n"
       when IL::PUSH_FORLOOP
-        <<~RUBY
-          __iter__ = __for_iterators__.last
-          __parent__ = __scope__.current_forloop
-          __forloop__ = LiquidIL::ForloopDrop.new(__iter__&.name || "", __iter__&.length || 0, __parent__)
-          __scope__.push_forloop(__forloop__)
-          __scope__.assign_local("forloop", __forloop__)
-        RUBY
+        if @forloop_usage
+          <<~RUBY
+            __iter__ = __for_iterators__.last
+            __parent__ = __scope__.current_forloop
+            __forloop__ = LiquidIL::ForloopDrop.new(__iter__&.name || "", __iter__&.length || 0, __parent__)
+            __scope__.push_forloop(__forloop__)
+            __scope__.assign_local("forloop", __forloop__)
+          RUBY
+        else
+          # forloop not used - skip ForloopDrop creation entirely
+          ""
+        end
       when IL::POP_FORLOOP
-        "  __scope__.pop_forloop\n"
+        @forloop_usage ? "  __scope__.pop_forloop\n" : ""
       when IL::RENDER_PARTIAL
         generate_partial_call(inst, idx, isolated: true)
       when IL::INCLUDE_PARTIAL
@@ -780,17 +823,30 @@ module LiquidIL
         continue_label, break_label = inst[1], inst[2]
         continue_target = @label_to_block[continue_label]
         break_target = @label_to_block[break_label]
-        <<~RUBY
-              __iter__ = __for_iterators__.last
-              __forloop__ = __scope__.current_forloop
-              __forloop__.index0 = __iter__.index0 if __forloop__ && __iter__
-              if __iter__ && __iter__.has_next?
-                __stack__ << __iter__.next_value
-                __pc__ = #{block.id + 1}
-              else
-                __pc__ = #{break_target}
-              end
-        RUBY
+        if @forloop_usage
+          <<~RUBY
+                __iter__ = __for_iterators__.last
+                __forloop__ = __scope__.current_forloop
+                __forloop__.index0 = __iter__.index0 if __forloop__ && __iter__
+                if __iter__ && __iter__.has_next?
+                  __stack__ << __iter__.next_value
+                  __pc__ = #{block.id + 1}
+                else
+                  __pc__ = #{break_target}
+                end
+          RUBY
+        else
+          # forloop not used - skip forloop index update
+          <<~RUBY
+                __iter__ = __for_iterators__.last
+                if __iter__ && __iter__.has_next?
+                  __stack__ << __iter__.next_value
+                  __pc__ = #{block.id + 1}
+                else
+                  __pc__ = #{break_target}
+                end
+          RUBY
+        end
       when IL::FOR_END
         <<~RUBY
               __iter__ = __for_iterators__.pop

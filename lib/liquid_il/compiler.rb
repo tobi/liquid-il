@@ -95,6 +95,9 @@ module LiquidIL
       # Optimization pass 16: Loop invariant code motion - hoist invariant lookups outside loops
       hoist_loop_invariants(instructions, spans)
 
+      # Optimization pass 17: Cache repeated base object lookups in straight-line code
+      cache_repeated_lookups(instructions, spans)
+
       instructions
     end
 
@@ -627,6 +630,113 @@ module LiquidIL
           end
         end
         i += 1
+      end
+    end
+
+    # Cache repeated base object lookups in straight-line code
+    # Detects multiple FIND_VAR for same variable and caches first lookup
+    def cache_repeated_lookups(instructions, spans)
+      # Find max temp index already in use
+      temp_counter = find_max_temp_index(instructions) + 1
+
+      # Find basic blocks (segments between control flow boundaries)
+      blocks = find_straight_line_blocks(instructions)
+
+      # Process each block
+      blocks.each do |block_start, block_end|
+        # Count FIND_VAR occurrences for each variable in this block
+        var_counts = Hash.new(0)
+        var_first_idx = {}
+
+        (block_start..block_end).each do |i|
+          inst = instructions[i]
+          if inst[0] == IL::FIND_VAR
+            var_name = inst[1]
+            var_counts[var_name] += 1
+            var_first_idx[var_name] ||= i
+          end
+        end
+
+        # Cache variables that appear 2+ times
+        cached = {}  # var_name -> temp_index
+        insertions = []  # [[index, [instructions]], ...]
+
+        var_counts.each do |var_name, count|
+          next if count < 2
+
+          first_idx = var_first_idx[var_name]
+          temp_idx = temp_counter
+          temp_counter += 1
+          cached[var_name] = temp_idx
+
+          # Insert DUP + STORE_TEMP immediately after first FIND_VAR
+          # These must stay together, so we store them as a pair
+          insertions << [first_idx, temp_idx, spans[first_idx]]
+        end
+
+        # Sort by index descending so we can insert without invalidating indices
+        insertions.sort_by! { |idx, _, _| -idx }
+
+        # Apply insertions
+        insertions.each do |first_idx, temp_idx, span|
+          # Insert DUP and STORE_TEMP right after FIND_VAR
+          instructions.insert(first_idx + 1, [IL::DUP])
+          spans.insert(first_idx + 1, span)
+          instructions.insert(first_idx + 2, [IL::STORE_TEMP, temp_idx])
+          spans.insert(first_idx + 2, span)
+        end
+
+        # Now replace subsequent FIND_VAR with LOAD_TEMP
+        # Need to rescan since indices changed
+        next if cached.empty?
+
+        seen = Hash.new(0)  # track how many times we've seen each var
+        i = block_start
+        while i < instructions.length
+          inst = instructions[i]
+          break if control_flow_boundary?(inst)  # past block end
+
+          if inst[0] == IL::FIND_VAR
+            var_name = inst[1]
+            if (temp_idx = cached[var_name])
+              seen[var_name] += 1
+              if seen[var_name] > 1
+                # Replace with LOAD_TEMP
+                instructions[i] = [IL::LOAD_TEMP, temp_idx]
+              end
+            end
+          end
+          i += 1
+        end
+      end
+    end
+
+    def find_straight_line_blocks(instructions)
+      blocks = []
+      block_start = 0
+
+      instructions.each_with_index do |inst, i|
+        if control_flow_boundary?(inst)
+          blocks << [block_start, i - 1] if i > block_start
+          block_start = i + 1
+        end
+      end
+
+      # Add final block
+      blocks << [block_start, instructions.length - 1] if block_start < instructions.length
+
+      blocks
+    end
+
+    def control_flow_boundary?(inst)
+      case inst[0]
+      when IL::LABEL, IL::JUMP, IL::JUMP_IF_TRUE, IL::JUMP_IF_FALSE, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT,
+           IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END, IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
+           IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HALT,
+           IL::ASSIGN, IL::ASSIGN_LOCAL  # Assignments invalidate cached values
+        true
+      else
+        false
       end
     end
 
