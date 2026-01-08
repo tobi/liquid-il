@@ -5,12 +5,14 @@ module LiquidIL
   # Optimized for hot-path performance with direct ivars instead of hash lookups
   class RenderScope
     attr_accessor :file_system
+    attr_reader :strict_errors
 
-    def initialize(static_environments, file_system, depth = 0)
+    def initialize(static_environments, file_system, depth = 0, strict_errors: false)
       @static_environments = static_environments
       @locals = {}
       @file_system = file_system
       @depth = depth
+      @strict_errors = strict_errors
       # Eagerly initialize hot-path arrays as direct ivars
       @interrupts = []
       @capture_stack = []
@@ -26,7 +28,11 @@ module LiquidIL
 
     def lookup(key)
       key = key.to_s unless key.is_a?(String)
-      @locals[key] || @static_environments&.[](key)
+      if @locals.key?(key)
+        @locals[key]
+      else
+        @static_environments&.[](key)
+      end
     end
 
     def assign(key, value)
@@ -45,7 +51,7 @@ module LiquidIL
     def render_depth_exceeded?(strict: false) = strict ? @depth >= 100 : @depth > 100
 
     def isolated
-      RenderScope.new(@static_environments, @file_system, @depth)
+      RenderScope.new(@static_environments, @file_system, @depth, strict_errors: @strict_errors)
     end
 
     # Legacy registers accessor for compatibility
@@ -333,7 +339,7 @@ module LiquidIL
     # --- Isolation for render ---
 
     def isolated
-      RenderScope.new(@static_environments, @file_system, @render_depth)
+      RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors)
     end
 
     private
