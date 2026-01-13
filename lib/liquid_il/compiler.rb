@@ -897,7 +897,10 @@ module LiquidIL
         inst = instructions[i]
         opcode = inst[0]
 
-        if (opcode == IL::RENDER_PARTIAL || opcode == IL::INCLUDE_PARTIAL)
+        if opcode == IL::RENDER_PARTIAL
+          # Only inline RENDER_PARTIAL, not INCLUDE_PARTIAL
+          # Include shares scope AND propagates interrupts (break/continue) to outer loops,
+          # which requires runtime handling that can't be inlined safely
           args = inst[2]
           compiled = args["__compiled_template__"]
 
