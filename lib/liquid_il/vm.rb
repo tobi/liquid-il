@@ -26,6 +26,9 @@ module LiquidIL
     # Default output buffer capacity (8KB)
     OUTPUT_CAPACITY = 8192
 
+    # Fixed register file size - pre-allocated for fast access
+    REGISTER_COUNT = 16
+
     def initialize(instructions, context, current_file: nil, spans: nil, source: nil)
       @instructions = instructions
       @context = context
@@ -36,6 +39,7 @@ module LiquidIL
       @current_file = current_file  # Current file name for error messages
       @spans = spans  # Source spans for line tracking
       @source = source  # Source code for line counting
+      @regs = Array.new(REGISTER_COUNT)  # Fixed register file for value caching
     end
 
     # Raise a runtime error with the current file context and line number
@@ -534,15 +538,13 @@ module LiquidIL
           @pc += 1
 
         when IL::STORE_TEMP
-          index = inst[1]
-          value = @stack.pop
-          @context.store_temp(index, value)
+          # Use local register file for fast access (no method call)
+          @regs[inst[1]] = @stack.pop
           @pc += 1
 
         when IL::LOAD_TEMP
-          index = inst[1]
-          value = @context.load_temp(index)
-          @stack.push(value)
+          # Use local register file for fast access (no method call)
+          @stack.push(@regs[inst[1]])
           @pc += 1
 
         when IL::IFCHANGED_CHECK
