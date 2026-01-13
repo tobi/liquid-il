@@ -645,4 +645,87 @@ module LiquidIL
       @last_use
     end
   end
+
+  # Forward pass temp register allocator
+  #
+  # Rewrites STORE_TEMP/LOAD_TEMP indices to minimize peak register usage by
+  # reusing temp slots that become dead. Uses liveness analysis to identify
+  # when temps are no longer needed.
+  #
+  # Usage:
+  #   allocator = TempAllocator.new(instructions)
+  #   allocator.allocate!  # Modifies instructions in place
+  #   allocator.peak_usage  # => maximum number of live temps at any point
+  #
+  class TempAllocator
+    attr_reader :peak_usage
+
+    # @param instructions [Array] IL instruction array to rewrite
+    def initialize(instructions)
+      @instructions = instructions
+      @liveness = TempLiveness.new(instructions)
+      @peak_usage = 0
+    end
+
+    # Rewrites temp indices in place to minimize peak register usage
+    # @return [Array] the modified instructions array
+    def allocate!
+      last_use_map = @liveness.last_use_map
+      return @instructions if last_use_map.empty?
+
+      # Mapping from original temp index to allocated slot
+      temp_to_slot = {}
+
+      # Pool of available (dead) slots, sorted for deterministic allocation
+      available_slots = []
+
+      # Next fresh slot to allocate when pool is empty
+      next_slot = 0
+
+      # Track currently live slots for peak calculation
+      live_slots = Set.new
+
+      @instructions.each_with_index do |inst, i|
+        opcode = inst[0]
+
+        case opcode
+        when IL::STORE_TEMP
+          original_temp = inst[1]
+
+          # Allocate a slot: reuse from pool or get fresh
+          slot = if available_slots.any?
+                   available_slots.shift
+                 else
+                   s = next_slot
+                   next_slot += 1
+                   s
+                 end
+
+          temp_to_slot[original_temp] = slot
+          live_slots << slot
+          @peak_usage = [live_slots.size, @peak_usage].max
+
+          # Rewrite the instruction
+          inst[1] = slot
+
+        when IL::LOAD_TEMP
+          original_temp = inst[1]
+          slot = temp_to_slot[original_temp]
+
+          # Rewrite the instruction
+          inst[1] = slot if slot
+
+          # Check if this is the last use - if so, return slot to pool
+          if last_use_map[original_temp] == i
+            live_slots.delete(slot)
+            # Insert in sorted order for deterministic allocation
+            insert_idx = available_slots.bsearch_index { |s| s > slot } || available_slots.size
+            available_slots.insert(insert_idx, slot)
+          end
+        end
+      end
+
+      @instructions
+    end
+  end
 end

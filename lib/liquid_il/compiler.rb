@@ -104,7 +104,14 @@ module LiquidIL
       # Optimization pass 18: Local value numbering - eliminate redundant computations
       value_numbering(instructions, spans)
 
+      # Optimization pass 19: Temp register allocation - reuse dead temp slots
+      allocate_temps(instructions)
+
       instructions
+    end
+
+    def allocate_temps(instructions)
+      TempAllocator.new(instructions).allocate!
     end
 
     def fold_const_ops(instructions, spans)
