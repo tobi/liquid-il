@@ -885,22 +885,18 @@ module LiquidIL
 
     # Generate a canonical key for a value-producing instruction
     # Returns nil for instructions that shouldn't be cached
-    def value_expression_key(inst, modified_vars)
-      case inst[0]
-      when IL::FIND_VAR
-        var_name = inst[1]
-        return nil if modified_vars.include?(var_name)
-        "var:#{var_name}"
-
-      when IL::FIND_VAR_PATH
-        var_name = inst[1]
-        return nil if modified_vars.include?(var_name)
-        path = inst[2]
-        "var:#{var_name}:#{path.join('.')}"
-
-      else
-        nil
-      end
+    #
+    # NOTE: FIND_VAR and FIND_VAR_PATH are intentionally NOT cached because
+    # the VM's hash lookups are faster than DUP/STORE_TEMP/LOAD_TEMP overhead.
+    # This pass is reserved for expensive operations like certain filter calls.
+    #
+    # Future candidates for caching:
+    # - Expensive pure filter calls (e.g., json, sort on large arrays)
+    # - Complex computed properties on drops
+    def value_expression_key(_inst, _modified_vars)
+      # Currently returns nil for all instructions - the infrastructure exists
+      # for future use with expensive operations where caching pays off
+      nil
     end
 
     def inline_partials_enabled?
