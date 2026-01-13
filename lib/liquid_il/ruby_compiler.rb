@@ -738,7 +738,8 @@ module LiquidIL
       when IL::PUSH_INTERRUPT
         "  __scope__.push_interrupt(#{inst[1].inspect})\n"
       when IL::POP_INTERRUPT
-        "  __scope__.pop_interrupt\n"
+        # Only emit if template uses break/continue
+        @uses_interrupts ? "  __scope__.pop_interrupt\n" : ""
       when IL::PUSH_FORLOOP
         if @forloop_usage
           <<~RUBY
@@ -844,6 +845,7 @@ module LiquidIL
     end
 
     # Generate Ruby code to evaluate an expression (handles literals, ranges, and variables)
+    # This compiles the expression at build time instead of parsing at runtime
     def generate_eval_expression(expr)
       return "nil" unless expr
       expr_str = expr.to_s
@@ -858,8 +860,22 @@ module LiquidIL
         return "LiquidIL::RangeValue.new(#{Regexp.last_match(1)}, #{Regexp.last_match(2)})"
       end
 
-      # Handle variable lookups (possibly with property access)
-      "__eval_expression__(#{expr_str.inspect}, __scope__)"
+      # Parse variable path at compile time (avoids runtime regex/string parsing)
+      parts = expr_str.scan(/(\w+)|\[(\d+)\]|\[['"](\w+)['"]\]/)
+      return "nil" if parts.empty?
+
+      if parts.size == 1
+        # Simple variable lookup - most common case
+        "__scope__.lookup(#{parts[0][0].inspect})"
+      else
+        # Multi-part path: __lookup_path__(__scope__.lookup("var"), "prop1", "prop2")
+        first_var = parts[0][0]
+        rest_keys = parts[1..].map do |match|
+          key = match[0] || match[1] || match[2]
+          key.to_s =~ /^\d+$/ ? key.to_i : key.inspect
+        end
+        "__lookup_path__(__scope__.lookup(#{first_var.inspect}), #{rest_keys.join(", ")})"
+      end
     end
 
     def compile_partial(name)
@@ -958,18 +974,24 @@ module LiquidIL
         RUBY
       when IL::JUMP_IF_INTERRUPT
         target = @label_to_block[inst[1]]
-        <<~RUBY
-              if __scope__.has_interrupt?
-                __int__ = __scope__.pop_interrupt
-                if __int__ == :continue
-                  __pc__ = #{block.id + 1}
+        if @uses_interrupts
+          # Template has break/continue - need full interrupt handling
+          <<~RUBY
+                if __scope__.has_interrupt?
+                  __int__ = __scope__.pop_interrupt
+                  if __int__ == :continue
+                    __pc__ = #{block.id + 1}
+                  else
+                    __pc__ = #{target}
+                  end
                 else
-                  __pc__ = #{target}
+                  __pc__ = #{block.id + 1}
                 end
-              else
-                __pc__ = #{block.id + 1}
-              end
-        RUBY
+          RUBY
+        else
+          # No break/continue - simple fall-through
+          "      __pc__ = #{block.id + 1}\n"
+        end
       when IL::FOR_INIT
         var_name, loop_name, has_limit, has_offset, offset_continue, reversed, recovery_label = inst[1..]
         recovery_target = recovery_label ? @label_to_block[recovery_label] : "(__pc__ = #{block.id + 1}; break)"
@@ -1654,10 +1676,11 @@ module LiquidIL
       @partials = compiled_result.partials || {}
     end
 
-    def render(assigns = {}, **extra_assigns)
+    def render(assigns = {}, render_errors: true, **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       scope = Scope.new(assigns, registers: @context&.registers&.dup || {}, strict_errors: @context&.strict_errors || false)
       scope.file_system = @context&.file_system
+      scope.render_errors = render_errors
 
       if @uses_vm
         # Fall back to VM
@@ -1667,6 +1690,7 @@ module LiquidIL
         @compiled_proc.call(scope, @spans, @source)
       end
     rescue LiquidIL::RuntimeError => e
+      raise unless render_errors
       output = e.partial_output || ""
       location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
       output + "Liquid error (#{location}): #{e.message}"
@@ -1767,9 +1791,7 @@ module LiquidIL
         code << "    # Check render depth to prevent infinite recursion\n"
         code << "    __parent_scope__.push_render_depth\n"
         code << "    if __parent_scope__.render_depth_exceeded?(strict: !isolated)\n"
-        code << "      __parent_scope__.pop_render_depth\n"
-        code << "      __write_output__(\"Liquid error (#{name} line 1): Nesting too deep\", __output__, __parent_scope__)\n"
-        code << "      return\n"
+        code << "      raise LiquidIL::RuntimeError.new(\"Nesting too deep\", file: #{name.inspect}, line: 1)\n"
         code << "    end\n"
         code << "\n"
         code << "    __scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
@@ -1781,11 +1803,16 @@ module LiquidIL
         code << "    __current_file__ = #{name.inspect}\n"
         code << "\n"
         code << indent_code(body, 4)
-        code << "\n"
-        code << "    __parent_scope__.pop_render_depth\n"
         code << "  rescue LiquidIL::RuntimeError => e\n"
+        code << "    raise unless __parent_scope__.render_errors\n"
+        code << "    __write_output__(e.partial_output, __output__, __scope__) if e.partial_output\n"
+        code << "    location = e.file ? \"\#{e.file} line \#{e.line}\" : \"line \#{e.line}\"\n"
+        code << "    __write_output__(\"Liquid error (\#{location}): \#{e.message}\", __output__, __scope__)\n"
+        code << "  rescue StandardError => e\n"
+        code << "    raise unless __parent_scope__.render_errors\n"
+        code << "    __write_output__(\"Liquid error (#{name} line 1): \#{e.message}\", __output__, __scope__)\n"
+        code << "  ensure\n"
         code << "    __parent_scope__.pop_render_depth\n"
-        code << "    __write_output__(\"Liquid error (\#{e.file || #{name.inspect}} line \#{e.line}): \#{e.message}\", __output__, __scope__)\n"
         code << "  end\n"
       end
 

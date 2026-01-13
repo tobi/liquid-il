@@ -112,17 +112,17 @@ module LiquidIL
     #   template.render(name: "World")
     #   template.render({ "name" => "World" })
     #
-    def render(assigns = {}, **extra_assigns)
+    def render(assigns = {}, render_errors: true, **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       scope = Scope.new(assigns, registers: @context&.registers&.dup || {}, strict_errors: @context&.strict_errors || false)
       scope.file_system = @context&.file_system
-      begin
-        VM.execute(@instructions, scope, spans: @spans, source: @source)
-      rescue LiquidIL::RuntimeError => e
-        output = e.partial_output || ""
-        location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
-        output + "Liquid error (#{location}): #{e.message}"
-      end
+      scope.render_errors = render_errors
+      VM.execute(@instructions, scope, spans: @spans, source: @source)
+    rescue LiquidIL::RuntimeError => e
+      raise unless render_errors
+      output = e.partial_output || ""
+      location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
+      output + "Liquid error (#{location}): #{e.message}"
     end
 
     class << self

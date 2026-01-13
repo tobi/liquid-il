@@ -25,5 +25,6 @@ LiquidSpec.compile do |ctx, source, compile_options|
 end
 
 LiquidSpec.render do |ctx, assigns, render_options|
-  ctx[:template].render(assigns)
+  render_errors = render_options.fetch(:render_errors, true)
+  ctx[:template].render(assigns, render_errors: render_errors)
 end

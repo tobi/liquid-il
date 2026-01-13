@@ -318,6 +318,7 @@ module LiquidIL
             @for_iterators.push(iterator)
             @pc += 1
           rescue LiquidIL::RuntimeError => e
+            raise unless @context.render_errors
             # Error recovery: output error message and jump to recovery point
             location = @current_file ? "#{@current_file} line #{e.line}" : "line #{e.line}"
             @output << "Liquid error (#{location}): #{e.message}"
@@ -1363,46 +1364,38 @@ module LiquidIL
         partial_context.assign('forloop', forloop)
       end
 
-      template = begin
-                   if compiled_template
-                     compiled_template[:template] ||= Template.new(
-                       compiled_template[:source],
-                       compiled_template[:instructions],
-                       compiled_template[:spans]
-                     )
-                   else
-                     Template.parse(source)
-                   end
-                 rescue LiquidIL::SyntaxError => e
-                   line = if e.respond_to?(:line) && e.position
-                            e.line
-                          elsif e.message =~ /at position (\d+)/
-                            pos = $1.to_i
-                            source[0, pos].count("\n") + 1
-                          else
-                            1
-                          end
-                   write_output("Liquid syntax error (#{name} line #{line}): #{e.message}")
-                   return
-                 rescue LiquidIL::Error => e
-                   write_output("Liquid error (#{name} line 1): #{e.message}")
-                   return
+      template = if compiled_template
+                   compiled_template[:template] ||= Template.new(
+                     compiled_template[:source],
+                     compiled_template[:instructions],
+                     compiled_template[:spans]
+                   )
+                 else
+                   Template.parse(source)
                  end
 
-      begin
-        result = VM.execute(template.instructions, partial_context,
-                            current_file: name, spans: template.spans, source: source)
-        write_output(result)
-      rescue LiquidIL::RuntimeError => e
-        # Write any partial output before the error
-        write_output(e.partial_output) if e.partial_output
-        # Format error message with file and line info
-        location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
-        write_output("Liquid error (#{location}): #{e.message}")
-      rescue StandardError => e
-        # Catch errors from drops/filters and format as Liquid error
-        write_output("Liquid error (#{name} line 1): #{e.message}")
-      end
+      result = VM.execute(template.instructions, partial_context,
+                          current_file: name, spans: template.spans, source: source)
+      write_output(result)
+    rescue LiquidIL::SyntaxError => e
+      raise unless @context.render_errors
+      line = if e.respond_to?(:line) && e.position
+               e.line
+             elsif e.message =~ /at position (\d+)/
+               pos = $1.to_i
+               source[0, pos].count("\n") + 1
+             else
+               1
+             end
+      write_output("Liquid syntax error (#{name} line #{line}): #{e.message}")
+    rescue LiquidIL::RuntimeError => e
+      raise unless @context.render_errors
+      write_output(e.partial_output) if e.partial_output
+      location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
+      write_output("Liquid error (#{location}): #{e.message}")
+    rescue StandardError => e
+      raise unless @context.render_errors
+      write_output("Liquid error (#{name} line 1): #{e.message}")
     ensure
       @context.pop_render_depth
     end
