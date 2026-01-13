@@ -98,6 +98,9 @@ module LiquidIL
       # Optimization pass 17: Cache repeated base object lookups in straight-line code
       cache_repeated_lookups(instructions, spans)
 
+      # Optimization pass 18: Local value numbering - eliminate redundant computations
+      value_numbering(instructions, spans)
+
       instructions
     end
 
@@ -733,10 +736,170 @@ module LiquidIL
       when IL::LABEL, IL::JUMP, IL::JUMP_IF_TRUE, IL::JUMP_IF_FALSE, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT,
            IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END, IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
            IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HALT,
-           IL::ASSIGN, IL::ASSIGN_LOCAL  # Assignments invalidate cached values
+           IL::ASSIGN, IL::ASSIGN_LOCAL,  # Assignments invalidate cached values
+           IL::INCREMENT, IL::DECREMENT   # Counters also invalidate cached values
         true
       else
         false
+      end
+    end
+
+    # Local value numbering: eliminate redundant computations within basic blocks
+    # Assigns value numbers to expressions and reuses cached results when the same
+    # computation is performed again.
+    def value_numbering(instructions, spans)
+      temp_counter = find_max_temp_index(instructions) + 1
+      blocks = find_straight_line_blocks(instructions)
+
+      blocks.each do |block_start, block_end|
+        value_number_block(instructions, spans, block_start, block_end, temp_counter)
+        # Update temp_counter for next block
+        temp_counter = find_max_temp_index(instructions) + 1
+      end
+    end
+
+    def value_number_block(instructions, spans, block_start, block_end, temp_counter)
+      # Map from value expression -> { temp_index:, first_idx: }
+      # Value expressions are canonical representations of computations
+      value_table = {}
+
+      # Track which variables have been modified in this block
+      modified_vars = Set.new
+
+      # First pass: identify repeated expressions and assign temp slots
+      insertions = []  # [[after_idx, temp_idx, span], ...]
+
+      i = block_start
+      while i <= block_end
+        inst = instructions[i]
+        opcode = inst[0]
+
+        # Get value expression for this instruction BEFORE marking modifications
+        # This way the current lookup can still be cached before the modification
+        expr_key = value_expression_key(inst, modified_vars)
+
+        if expr_key
+          if (existing = value_table[expr_key])
+            # Already computed - mark for replacement
+            # Don't do anything here, we'll handle in second pass
+          else
+            # First occurrence - check if it appears again in the block
+            # without intervening modifications
+            appears_again = false
+            lookahead_modified = modified_vars.dup
+            j = i + 1
+            while j <= block_end
+              other_inst = instructions[j]
+
+              # Check for modifications BEFORE checking the expression
+              case other_inst[0]
+              when IL::ASSIGN, IL::ASSIGN_LOCAL, IL::INCREMENT, IL::DECREMENT
+                var_name = other_inst[1]
+                # If this modification affects our expression, stop looking
+                if expr_key.start_with?("var:#{var_name}") &&
+                   (expr_key == "var:#{var_name}" || expr_key.start_with?("var:#{var_name}:"))
+                  break
+                end
+                lookahead_modified << var_name
+              end
+
+              other_key = value_expression_key(other_inst, lookahead_modified)
+              if other_key == expr_key
+                appears_again = true
+                break
+              end
+              j += 1
+            end
+
+            if appears_again
+              # Cache this value
+              value_table[expr_key] = { temp_index: temp_counter, first_idx: i }
+              insertions << [i, temp_counter, spans[i]]
+              temp_counter += 1
+            end
+          end
+        end
+
+        # Mark modifications AFTER processing the instruction
+        case opcode
+        when IL::ASSIGN, IL::ASSIGN_LOCAL, IL::INCREMENT, IL::DECREMENT
+          modified_vars << inst[1]
+          # Invalidate any cached values for this variable
+          value_table.delete_if { |k, _| k.start_with?("var:#{inst[1]}") && (k == "var:#{inst[1]}" || k.start_with?("var:#{inst[1]}:")) }
+        end
+
+        i += 1
+      end
+
+      # Apply insertions (DUP + STORE_TEMP after first occurrence)
+      # Process in reverse order to maintain indices
+      insertions.sort_by! { |idx, _, _| -idx }
+      insertions.each do |after_idx, temp_idx, span|
+        instructions.insert(after_idx + 1, [IL::DUP])
+        spans.insert(after_idx + 1, span)
+        instructions.insert(after_idx + 2, [IL::STORE_TEMP, temp_idx])
+        spans.insert(after_idx + 2, span)
+      end
+
+      # Recalculate block boundaries after insertions
+      return if insertions.empty?
+
+      # Second pass: replace subsequent occurrences with LOAD_TEMP
+      # Rebuild value table with updated indices
+      value_table_updated = {}
+      modified_vars.clear
+
+      i = block_start
+      while i < instructions.length
+        inst = instructions[i]
+        break if control_flow_boundary?(inst)
+
+        opcode = inst[0]
+
+        case opcode
+        when IL::STORE_TEMP
+          # Find the value expression for the instruction before DUP
+          if i >= 2 && instructions[i - 1][0] == IL::DUP
+            prev_inst = instructions[i - 2]
+            expr_key = value_expression_key(prev_inst, modified_vars)
+            if expr_key
+              value_table_updated[expr_key] = inst[1]  # temp index
+            end
+          end
+        when IL::ASSIGN, IL::ASSIGN_LOCAL, IL::INCREMENT, IL::DECREMENT
+          # Invalidate cached value for this variable
+          var_name = inst[1]
+          value_table_updated.delete_if { |k, _| k.start_with?("var:#{var_name}") && (k == "var:#{var_name}" || k.start_with?("var:#{var_name}:")) }
+          modified_vars << var_name
+        else
+          expr_key = value_expression_key(inst, modified_vars)
+          if expr_key && (temp_idx = value_table_updated[expr_key])
+            # Replace with LOAD_TEMP
+            instructions[i] = [IL::LOAD_TEMP, temp_idx]
+          end
+        end
+
+        i += 1
+      end
+    end
+
+    # Generate a canonical key for a value-producing instruction
+    # Returns nil for instructions that shouldn't be cached
+    def value_expression_key(inst, modified_vars)
+      case inst[0]
+      when IL::FIND_VAR
+        var_name = inst[1]
+        return nil if modified_vars.include?(var_name)
+        "var:#{var_name}"
+
+      when IL::FIND_VAR_PATH
+        var_name = inst[1]
+        return nil if modified_vars.include?(var_name)
+        path = inst[2]
+        "var:#{var_name}:#{path.join('.')}"
+
+      else
+        nil
       end
     end
 
