@@ -894,16 +894,16 @@ module LiquidIL
     # - Statically known name (has __compiled_template__)
     # - No with/for modifiers
     # - Simple constant arguments only
+    #
+    # For RENDER_PARTIAL: wraps with PUSH_SCOPE/POP_SCOPE (isolated scope)
+    # For INCLUDE_PARTIAL: no scope wrapper (shares caller's scope, interrupts propagate naturally)
     def inline_simple_partials(instructions, spans)
       i = 0
       while i < instructions.length
         inst = instructions[i]
         opcode = inst[0]
 
-        if opcode == IL::RENDER_PARTIAL
-          # Only inline RENDER_PARTIAL, not INCLUDE_PARTIAL
-          # Include shares scope AND propagates interrupts (break/continue) to outer loops,
-          # which requires runtime handling that can't be inlined safely
+        if opcode == IL::RENDER_PARTIAL || opcode == IL::INCLUDE_PARTIAL
           args = inst[2]
           compiled = args["__compiled_template__"]
 

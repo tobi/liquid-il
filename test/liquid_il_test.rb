@@ -236,9 +236,10 @@ class PartialInliningTest < Minitest::Test
     ctx = LiquidIL::Context.new(file_system: fs)
     opt = LiquidIL::Optimizer.optimize(ctx)
     template = opt.parse("{% include 'shared' %}")
-    inst = template.instructions.find { |i| i[0] == LiquidIL::IL::INCLUDE_PARTIAL }
-    refute_nil inst
-    refute_nil inst[2]["__compiled_template__"]
+    # Include is fully inlined - no INCLUDE_PARTIAL instruction, just the content
+    assert_nil template.instructions.find { |i| i[0] == LiquidIL::IL::INCLUDE_PARTIAL }
+    # Should have the inlined WRITE_RAW from the partial
+    assert template.instructions.any? { |i| i[0] == LiquidIL::IL::WRITE_RAW && i[1] == "Shared: " }
     assert_equal "Shared: hi", template.render("greeting" => "hi")
   end
 
