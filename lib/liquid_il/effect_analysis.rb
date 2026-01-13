@@ -646,6 +646,26 @@ module LiquidIL
     end
   end
 
+  # Register allocation optimization pass
+  #
+  # Combines backward liveness analysis with forward allocation to minimize
+  # peak temp register usage. Follows the optimization pass pattern with an
+  # optimize(ir) class method that returns optimized IR.
+  #
+  # Usage:
+  #   optimized_ir = RegisterAllocator.optimize(instructions)
+  #
+  class RegisterAllocator
+    # Optimization pass entry point - analyzes and rewrites temp indices
+    #
+    # @param ir [Array] IL instruction array
+    # @return [Array] optimized instruction array with minimized temp indices
+    def self.optimize(ir)
+      allocator = TempAllocator.new(ir)
+      allocator.allocate!
+    end
+  end
+
   # Forward pass temp register allocator
   #
   # Rewrites STORE_TEMP/LOAD_TEMP indices to minimize peak register usage by

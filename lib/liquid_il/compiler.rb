@@ -105,13 +105,9 @@ module LiquidIL
       value_numbering(instructions, spans)
 
       # Optimization pass 19: Temp register allocation - reuse dead temp slots
-      allocate_temps(instructions)
+      RegisterAllocator.optimize(instructions)
 
       instructions
-    end
-
-    def allocate_temps(instructions)
-      TempAllocator.new(instructions).allocate!
     end
 
     def fold_const_ops(instructions, spans)
