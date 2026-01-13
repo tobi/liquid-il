@@ -45,6 +45,9 @@ module LiquidIL
     private
 
     def optimize(instructions, spans)
+      # Optimization pass 0: Inline simple partials (enables cross-template optimizations)
+      inline_simple_partials(instructions, spans)
+
       # Optimization pass 1: Fold constant operations
       fold_const_ops(instructions, spans)
 
@@ -881,6 +884,101 @@ module LiquidIL
 
         i += 1
       end
+    end
+
+    # Inline simple partials: Replace RENDER_PARTIAL/INCLUDE_PARTIAL with inlined instructions
+    # Only inlines partials with:
+    # - Statically known name (has __compiled_template__)
+    # - No with/for modifiers
+    # - Simple constant arguments only
+    def inline_simple_partials(instructions, spans)
+      i = 0
+      while i < instructions.length
+        inst = instructions[i]
+        opcode = inst[0]
+
+        if (opcode == IL::RENDER_PARTIAL || opcode == IL::INCLUDE_PARTIAL)
+          args = inst[2]
+          compiled = args["__compiled_template__"]
+
+          # Only inline if we have pre-compiled template and no complex modifiers
+          if compiled && can_inline_partial?(args)
+            partial_instructions = compiled[:instructions]
+            partial_spans = compiled[:spans]
+
+            # Build replacement instruction sequence
+            replacement = []
+            replacement_spans = []
+
+            # For render: push isolated scope
+            if opcode == IL::RENDER_PARTIAL
+              replacement << [IL::PUSH_SCOPE]
+              replacement_spans << spans[i]
+            end
+
+            # Add argument assignments (constant args only)
+            args.each do |key, value|
+              next if key.start_with?("__")
+              replacement << [IL::CONST_STRING, value.to_s] if value.is_a?(String)
+              replacement << [IL::CONST_INT, value] if value.is_a?(Integer)
+              replacement << [IL::CONST_FLOAT, value] if value.is_a?(Float)
+              replacement << [IL::CONST_TRUE] if value == true
+              replacement << [IL::CONST_FALSE] if value == false
+              replacement << [IL::CONST_NIL] if value.nil?
+              next unless replacement.last # skip non-constant args
+              replacement << [IL::ASSIGN_LOCAL, key]
+              replacement_spans << spans[i]
+              replacement_spans << spans[i]
+            end
+
+            # Add partial instructions (skip final HALT)
+            partial_instructions.each_with_index do |partial_inst, j|
+              next if partial_inst[0] == IL::HALT
+              replacement << partial_inst.dup
+              replacement_spans << (partial_spans[j] || spans[i])
+            end
+
+            # For render: pop scope
+            if opcode == IL::RENDER_PARTIAL
+              replacement << [IL::POP_SCOPE]
+              replacement_spans << spans[i]
+            end
+
+            # Replace the RENDER_PARTIAL/INCLUDE_PARTIAL with inlined sequence
+            instructions.slice!(i, 1)
+            spans.slice!(i, 1)
+            instructions.insert(i, *replacement)
+            spans.insert(i, *replacement_spans)
+
+            # Don't increment i - process the newly inserted instructions
+            next
+          end
+        end
+
+        i += 1
+      end
+    end
+
+    def can_inline_partial?(args)
+      # Don't inline if there are complex modifiers
+      return false if args["__with__"]
+      return false if args["__for__"]
+      return false if args["__dynamic_name__"]
+      return false if args["__invalid_name__"]
+
+      # Only inline if all arguments are simple constants
+      args.each do |key, value|
+        next if key.start_with?("__")
+        # Allow simple constant types only
+        case value
+        when String, Integer, Float, TrueClass, FalseClass, NilClass
+          # OK
+        else
+          return false # Complex argument (hash, variable lookup, etc.)
+        end
+      end
+
+      true
     end
 
     # Generate a canonical key for a value-producing instruction
