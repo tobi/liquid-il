@@ -38,3 +38,6 @@
 
 # Bundler lock (optional - remove if you want to track it)
 # Gemfile.lock
+
+# bv (beads viewer) local config and caches
+.bv/

@@ -17,6 +17,7 @@ ADAPTER_OPTIMIZED_COMPILED = "spec/liquid_il_optimized_compiled.rb"
 desc "Run the liquid-spec test suite"
 task :spec do
   system "bash -c 'bundle exec liquid-spec run #{ADAPTER_VM} 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run spec matrix comparing LiquidIL against reference implementations"
