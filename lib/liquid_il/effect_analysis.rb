@@ -712,16 +712,23 @@ module LiquidIL
         when IL::STORE_TEMP
           original_temp = inst[1]
 
-          # Allocate a slot: reuse from pool or get fresh
-          slot = if available_slots.any?
-                   available_slots.shift
-                 else
-                   s = next_slot
-                   next_slot += 1
-                   s
-                 end
+          # Check if this temp already has an allocated slot (re-definition)
+          # This can happen with control flow (e.g., case/when setting a flag)
+          # In that case, keep using the same slot to preserve correctness
+          slot = temp_to_slot[original_temp]
 
-          temp_to_slot[original_temp] = slot
+          unless slot
+            # First definition - allocate a new slot
+            slot = if available_slots.any?
+                     available_slots.shift
+                   else
+                     s = next_slot
+                     next_slot += 1
+                     s
+                   end
+            temp_to_slot[original_temp] = slot
+          end
+
           live_slots << slot
           @peak_usage = [live_slots.size, @peak_usage].max
 

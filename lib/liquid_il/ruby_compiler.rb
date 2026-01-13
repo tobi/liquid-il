@@ -38,12 +38,17 @@ module LiquidIL
     end
 
     # Check if template uses break/continue (enables simpler code without interrupt checks)
+    # Also returns true if template uses INCLUDE_PARTIAL since included partials may
+    # contain break/continue that propagate to the parent template
     def detect_uses_interrupts
-      @instructions.any? { |inst| inst[0] == IL::PUSH_INTERRUPT }
+      @instructions.any? do |inst|
+        inst[0] == IL::PUSH_INTERRUPT || inst[0] == IL::INCLUDE_PARTIAL
+      end
     end
 
     # Check if any loop uses forloop variable
-    # Returns true if any forloop access exists in loops
+    # Returns true if any forloop access exists in loops, or if include is used
+    # inside a loop (since the included partial might access forloop.parentloop)
     def analyze_forloop_usage
       loop_depth = 0
 
@@ -57,6 +62,9 @@ module LiquidIL
           return true if loop_depth > 0 && (inst[1] == "forloop" || inst[1] == "tablerowloop")
         when IL::FIND_VAR_PATH
           return true if loop_depth > 0 && (inst[1] == "forloop" || inst[1] == "tablerowloop")
+        when IL::INCLUDE_PARTIAL
+          # Include inside a loop might access forloop.parentloop
+          return true if loop_depth > 0
         end
       end
 
@@ -88,7 +96,13 @@ module LiquidIL
         can_compile: true,
         partials: @partials
       )
+    rescue PartialCompilationError
+      # A nested partial couldn't be compiled - fall back to VM
+      fallback_result
     end
+
+    # Error raised when partial compilation fails (e.g., missing nested partial)
+    class PartialCompilationError < StandardError; end
 
     private
 
@@ -98,9 +112,9 @@ module LiquidIL
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
           args = inst[2] || {}
           # Dynamic partials cannot be compiled - require runtime resolution
-          if args["__dynamic_name__"]
-            raise DynamicPartialError, "Cannot compile template with dynamic partial name: {% render #{args["__dynamic_name__"]} %}"
-          end
+          return false if args["__dynamic_name__"]
+          # Invalid partial names (nil, non-string) need VM for proper error handling
+          return false if args["__invalid_name__"]
           # If no file system, can't load partials - fall back to VM
           return false unless @context&.file_system
         end
@@ -109,7 +123,7 @@ module LiquidIL
       true
     end
 
-    # Error raised when a dynamic partial is encountered
+    # Error raised when a dynamic partial is encountered (kept for backward compatibility)
     class DynamicPartialError < StandardError; end
 
     def fallback_result
@@ -786,12 +800,12 @@ module LiquidIL
       args.each do |k, v|
         next if k.start_with?("__")
         if v.is_a?(Hash) && v[:__var__]
-          # Variable lookup
+          # Variable lookup - handles both simple vars and dotted paths
           var_path = v[:__var__]
           if var_path.is_a?(Array)
-            arg_assignments << "#{k.inspect} => __scope__.lookup(#{var_path[0].inspect})"
+            arg_assignments << "#{k.inspect} => #{generate_eval_expression(var_path[0])}"
           else
-            arg_assignments << "#{k.inspect} => __scope__.lookup(#{var_path.inspect})"
+            arg_assignments << "#{k.inspect} => #{generate_eval_expression(var_path)}"
           end
         else
           arg_assignments << "#{k.inspect} => #{v.inspect}"
@@ -893,7 +907,7 @@ module LiquidIL
                end
 
       unless source
-        raise "Cannot load partial '#{name}': no file system available or partial not found"
+        raise PartialCompilationError, "Cannot load partial '#{name}': no file system available or partial not found"
       end
 
       # Compile the partial

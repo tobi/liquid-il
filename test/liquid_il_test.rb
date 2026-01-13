@@ -210,14 +210,12 @@ class PartialInliningTest < Minitest::Test
     opt = LiquidIL::Optimizer.optimize(ctx)
     template = opt.parse("{% render 'snippet' %}")
 
-    inst = template.instructions.find { |i| i[0] == LiquidIL::IL::RENDER_PARTIAL }
-    refute_nil inst
-    compiled = inst[2]["__compiled_template__"]
-    refute_nil compiled
+    # Partial gets inlined - instructions are substituted directly
+    # Check that the partial was read during parsing
     assert_equal "Hi World", template.render("target" => "World")
     assert_equal 1, fs.reads["snippet"]
 
-    # Rendering again without a file system should still work via the compiled template
+    # Rendering again without a file system should still work because partial was inlined
     opt.file_system = nil
     assert_equal "Hi Friend", template.render("target" => "Friend")
   end
