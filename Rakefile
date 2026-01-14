@@ -28,16 +28,16 @@ task :test do
     system("bundle exec ruby -Ilib #{test_file}") || exit(1)
   end
 
-  # 2. Run unit tests with each optimization pass individually
+  # 2. Run liquid-spec with each optimization pass individually (catches pass-specific regressions)
   puts "\n#{"=" * 60}"
   puts "Testing each optimization pass individually"
   puts "=" * 60
   OPTIMIZATION_PASSES.each do |pass|
     puts "\n--- Pass #{pass} ---"
-    system({ "LIQUID_PASSES" => pass.to_s }, "bundle exec ruby -Ilib test/liquid_il_test.rb") || exit(1)
+    system({ "LIQUID_PASSES" => pass.to_s }, "bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
   end
 
-  # 3. Run liquid-spec matrix (compares all adapters)
+  # 3. Run liquid-spec matrix with all optimizations (compares all adapters)
   puts "\n#{"=" * 60}"
   puts "Running liquid-spec matrix"
   puts "=" * 60
