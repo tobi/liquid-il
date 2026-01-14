@@ -15,29 +15,41 @@ def usage
       file <path>           Parse file and show IL instructions
       eval <template>       Parse, show IL, then render
       inspect <pattern>     Inspect specs (from liquid-spec or -s file)
+      passes                Show available optimization passes
 
     Options:
       -e, --env KEY=VALUE   Set environment variable (can be repeated)
       -s, --specs FILE      Load specs from YAML file (otherwise uses liquid-spec)
+      -p, --passes SPEC     Enable specific passes (e.g., "*", "2", "*,-2")
       --print-il            Print IL instructions (default for parse/inspect)
       --print-ruby          Print generated Ruby code
       --no-optimize         Disable IL optimizations (optimizations enabled by default)
       --no-color            Disable colored output
       -h, --help            Show this help
 
+    Pass Specification (-p/--passes):
+      "*"       Enable all passes (default)
+      "2"       Enable only pass 2
+      "1,2,3"   Enable passes 1, 2, and 3
+      "*,-2"    Enable all passes except pass 2
+      ""        Disable all passes (baseline)
+
     Examples:
       liquidil render "Hello {{ name }}" -e name=World
       liquidil parse "{% for i in (1..3) %}{{ i }}{% endfor %}"
       liquidil parse "{{ x | upcase }}" --print-ruby
+      liquidil parse "{{ 'hello' | upcase }}" -p 2      # Only filter folding
+      liquidil parse "{{ 'hello' | upcase }}" -p "*,-2" # All except filter folding
       liquidil file template.liquid --print-ruby
       liquidil inspect "for loop" --print-ruby
       liquidil inspect bench_ecommerce -s benchmarks/partials.yml --print-ruby
       liquidil eval "{{ x | plus: y }}" -e x=2 -e y=3
+      liquidil passes                                   # List all passes
   USAGE
 end
 
 def parse_args(args)
-  options = { env: {}, color: true, print_il: false, print_ruby: false, optimize: true }
+  options = { env: {}, color: true, print_il: false, print_ruby: false, optimize: true, passes: nil }
   positional = []
 
   i = 0
@@ -51,6 +63,9 @@ def parse_args(args)
         # Try to parse as JSON for arrays/hashes, otherwise use string
         options[:env][key] = parse_value(value)
       end
+    when "-p", "--passes"
+      i += 1
+      options[:passes] = args[i]
     when "-s", "--specs"
       i += 1
       options[:specs_file] = args[i]
@@ -73,6 +88,12 @@ def parse_args(args)
   options[:command] = positional[0]
   options[:input] = positional[1]
   options
+end
+
+def configure_passes(passes_spec)
+  return if passes_spec.nil?
+  # Override the ENABLED constant by modifying the Passes module
+  LiquidIL::Passes.instance_variable_set(:@enabled, LiquidIL::Passes.parse(passes_spec).freeze)
 end
 
 def parse_value(str)
@@ -283,6 +304,24 @@ def load_specs_from_liquid_spec(pattern)
   end
 end
 
+def cmd_passes(_input, _env, options)
+  puts "Available Optimization Passes:"
+  puts "=" * 60
+  LiquidIL::Passes::PASS_NAMES.each do |num, name|
+    enabled = LiquidIL::Passes.enabled?(num) ? "[x]" : "[ ]"
+    puts "  #{enabled} #{num.to_s.rjust(2)}: #{name}"
+  end
+  puts
+  puts "Currently enabled: #{LiquidIL::Passes.enabled.to_a.sort.join(", ")}"
+  puts
+  puts "Use LIQUID_PASSES env var or -p/--passes option to configure."
+  puts "Examples:"
+  puts "  LIQUID_PASSES='*'     # All passes (default)"
+  puts "  LIQUID_PASSES='2'     # Only pass 2"
+  puts "  LIQUID_PASSES='*,-2'  # All except pass 2"
+  puts "  LIQUID_PASSES=''      # No passes (baseline)"
+end
+
 # Main
 options = parse_args(ARGV)
 
@@ -290,6 +329,9 @@ if options[:help] || options[:command].nil?
   usage
   exit options[:help] ? 0 : 1
 end
+
+# Configure passes before running commands
+configure_passes(options[:passes])
 
 case options[:command]
 when "render"
@@ -302,6 +344,8 @@ when "eval"
   cmd_eval(options[:input], options[:env], options)
 when "inspect"
   cmd_inspect(options[:input], options[:env], options)
+when "passes"
+  cmd_passes(options[:input], options[:env], options)
 else
   puts "Unknown command: #{options[:command]}"
   usage

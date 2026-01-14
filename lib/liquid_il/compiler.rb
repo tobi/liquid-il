@@ -44,68 +44,75 @@ module LiquidIL
 
     private
 
+    # Run enabled optimization passes
+    # Pass enablement is determined at boot time via LIQUID_PASSES env var
+    # See LiquidIL::Passes for configuration options
     def optimize(instructions, spans)
+      enabled = Passes.enabled
+
       # Optimization pass 0: Inline simple partials (enables cross-template optimizations)
-      inline_simple_partials(instructions, spans)
+      inline_simple_partials(instructions, spans) if enabled.include?(0)
 
       # Optimization pass 1: Fold constant operations
-      fold_const_ops(instructions, spans)
+      fold_const_ops(instructions, spans) if enabled.include?(1)
 
       # Optimization pass 2: Fold constant filters
-      fold_const_filters(instructions, spans)
+      fold_const_filters(instructions, spans) if enabled.include?(2)
 
       # Optimization pass 3: Fold constant output writes
-      fold_const_writes(instructions, spans)
+      fold_const_writes(instructions, spans) if enabled.include?(3)
 
       # Optimization pass 4: Collapse chained constant lookups
-      collapse_const_paths(instructions, spans)
+      collapse_const_paths(instructions, spans) if enabled.include?(4)
 
       # Optimization pass 5: Collapse FIND_VAR + LOOKUP_CONST_PATH
-      collapse_find_var_paths(instructions, spans)
+      collapse_find_var_paths(instructions, spans) if enabled.include?(5)
 
       # Optimization pass 6: Remove redundant IS_TRUTHY on boolean ops
-      remove_redundant_is_truthy(instructions, spans)
+      remove_redundant_is_truthy(instructions, spans) if enabled.include?(6)
 
       # Optimization pass 7: Remove no-ops
-      remove_noops(instructions, spans)
+      remove_noops(instructions, spans) if enabled.include?(7)
 
       # Optimization pass 8: Remove jumps to the immediately following label
-      remove_jump_to_next_label(instructions, spans)
+      remove_jump_to_next_label(instructions, spans) if enabled.include?(8)
 
       # Optimization pass 9: Merge consecutive WRITE_RAW
-      merge_raw_writes(instructions, spans)
+      merge_raw_writes(instructions, spans) if enabled.include?(9)
 
       # Optimization pass 10: Remove unreachable code after unconditional jumps
-      remove_unreachable(instructions, spans)
+      remove_unreachable(instructions, spans) if enabled.include?(10)
 
       # Optimization pass 11: Re-merge WRITE_RAW after other removals
-      merge_raw_writes(instructions, spans)
+      merge_raw_writes(instructions, spans) if enabled.include?(11)
 
       # Optimization pass 12: Fold constant capture blocks into direct assigns
-      fold_const_captures(instructions, spans)
+      fold_const_captures(instructions, spans) if enabled.include?(12)
 
       # Optimization pass 13: Remove empty WRITE_RAW (no observable output)
-      remove_empty_raw_writes(instructions, spans)
+      remove_empty_raw_writes(instructions, spans) if enabled.include?(13)
 
       # Optimization pass 14: Constant propagation - replace FIND_VAR with known constants
-      propagate_constants(instructions, spans)
+      propagate_constants(instructions, spans) if enabled.include?(14)
 
       # Optimization pass 15: Re-run constant folding after propagation
-      fold_const_filters(instructions, spans)
-      fold_const_writes(instructions, spans)
-      merge_raw_writes(instructions, spans)
+      if enabled.include?(15)
+        fold_const_filters(instructions, spans)
+        fold_const_writes(instructions, spans)
+        merge_raw_writes(instructions, spans)
+      end
 
       # Optimization pass 16: Loop invariant code motion - hoist invariant lookups outside loops
-      hoist_loop_invariants(instructions, spans)
+      hoist_loop_invariants(instructions, spans) if enabled.include?(16)
 
       # Optimization pass 17: Cache repeated base object lookups in straight-line code
-      cache_repeated_lookups(instructions, spans)
+      cache_repeated_lookups(instructions, spans) if enabled.include?(17)
 
       # Optimization pass 18: Local value numbering - eliminate redundant computations
-      value_numbering(instructions, spans)
+      value_numbering(instructions, spans) if enabled.include?(18)
 
       # Optimization pass 19: Temp register allocation - reuse dead temp slots
-      RegisterAllocator.optimize(instructions)
+      RegisterAllocator.optimize(instructions) if enabled.include?(19)
 
       instructions
     end

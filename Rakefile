@@ -38,6 +38,35 @@ end
 desc "Run all tests"
 task all: [:test, :spec]
 
+desc "Run unit tests with specific optimization passes"
+task :test_pass, [:passes] do |_t, args|
+  passes = args[:passes] || "*"
+  puts "Running tests with LIQUID_PASSES=#{passes.inspect}"
+  system({ "LIQUID_PASSES" => passes }, "ruby -Ilib test/liquid_il_test.rb")
+end
+
+desc "Run spec with specific optimization passes"
+task :spec_pass, [:passes] do |_t, args|
+  passes = args[:passes] || "*"
+  puts "Running spec with LIQUID_PASSES=#{passes.inspect}"
+  system({ "LIQUID_PASSES" => passes }, "bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'")
+end
+
+desc "Run spec with each optimization pass individually"
+task :spec_each_pass do
+  (0..19).each do |pass|
+    puts "\n" + "=" * 60
+    puts "Testing with only pass #{pass} enabled"
+    puts "=" * 60
+    system({ "LIQUID_PASSES" => pass.to_s }, "bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'")
+  end
+end
+
+desc "Show available optimization passes"
+task :passes do
+  system "bin/liquidil passes"
+end
+
 desc "Inspect a specific test - shows spec details and IL output"
 task :inspect, [:name] do |_t, args|
   name = args[:name]
