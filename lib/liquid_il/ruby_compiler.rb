@@ -300,6 +300,7 @@ module LiquidIL
         code << "  __parent_scope__.pop_render_depth\n"
         code << "rescue LiquidIL::RuntimeError => e\n"
         code << "  __parent_scope__.pop_render_depth\n"
+        code << "  raise unless __parent_scope__.render_errors\n"
         code << "  __write_output__(\"Liquid error (\#{e.file || #{name.inspect}} line \#{e.line}): \#{e.message}\", __output__, __scope__)\n"
         code << "end\n"
       end
