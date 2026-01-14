@@ -67,10 +67,8 @@ module LiquidIL
   #   LIQUID_PASSES="" ruby -Ilib test/optimization_passes_test.rb
   #
   module Passes
-    # All available pass numbers
-    ALL_PASSES = (0..19).to_a.freeze
-
     # Names for each pass (for debugging/logging)
+    # Add new passes here - ALL_PASSES is derived from this
     PASS_NAMES = {
       0 => "inline_simple_partials",
       1 => "fold_const_ops",
@@ -93,6 +91,9 @@ module LiquidIL
       18 => "value_numbering",
       19 => "register_allocation"
     }.freeze
+
+    # All available pass numbers (derived from PASS_NAMES)
+    ALL_PASSES = PASS_NAMES.keys.sort.freeze
 
     class << self
       # Parse a pass specification string into a Set of enabled pass numbers

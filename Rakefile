@@ -13,8 +13,9 @@ TEST_FILES = %w[
   test/error_handling_test.rb
 ].freeze
 
-# Optimization passes (0-19)
-OPTIMIZATION_PASSES = (0..19).to_a.freeze
+# Load optimization passes from the source
+require_relative "lib/liquid_il/passes"
+OPTIMIZATION_PASSES = LiquidIL::Passes::ALL_PASSES
 
 desc "Run comprehensive test suite"
 task :test do
