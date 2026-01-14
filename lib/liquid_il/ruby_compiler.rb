@@ -279,12 +279,14 @@ module LiquidIL
 
         code << "\n"
         code << "def #{method_name}(assigns, __output__, __parent_scope__, isolated)\n"
+        code << "  # Save and set file context for error reporting\n"
+        code << "  __prev_file__ = __parent_scope__.current_file\n"
+        code << "  __parent_scope__.current_file = #{name.inspect}\n"
+        code << "\n"
         code << "  # Check render depth to prevent infinite recursion\n"
         code << "  __parent_scope__.push_render_depth\n"
         code << "  if __parent_scope__.render_depth_exceeded?(strict: !isolated)\n"
-        code << "    __parent_scope__.pop_render_depth\n"
-        code << "    __write_output__(\"Liquid error (#{name} line 1): Nesting too deep\", __output__, __parent_scope__)\n"
-        code << "    return\n"
+        code << "    raise LiquidIL::RuntimeError.new(\"Nesting too deep\", file: #{name.inspect}, line: 1)\n"
         code << "  end\n"
         code << "\n"
         code << "  __scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
@@ -296,12 +298,17 @@ module LiquidIL
         code << "  __current_file__ = #{name.inspect}\n"
         code << "\n"
         code << body
-        code << "\n"
-        code << "  __parent_scope__.pop_render_depth\n"
         code << "rescue LiquidIL::RuntimeError => e\n"
-        code << "  __parent_scope__.pop_render_depth\n"
         code << "  raise unless __parent_scope__.render_errors\n"
-        code << "  __write_output__(\"Liquid error (\#{e.file || #{name.inspect}} line \#{e.line}): \#{e.message}\", __output__, __scope__)\n"
+        code << "  __write_output__(e.partial_output, __output__, __scope__) if e.partial_output\n"
+        code << "  location = e.file ? \"\#{e.file} line \#{e.line}\" : \"line \#{e.line}\"\n"
+        code << "  __write_output__(\"Liquid error (\#{location}): \#{e.message}\", __output__, __scope__)\n"
+        code << "rescue StandardError => e\n"
+        code << "  raise unless __parent_scope__.render_errors\n"
+        code << "  __write_output__(\"Liquid error (#{name} line 1): \#{LiquidIL.clean_error_message(e.message)}\", __output__, __scope__)\n"
+        code << "ensure\n"
+        code << "  __parent_scope__.current_file = __prev_file__\n"
+        code << "  __parent_scope__.pop_render_depth\n"
         code << "end\n"
       end
 
@@ -624,7 +631,7 @@ module LiquidIL
       when IL::SET_CONTEXT
         file_name = inst[1]
         source = inst[2]
-        "  __current_file__ = #{file_name.inspect}; __template_source__ = #{source.inspect}\n"
+        "  __current_file__ = #{file_name.inspect}; __template_source__ = #{source.inspect}; __scope__.current_file = __current_file__\n"
       when IL::WRITE_RAW
         if @uses_capture
           "  __write_output__(#{inst[1].inspect}, __output__, __scope__)\n"
@@ -707,7 +714,7 @@ module LiquidIL
       when IL::POP_CAPTURE
         "  __stack__ << __scope__.pop_capture\n"
       when IL::COMPARE
-        "  __r__ = __stack__.pop; __l__ = __stack__.pop; __stack__ << __compare_with_error__(__l__, __r__, #{inst[1].inspect}, __output__, __scope__)\n"
+        "  __r__ = __stack__.pop; __l__ = __stack__.pop; __stack__ << __compare_with_error__(__l__, __r__, #{inst[1].inspect}, __output__, __scope__, __current_file__)\n"
       when IL::CASE_COMPARE
         "  __r__ = __stack__.pop; __l__ = __stack__.pop; __stack__ << __case_compare__(__l__, __r__)\n"
       when IL::CONTAINS
@@ -725,7 +732,7 @@ module LiquidIL
       when IL::ASSIGN_LOCAL
         "  __v__ = __stack__.pop; __scope__.assign_local(#{inst[1].inspect}, __v__) unless __v__.is_a?(LiquidIL::ErrorMarker)\n"
       when IL::NEW_RANGE
-        "  __e__ = __stack__.pop; __s__ = __stack__.pop; __stack__ << __new_range__(__s__, __e__, __output__, __scope__)\n"
+        "  __e__ = __stack__.pop; __s__ = __stack__.pop; __stack__ << __new_range__(__s__, __e__, __output__, __scope__, __current_file__)\n"
       when IL::CALL_FILTER
         arg_count = inst[2]
         if arg_count == 0
@@ -778,9 +785,11 @@ module LiquidIL
         generate_partial_call(inst, idx, isolated: true)
       when IL::INCLUDE_PARTIAL
         # Add check for include being disabled (inside render context)
+        name = inst[1]
         code = String.new
         code << "  if __scope__.disable_include\n"
-        code << "    __write_output__(\"Liquid error (line 1): include usage is not allowed in this context\", __output__, __scope__)\n"
+        code << "    __location__ = __current_file__ ? \"\#{__current_file__} line 1\" : \"line 1\"\n"
+        code << "    __write_output__(\"Liquid error (\#{__location__}): include usage is not allowed in this context\", __output__, __scope__)\n"
         code << "  else\n"
         code << generate_partial_call(inst, idx, isolated: false).gsub(/^/, "  ")
         code << "  end\n"
@@ -1149,16 +1158,18 @@ module LiquidIL
           source[0, pos].count("\n") + 1
         end
 
-        def __compare_with_error__(left, right, op, output, scope)
+        def __compare_with_error__(left, right, op, output, scope, current_file = nil)
           __compare__(left, right, op)
         rescue ArgumentError => e
-          __write_output__("Liquid error (line 1): #{e.message}", output, scope)
+          location = current_file ? "#{current_file} line 1" : "line 1"
+          __write_output__("Liquid error (#{location}): #{e.message}", output, scope)
           false
         end
 
-        def __new_range__(start_val, end_val, output, scope)
+        def __new_range__(start_val, end_val, output, scope, current_file = nil)
           if start_val.is_a?(Float) || end_val.is_a?(Float)
-            return LiquidIL::ErrorMarker.new("invalid integer", "line 1")
+            location = current_file ? "#{current_file} line 1" : "line 1"
+            return LiquidIL::ErrorMarker.new("invalid integer", location)
           end
           LiquidIL::RangeValue.new(start_val, end_val)
         end
@@ -1720,7 +1731,8 @@ module LiquidIL
       output + "Liquid error (#{location}): #{e.message}"
     rescue StandardError => e
       raise unless render_errors
-      "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
+      location = scope.current_file ? "#{scope.current_file} line 1" : "line 1"
+      "Liquid error (#{location}): #{LiquidIL.clean_error_message(e.message)}"
     end
 
     # Save the compiled template as a standalone Ruby file
@@ -1815,6 +1827,10 @@ module LiquidIL
         code << "\n"
         code << "  # Partial: #{name}\n"
         code << "  def #{method_name}(assigns, __output__, __parent_scope__, isolated)\n"
+        code << "    # Save and set file context for error reporting\n"
+        code << "    __prev_file__ = __parent_scope__.current_file\n"
+        code << "    __parent_scope__.current_file = #{name.inspect}\n"
+        code << "\n"
         code << "    # Check render depth to prevent infinite recursion\n"
         code << "    __parent_scope__.push_render_depth\n"
         code << "    if __parent_scope__.render_depth_exceeded?(strict: !isolated)\n"
@@ -1839,6 +1855,7 @@ module LiquidIL
         code << "    raise unless __parent_scope__.render_errors\n"
         code << "    __write_output__(\"Liquid error (#{name} line 1): \#{LiquidIL.clean_error_message(e.message)}\", __output__, __scope__)\n"
         code << "  ensure\n"
+        code << "    __parent_scope__.current_file = __prev_file__\n"
         code << "    __parent_scope__.pop_render_depth\n"
         code << "  end\n"
       end
@@ -1903,16 +1920,18 @@ module LiquidIL
           source[0, pos].count("\n") + 1
         end
 
-        def __compare_with_error__(left, right, op, output, scope)
+        def __compare_with_error__(left, right, op, output, scope, current_file = nil)
           __compare__(left, right, op)
         rescue ArgumentError => e
-          __write_output__("Liquid error (line 1): #{e.message}", output, scope)
+          location = current_file ? "#{current_file} line 1" : "line 1"
+          __write_output__("Liquid error (#{location}): #{e.message}", output, scope)
           false
         end
 
-        def __new_range__(start_val, end_val, output, scope)
+        def __new_range__(start_val, end_val, output, scope, current_file = nil)
           if start_val.is_a?(Float) || end_val.is_a?(Float)
-            return LiquidIL::ErrorMarker.new("invalid integer", "line 1")
+            location = current_file ? "#{current_file} line 1" : "line 1"
+            return LiquidIL::ErrorMarker.new("invalid integer", location)
           end
           LiquidIL::RangeValue.new(start_val, end_val)
         end

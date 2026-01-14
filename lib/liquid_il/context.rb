@@ -4,7 +4,7 @@ module LiquidIL
   # Minimal scope for isolated render - just locals + static_environments
   # Optimized for hot-path performance with direct ivars instead of hash lookups
   class RenderScope
-    attr_accessor :file_system, :render_errors
+    attr_accessor :file_system, :render_errors, :current_file
     attr_reader :strict_errors
 
     def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true)
@@ -14,6 +14,7 @@ module LiquidIL
       @depth = depth
       @strict_errors = strict_errors
       @render_errors = render_errors
+      @current_file = nil  # Track current file for error reporting
       # Eagerly initialize hot-path arrays as direct ivars
       @interrupts = []
       @capture_stack = []
@@ -52,7 +53,9 @@ module LiquidIL
     def render_depth_exceeded?(strict: false) = strict ? @depth >= 100 : @depth > 100
 
     def isolated
-      RenderScope.new(@static_environments, @file_system, @depth, strict_errors: @strict_errors, render_errors: @render_errors)
+      scope = RenderScope.new(@static_environments, @file_system, @depth, strict_errors: @strict_errors, render_errors: @render_errors)
+      scope.current_file = @current_file
+      scope
     end
 
     # Legacy registers accessor for compatibility
@@ -119,7 +122,7 @@ module LiquidIL
   # (Public API uses Context - this is the VM's internal state)
   class Scope
     attr_reader :registers, :scopes, :interrupts, :strict_errors, :static_environments
-    attr_accessor :file_system, :disable_include, :render_errors
+    attr_accessor :file_system, :disable_include, :render_errors, :current_file
 
     MAX_RENDER_DEPTH = 100
 
@@ -134,6 +137,7 @@ module LiquidIL
       @disable_include = false  # Set to true inside render tag to disallow include
       @assigned_vars = {}  # Track explicitly assigned variables (take precedence over counters)
       @render_depth = 0  # Track render/include nesting depth
+      @current_file = nil  # Track current file for error reporting
 
       # Initialize special registers
       @registers["for"] ||= {}      # offset:continue tracking
@@ -341,7 +345,9 @@ module LiquidIL
     # --- Isolation for render ---
 
     def isolated
-      RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors, render_errors: @render_errors)
+      scope = RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors, render_errors: @render_errors)
+      scope.current_file = @current_file
+      scope
     end
 
     private
