@@ -4,9 +4,90 @@ require "shellwords"
 
 task default: :test
 
-desc "Run unit tests"
+# Unit test files
+TEST_FILES = %w[
+  test/liquid_il_test.rb
+  test/ruby_compiler_test.rb
+  test/register_allocation_test.rb
+  test/optimization_passes_test.rb
+  test/error_handling_test.rb
+].freeze
+
+# Optimization passes (0-19)
+OPTIMIZATION_PASSES = (0..19).to_a.freeze
+
+desc "Run comprehensive test suite"
 task :test do
-  system "ruby -Ilib test/liquid_il_test.rb"
+  failed = false
+
+  # 1. Run unit tests
+  puts "\n#{"=" * 60}"
+  puts "Running unit tests"
+  puts "=" * 60
+  TEST_FILES.each do |test_file|
+    puts "\n--- #{test_file} ---"
+    unless system("bundle exec ruby -Ilib #{test_file}")
+      failed = true
+      puts "FAILED: #{test_file}"
+    end
+  end
+
+  # 2. Run unit tests with each optimization pass individually
+  puts "\n#{"=" * 60}"
+  puts "Testing each optimization pass individually"
+  puts "=" * 60
+  OPTIMIZATION_PASSES.each do |pass|
+    puts "\n--- Pass #{pass} ---"
+    unless system({ "LIQUID_PASSES" => pass.to_s }, "bundle exec ruby -Ilib test/liquid_il_test.rb")
+      failed = true
+      puts "FAILED: Pass #{pass}"
+    end
+  end
+
+  # 3. Run liquid-spec for VM adapter
+  puts "\n#{"=" * 60}"
+  puts "Running liquid-spec: VM (#{ADAPTER_VM})"
+  puts "=" * 60
+  unless system("bash -c 'bundle exec liquid-spec run #{ADAPTER_VM} 2> >(grep -v \"missing extensions\" >&2)'")
+    failed = true
+    puts "FAILED: liquid-spec VM"
+  end
+
+  # 4. Run liquid-spec for compiled adapter
+  puts "\n#{"=" * 60}"
+  puts "Running liquid-spec: Compiled (#{ADAPTER_COMPILED})"
+  puts "=" * 60
+  unless system("bash -c 'bundle exec liquid-spec run #{ADAPTER_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'")
+    failed = true
+    puts "FAILED: liquid-spec Compiled"
+  end
+
+  # 5. Run liquid-spec for optimized+compiled adapter
+  puts "\n#{"=" * 60}"
+  puts "Running liquid-spec: Optimized+Compiled (#{ADAPTER_OPTIMIZED_COMPILED})"
+  puts "=" * 60
+  unless system("bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'")
+    failed = true
+    puts "FAILED: liquid-spec Optimized+Compiled"
+  end
+
+  if failed
+    puts "\n#{"=" * 60}"
+    puts "SOME TESTS FAILED"
+    puts "=" * 60
+    exit 1
+  else
+    puts "\n#{"=" * 60}"
+    puts "ALL TESTS PASSED"
+    puts "=" * 60
+  end
+end
+
+desc "Run unit tests only (quick)"
+task :unit do
+  TEST_FILES.each do |test_file|
+    system("bundle exec ruby -Ilib #{test_file}") || exit(1)
+  end
 end
 
 ADAPTER_VM = "spec/liquid_il.rb"
@@ -35,14 +116,11 @@ task :bench_partials do
   system "bundle exec ruby bench_partials.rb"
 end
 
-desc "Run all tests"
-task all: [:test, :spec]
-
 desc "Run unit tests with specific optimization passes"
 task :test_pass, [:passes] do |_t, args|
   passes = args[:passes] || "*"
   puts "Running tests with LIQUID_PASSES=#{passes.inspect}"
-  system({ "LIQUID_PASSES" => passes }, "ruby -Ilib test/liquid_il_test.rb")
+  system({ "LIQUID_PASSES" => passes }, "bundle exec ruby -Ilib test/liquid_il_test.rb")
 end
 
 desc "Run spec with specific optimization passes"
@@ -54,7 +132,7 @@ end
 
 desc "Run spec with each optimization pass individually"
 task :spec_each_pass do
-  (0..19).each do |pass|
+  OPTIMIZATION_PASSES.each do |pass|
     puts "\n" + "=" * 60
     puts "Testing with only pass #{pass} enabled"
     puts "=" * 60
