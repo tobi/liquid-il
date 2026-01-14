@@ -1718,6 +1718,9 @@ module LiquidIL
       output = e.partial_output || ""
       location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
       output + "Liquid error (#{location}): #{e.message}"
+    rescue StandardError => e
+      raise unless render_errors
+      "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
     end
 
     # Save the compiled template as a standalone Ruby file
@@ -1834,7 +1837,7 @@ module LiquidIL
         code << "    __write_output__(\"Liquid error (\#{location}): \#{e.message}\", __output__, __scope__)\n"
         code << "  rescue StandardError => e\n"
         code << "    raise unless __parent_scope__.render_errors\n"
-        code << "    __write_output__(\"Liquid error (#{name} line 1): \#{e.message}\", __output__, __scope__)\n"
+        code << "    __write_output__(\"Liquid error (#{name} line 1): \#{LiquidIL.clean_error_message(e.message)}\", __output__, __scope__)\n"
         code << "  ensure\n"
         code << "    __parent_scope__.pop_render_depth\n"
         code << "  end\n"

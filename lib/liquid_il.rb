@@ -125,6 +125,9 @@ module LiquidIL
       output = e.partial_output || ""
       location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
       output + "Liquid error (#{location}): #{e.message}"
+    rescue StandardError => e
+      raise unless render_errors
+      "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
     end
 
     class << self

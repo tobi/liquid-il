@@ -14,6 +14,12 @@ module LiquidIL
     end
   end
 
+  # Strip "Liquid error: " prefix from error messages to avoid double-wrapping
+  # This handles Liquid::StandardError which has message format "Liquid error: ..."
+  def self.clean_error_message(message)
+    message.to_s.sub(/\ALiquid error: /i, "")
+  end
+
   # Virtual Machine - executes IL instructions
   class VM
     class << self
@@ -1402,7 +1408,7 @@ module LiquidIL
       write_output("Liquid error (#{location}): #{e.message}")
     rescue StandardError => e
       raise unless @context.render_errors
-      write_output("Liquid error (#{name} line 1): #{e.message}")
+      write_output("Liquid error (#{name} line 1): #{LiquidIL.clean_error_message(e.message)}")
     ensure
       @context.pop_render_depth
     end
