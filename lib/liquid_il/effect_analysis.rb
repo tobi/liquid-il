@@ -556,9 +556,15 @@ module LiquidIL
 
   # Liveness analysis for temp registers
   #
-  # Performs a single backward pass to identify the last-use point for each
-  # temp register. This enables register allocation optimizations by knowing
-  # when temps become dead and available for reuse.
+  # Performs backward pass with loop-awareness to identify the last-use point
+  # for each temp register. This enables register allocation optimizations by
+  # knowing when temps become dead and available for reuse.
+  #
+  # Loop Handling:
+  # When a temp is used inside a loop but stored before the loop, it must remain
+  # live until the loop exits. This is because each iteration needs access to
+  # the original value. We detect loops via backward jumps and extend liveness
+  # of temps used inside loops to the end of the loop.
   #
   # Usage:
   #   liveness = TempLiveness.new(instructions)
@@ -615,32 +621,75 @@ module LiquidIL
 
     private
 
-    # Single backward pass to find last-use point for each temp
+    # Analyze with loop-awareness
     def analyze
       @last_use = {}
 
-      # Scan backward through instructions
-      # The first LOAD_TEMP we encounter (going backward) is the last use
-      (@instructions.length - 1).downto(0) do |i|
-        inst = @instructions[i]
-        opcode = inst[0]
+      # First, find all loop regions (backward jumps)
+      # A loop region is defined by a LABEL and a JUMP that jumps back to it
+      label_positions = {}
+      loop_regions = []  # Array of [loop_start, loop_end] pairs
 
-        case opcode
-        when IL::LOAD_TEMP
-          temp_index = inst[1]
-          # Only record if we haven't seen this temp yet (first encounter going backward = last use)
-          @last_use[temp_index] ||= i
-
-        when IL::STORE_TEMP
-          # STORE_TEMP is a definition, not a use
-          # We track it here to ensure the temp exists in our map even if never loaded
-          temp_index = inst[1]
-          @last_use[temp_index] ||= nil  # Mark as defined but potentially unused
+      @instructions.each_with_index do |inst, i|
+        case inst[0]
+        when IL::LABEL
+          label_positions[inst[1]] = i
+        when IL::JUMP
+          target_label = inst[1]
+          target_pos = label_positions[target_label]
+          # Backward jump = loop
+          if target_pos && target_pos < i
+            loop_regions << [target_pos, i]
+          end
         end
       end
 
-      # Remove entries where temp was defined but never used (value is nil)
-      @last_use.delete_if { |_, v| v.nil? }
+      # Track temp definitions (STORE_TEMP positions)
+      temp_definitions = {}  # temp_index => [definition positions]
+
+      # Track temp uses (LOAD_TEMP positions)
+      temp_uses = {}  # temp_index => [use positions]
+
+      @instructions.each_with_index do |inst, i|
+        case inst[0]
+        when IL::STORE_TEMP
+          temp_index = inst[1]
+          (temp_definitions[temp_index] ||= []) << i
+        when IL::LOAD_TEMP
+          temp_index = inst[1]
+          (temp_uses[temp_index] ||= []) << i
+        end
+      end
+
+      # For each temp, determine its last use, accounting for loops
+      temp_definitions.each_key do |temp_index|
+        uses = temp_uses[temp_index]
+        next unless uses && uses.any?
+
+        definitions = temp_definitions[temp_index]
+        first_def = definitions.min
+
+        # Start with the simple last use
+        last_use = uses.max
+
+        # Check if any use is inside a loop that extends past the simple last use
+        # If the temp is defined BEFORE the loop and used INSIDE, it must stay live
+        # until AFTER the loop (because subsequent iterations need it)
+        loop_regions.each do |loop_start, loop_end|
+          # Check if any use is inside this loop
+          uses_in_loop = uses.any? { |u| u >= loop_start && u <= loop_end }
+
+          # Check if any definition is before this loop
+          defs_before_loop = definitions.any? { |d| d < loop_start }
+
+          # If temp is defined before loop and used inside, extend liveness to loop end
+          if defs_before_loop && uses_in_loop && loop_end > last_use
+            last_use = loop_end
+          end
+        end
+
+        @last_use[temp_index] = last_use
+      end
 
       @last_use
     end
