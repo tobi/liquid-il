@@ -37,23 +37,11 @@ task :test do
     system({ "LIQUID_PASSES" => pass.to_s }, "bundle exec ruby -Ilib test/liquid_il_test.rb") || exit(1)
   end
 
-  # 3. Run liquid-spec for VM adapter
+  # 3. Run liquid-spec matrix (compares all adapters)
   puts "\n#{"=" * 60}"
-  puts "Running liquid-spec: VM (#{ADAPTER_VM})"
+  puts "Running liquid-spec matrix"
   puts "=" * 60
-  system("bash -c 'bundle exec liquid-spec run #{ADAPTER_VM} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
-
-  # 4. Run liquid-spec for compiled adapter
-  puts "\n#{"=" * 60}"
-  puts "Running liquid-spec: Compiled (#{ADAPTER_COMPILED})"
-  puts "=" * 60
-  system("bash -c 'bundle exec liquid-spec run #{ADAPTER_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
-
-  # 5. Run liquid-spec for optimized+compiled adapter
-  puts "\n#{"=" * 60}"
-  puts "Running liquid-spec: Optimized+Compiled (#{ADAPTER_OPTIMIZED_COMPILED})"
-  puts "=" * 60
-  system("bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
+  system("bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
 
   puts "\n#{"=" * 60}"
   puts "ALL TESTS PASSED"
