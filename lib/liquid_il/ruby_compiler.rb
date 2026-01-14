@@ -289,7 +289,7 @@ module LiquidIL
         code << "\n"
         code << "  __scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
         code << "  assigns.each { |k, v| __scope__.assign(k, v) }\n"
-        code << "  __spans__ = nil\n"
+        code << "  __spans__ = #{info[:spans].inspect}\n"
         code << "  __template_source__ = #{info[:source].inspect}\n"
         code << "  __stack__ = []\n"
         code << "  __for_iterators__ = []\n"
@@ -479,7 +479,7 @@ module LiquidIL
         when IL::CALL_FILTER
           name, argc = next_inst[1], next_inst[2]
           if argc == 0
-            expr = "__call_filter__(#{name.inspect}, #{expr}, [], __scope__, __spans__, __template_source__, #{idx})"
+            expr = "__call_filter__(#{name.inspect}, #{expr}, [], __scope__, __spans__, __template_source__, #{idx}, __current_file__)"
           else
             # Filters with args are complex - bail out for now
             # TODO: could handle constant args
@@ -620,6 +620,10 @@ module LiquidIL
         "  # halt\n"
       when IL::NOOP
         ""
+      when IL::SET_CONTEXT
+        file_name = inst[1]
+        source = inst[2]
+        "  __current_file__ = #{file_name.inspect}; __template_source__ = #{source.inspect}\n"
       when IL::WRITE_RAW
         if @uses_capture
           "  __write_output__(#{inst[1].inspect}, __output__, __scope__)\n"
@@ -725,9 +729,9 @@ module LiquidIL
         arg_count = inst[2]
         if arg_count == 0
           # Avoid allocating empty array for zero-arg filters
-          "  __input__ = __stack__.pop; __stack__ << __call_filter__(#{inst[1].inspect}, __input__, [], __scope__, __spans__, __template_source__, #{idx})\n"
+          "  __input__ = __stack__.pop; __stack__ << __call_filter__(#{inst[1].inspect}, __input__, [], __scope__, __spans__, __template_source__, #{idx}, __current_file__)\n"
         else
-          "  __args__ = __stack__.pop(#{arg_count}); __input__ = __stack__.pop; __stack__ << __call_filter__(#{inst[1].inspect}, __input__, __args__, __scope__, __spans__, __template_source__, #{idx})\n"
+          "  __args__ = __stack__.pop(#{arg_count}); __input__ = __stack__.pop; __stack__ << __call_filter__(#{inst[1].inspect}, __input__, __args__, __scope__, __spans__, __template_source__, #{idx}, __current_file__)\n"
         end
       when IL::INCREMENT
         "  __stack__ << __scope__.increment(#{inst[1].inspect})\n"
@@ -1120,15 +1124,20 @@ module LiquidIL
           end
         end
 
-        def __call_filter__(name, input, args, scope, spans, source, inst_idx)
+        def __call_filter__(name, input, args, scope, spans, source, inst_idx, current_file = nil)
           LiquidIL::Filters.apply(name, input, args, scope)
         rescue LiquidIL::FilterError
           # Filter error in non-strict mode - push nil so ASSIGN assigns nil
           nil
         rescue LiquidIL::FilterRuntimeError => e
-          # Filter runtime error - push ErrorMarker with correct line number
+          # Filter runtime error - raise or return ErrorMarker based on render_errors setting
           line = __compute_line__(spans, source, inst_idx)
-          LiquidIL::ErrorMarker.new(e.message, "line #{line}")
+          if scope.render_errors
+            location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+            LiquidIL::ErrorMarker.new(e.message, location)
+          else
+            raise LiquidIL::RuntimeError.new(e.message, file: current_file, line: line)
+          end
         end
 
         def __compute_line__(spans, source, inst_idx)
@@ -1810,7 +1819,7 @@ module LiquidIL
         code << "\n"
         code << "    __scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
         code << "    assigns.each { |k, v| __scope__.assign(k, v) }\n"
-        code << "    __spans__ = nil\n"
+        code << "    __spans__ = #{info[:spans].inspect}\n"
         code << "    __template_source__ = #{info[:source].inspect}\n"
         code << "    __stack__ = []\n"
         code << "    __for_iterators__ = []\n"
@@ -1868,13 +1877,18 @@ module LiquidIL
           end
         end
 
-        def __call_filter__(name, input, args, scope, spans, source, inst_idx)
+        def __call_filter__(name, input, args, scope, spans, source, inst_idx, current_file = nil)
           LiquidIL::Filters.apply(name, input, args, scope)
         rescue LiquidIL::FilterError
           nil
         rescue LiquidIL::FilterRuntimeError => e
           line = __compute_line__(spans, source, inst_idx)
-          LiquidIL::ErrorMarker.new(e.message, "line #{line}")
+          if scope.render_errors
+            location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+            LiquidIL::ErrorMarker.new(e.message, location)
+          else
+            raise LiquidIL::RuntimeError.new(e.message, file: current_file, line: line)
+          end
         end
 
         def __compute_line__(spans, source, inst_idx)

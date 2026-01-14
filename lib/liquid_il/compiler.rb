@@ -923,11 +923,19 @@ module LiquidIL
             replacement = []
             replacement_spans = []
 
+            # Get partial name and source for context tracking
+            partial_name = inst[1]
+            partial_source = compiled[:source]
+
             # For render: push isolated scope
             if opcode == IL::RENDER_PARTIAL
               replacement << [IL::PUSH_SCOPE]
               replacement_spans << spans[i]
             end
+
+            # Set context to partial for error reporting
+            replacement << [IL::SET_CONTEXT, partial_name, partial_source]
+            replacement_spans << spans[i]
 
             # Add argument assignments (constant args only)
             args.each do |key, value|
@@ -950,6 +958,10 @@ module LiquidIL
               replacement << partial_inst.dup
               replacement_spans << (partial_spans[j] || spans[i])
             end
+
+            # Restore context to nil (main template)
+            replacement << [IL::SET_CONTEXT, nil, nil]
+            replacement_spans << spans[i]
 
             # For render: pop scope
             if opcode == IL::RENDER_PARTIAL

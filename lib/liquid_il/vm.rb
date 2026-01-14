@@ -560,6 +560,11 @@ module LiquidIL
         when IL::NOOP
           @pc += 1
 
+        when IL::SET_CONTEXT
+          @current_file = inst[1]
+          @source = inst[2] if inst[2]
+          @pc += 1
+
         else
           raise RuntimeError, "Unknown opcode: #{opcode}"
         end

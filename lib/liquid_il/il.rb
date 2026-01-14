@@ -99,6 +99,9 @@ module LiquidIL
     # Ifchanged opcode
     IFCHANGED_CHECK = :IFCHANGED_CHECK  # [:IFCHANGED_CHECK, tag_id] - pops captured, outputs if changed
 
+    # Context tracking for error reporting in inlined partials
+    SET_CONTEXT = :SET_CONTEXT       # [:SET_CONTEXT, file_name, source] - sets current file and source
+
     # No-op (for comments, etc.)
     NOOP = :NOOP                     # [:NOOP]
 
