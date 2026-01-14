@@ -17,20 +17,15 @@ TEST_FILES = %w[
 require_relative "lib/liquid_il/passes"
 OPTIMIZATION_PASSES = LiquidIL::Passes::ALL_PASSES
 
-desc "Run comprehensive test suite"
+desc "Run comprehensive test suite (stops on first failure)"
 task :test do
-  failed = false
-
   # 1. Run unit tests
   puts "\n#{"=" * 60}"
   puts "Running unit tests"
   puts "=" * 60
   TEST_FILES.each do |test_file|
     puts "\n--- #{test_file} ---"
-    unless system("bundle exec ruby -Ilib #{test_file}")
-      failed = true
-      puts "FAILED: #{test_file}"
-    end
+    system("bundle exec ruby -Ilib #{test_file}") || exit(1)
   end
 
   # 2. Run unit tests with each optimization pass individually
@@ -39,49 +34,30 @@ task :test do
   puts "=" * 60
   OPTIMIZATION_PASSES.each do |pass|
     puts "\n--- Pass #{pass} ---"
-    unless system({ "LIQUID_PASSES" => pass.to_s }, "bundle exec ruby -Ilib test/liquid_il_test.rb")
-      failed = true
-      puts "FAILED: Pass #{pass}"
-    end
+    system({ "LIQUID_PASSES" => pass.to_s }, "bundle exec ruby -Ilib test/liquid_il_test.rb") || exit(1)
   end
 
   # 3. Run liquid-spec for VM adapter
   puts "\n#{"=" * 60}"
   puts "Running liquid-spec: VM (#{ADAPTER_VM})"
   puts "=" * 60
-  unless system("bash -c 'bundle exec liquid-spec run #{ADAPTER_VM} 2> >(grep -v \"missing extensions\" >&2)'")
-    failed = true
-    puts "FAILED: liquid-spec VM"
-  end
+  system("bash -c 'bundle exec liquid-spec run #{ADAPTER_VM} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
 
   # 4. Run liquid-spec for compiled adapter
   puts "\n#{"=" * 60}"
   puts "Running liquid-spec: Compiled (#{ADAPTER_COMPILED})"
   puts "=" * 60
-  unless system("bash -c 'bundle exec liquid-spec run #{ADAPTER_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'")
-    failed = true
-    puts "FAILED: liquid-spec Compiled"
-  end
+  system("bash -c 'bundle exec liquid-spec run #{ADAPTER_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
 
   # 5. Run liquid-spec for optimized+compiled adapter
   puts "\n#{"=" * 60}"
   puts "Running liquid-spec: Optimized+Compiled (#{ADAPTER_OPTIMIZED_COMPILED})"
   puts "=" * 60
-  unless system("bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'")
-    failed = true
-    puts "FAILED: liquid-spec Optimized+Compiled"
-  end
+  system("bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
 
-  if failed
-    puts "\n#{"=" * 60}"
-    puts "SOME TESTS FAILED"
-    puts "=" * 60
-    exit 1
-  else
-    puts "\n#{"=" * 60}"
-    puts "ALL TESTS PASSED"
-    puts "=" * 60
-  end
+  puts "\n#{"=" * 60}"
+  puts "ALL TESTS PASSED"
+  puts "=" * 60
 end
 
 desc "Run unit tests only (quick)"
