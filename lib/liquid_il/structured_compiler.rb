@@ -877,7 +877,20 @@ module LiquidIL
 
       case expr.type
       when :literal
-        expr.value.inspect
+        # Handle special Float values (NaN, Infinity)
+        if expr.value.is_a?(Float)
+          if expr.value.nan?
+            "Float::NAN"
+          elsif expr.value.infinite? == 1
+            "Float::INFINITY"
+          elsif expr.value.infinite? == -1
+            "-Float::INFINITY"
+          else
+            expr.value.inspect
+          end
+        else
+          expr.value.inspect
+        end
       when :var
         "__scope__.lookup(#{expr.value.inspect})"
       when :var_path
@@ -1458,8 +1471,9 @@ module LiquidIL
     end
 
     # Evaluate generated Ruby code
+    # Use TOPLEVEL_BINDING to avoid constant resolution issues in class context
     def eval_ruby(source)
-      eval(source)
+      eval(source, TOPLEVEL_BINDING, "(liquid_il_structured)")
     rescue SyntaxError => e
       # puts "Syntax error: #{e.message}"
       # puts source.lines.each_with_index.map { |l, i| "#{i+1}: #{l}" }.join
