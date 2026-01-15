@@ -108,6 +108,8 @@ module LiquidIL
         }
 
         __is_truthy__ = ->(value) {
+          # Drops with to_liquid_value should use that for truthiness
+          value = value.to_liquid_value if value.respond_to?(:to_liquid_value)
           case value
           when nil, false then false
           when LiquidIL::EmptyLiteral, LiquidIL::BlankLiteral then false
@@ -158,6 +160,10 @@ module LiquidIL
         }
 
         __compare__ = ->(left, right, op) {
+          # Convert drops to their liquid values for comparison
+          left = left.to_liquid_value if left.respond_to?(:to_liquid_value)
+          right = right.to_liquid_value if right.respond_to?(:to_liquid_value)
+
           # Handle EmptyLiteral comparisons
           # NOTE: nil does NOT equal empty in Liquid Ruby
           if right.is_a?(LiquidIL::EmptyLiteral)
@@ -201,6 +207,68 @@ module LiquidIL
           when Array then left.include?(right)
           when Hash then left.key?(right.to_s) || left.key?(right.to_s.to_sym)
           else false
+          end
+        }
+
+        # Convert value to iterable array for for loops
+        __to_iterable__ = ->(value) {
+          case value
+          when nil, true, false, Integer, Float
+            []
+          when String
+            value.empty? ? [] : [value]
+          when LiquidIL::RangeValue
+            value.to_a
+          when Array
+            value
+          when Hash
+            value.map { |k, v| [k, v] }
+          else
+            # Try to_a first if available
+            if value.respond_to?(:to_a)
+              begin
+                value.to_a
+              rescue
+                value.respond_to?(:each) ? value.to_enum.to_a : []
+              end
+            elsif value.respond_to?(:each)
+              value.to_enum.to_a
+            else
+              []
+            end
+          end
+        }
+
+        # Bracket lookup obj[key] - stricter than property access
+        # Ranges as keys return nil, no first/last/size for arrays
+        __bracket_lookup__ = ->(obj, key) {
+          return nil if obj.nil?
+          # Ranges cannot be used as hash keys
+          return nil if key.is_a?(LiquidIL::RangeValue) || key.is_a?(Range)
+          # Convert drop keys to their value
+          key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
+          case obj
+          when Hash
+            # Try key directly, then string, then symbol
+            result = obj[key]
+            return result unless result.nil?
+            key_str = key.to_s
+            result = obj[key_str]
+            return result unless result.nil?
+            obj[key.to_sym] if key.is_a?(String)
+          when Array
+            # Only integer keys for bracket notation
+            if key.is_a?(Integer)
+              obj[key]
+            elsif key.to_s =~ /\A-?\d+\z/
+              obj[key.to_i]
+            else
+              nil
+            end
+          when LiquidIL::ForloopDrop, LiquidIL::Drop
+            obj[key]
+          else
+            nil
           end
         }
 
@@ -504,7 +572,8 @@ module LiquidIL
         when IL::LOOKUP_KEY
           key = stack.pop || Expr.new(type: :literal, value: nil)
           obj = stack.pop || Expr.new(type: :literal, value: nil)
-          stack << Expr.new(type: :lookup, children: [obj, key])
+          # Bracket access uses :bracket_lookup (stricter than property access)
+          stack << Expr.new(type: :bracket_lookup, children: [obj, key])
           @pc += 1
         when IL::LOOKUP_CONST_KEY
           obj = stack.pop || Expr.new(type: :literal, value: nil)
@@ -569,6 +638,12 @@ module LiquidIL
           left = stack.pop || Expr.new(type: :literal, value: nil)
           stack << Expr.new(type: :case_compare, children: [left, right])
           @pc += 1
+        when IL::BUILD_HASH
+          count = inst[1]
+          pairs = stack.pop(count * 2)
+          # Build hash from pairs: [key1, val1, key2, val2, ...]
+          stack << Expr.new(type: :hash, children: pairs)
+          @pc += 1
         when IL::CALL_FILTER
           argc = inst[2] || 0
           args = argc > 0 ? stack.pop(argc) : []
@@ -592,10 +667,15 @@ module LiquidIL
           # Pattern: JUMP_IF_FALSE -> CONST_FALSE -> end (this is the false branch of 'and')
           # Pattern: JUMP_IF_TRUE -> CONST_TRUE -> end (this is the true branch of 'or')
           jump_target = inst[1]
-          target_inst = @instructions[jump_target]
+          # Skip LABEL instructions to find the actual target
+          actual_target = jump_target
+          while @instructions[actual_target]&.[](0) == IL::LABEL
+            actual_target += 1
+          end
+          target_inst = @instructions[actual_target]
           # For short-circuit detection, check if CONST_TRUE/FALSE is followed by expression continuation
           # vs STORE_TEMP (which indicates case/when pattern where it sets a "matched" flag)
-          next_after_target = @instructions[jump_target + 1]
+          next_after_target = @instructions[actual_target + 1]
           is_short_circuit_pattern = next_after_target &&
             next_after_target[0] != IL::STORE_TEMP &&
             next_after_target[0] != IL::WRITE_RAW &&
@@ -621,14 +701,32 @@ module LiquidIL
                 # Continue building expression for right operand
                 case build_inst[0]
                 when IL::CONST_INT then stack << Expr.new(type: :literal, value: build_inst[1]); @pc += 1
+                when IL::CONST_FLOAT then stack << Expr.new(type: :literal, value: build_inst[1]); @pc += 1
                 when IL::CONST_STRING then stack << Expr.new(type: :literal, value: build_inst[1]); @pc += 1
                 when IL::CONST_TRUE then stack << Expr.new(type: :literal, value: true); @pc += 1
                 when IL::CONST_FALSE then stack << Expr.new(type: :literal, value: false); @pc += 1
+                when IL::CONST_NIL then stack << Expr.new(type: :literal, value: nil); @pc += 1
+                when IL::CONST_EMPTY then stack << Expr.new(type: :empty); @pc += 1
+                when IL::CONST_BLANK then stack << Expr.new(type: :blank); @pc += 1
                 when IL::FIND_VAR then stack << Expr.new(type: :var, value: build_inst[1]); @pc += 1
                 when IL::FIND_VAR_PATH then stack << Expr.new(type: :var_path, value: build_inst[1], children: build_inst[2].map { |k| Expr.new(type: :literal, value: k) }); @pc += 1
                 when IL::LOOKUP_CONST_KEY
                   obj = stack.pop || Expr.new(type: :literal, value: nil)
                   stack << Expr.new(type: :lookup, value: build_inst[1], children: [obj])
+                  @pc += 1
+                when IL::COMPARE
+                  right = stack.pop || Expr.new(type: :literal, value: nil)
+                  cmp_left = stack.pop || Expr.new(type: :literal, value: nil)
+                  stack << Expr.new(type: :compare, value: build_inst[1], children: [cmp_left, right])
+                  @pc += 1
+                when IL::CONTAINS
+                  right = stack.pop || Expr.new(type: :literal, value: nil)
+                  cmp_left = stack.pop || Expr.new(type: :literal, value: nil)
+                  stack << Expr.new(type: :contains, children: [cmp_left, right])
+                  @pc += 1
+                when IL::BOOL_NOT
+                  operand = stack.pop || Expr.new(type: :literal, value: false)
+                  stack << Expr.new(type: :not, children: [operand])
                   @pc += 1
                 when IL::IS_TRUTHY then @pc += 1
                 else @pc += 1
@@ -647,18 +745,73 @@ module LiquidIL
             # This is 'or' short-circuit
             left = stack.pop || Expr.new(type: :literal, value: false)
             @pc += 1
-            # Build right operand
+            # Build right operand - handle all expression types including nested AND/OR
             while @pc < jump_target
               build_inst = @instructions[@pc]
               break if build_inst.nil? || build_inst[0] == IL::JUMP
               case build_inst[0]
+              when IL::CONST_INT then stack << Expr.new(type: :literal, value: build_inst[1]); @pc += 1
+              when IL::CONST_FLOAT then stack << Expr.new(type: :literal, value: build_inst[1]); @pc += 1
+              when IL::CONST_STRING then stack << Expr.new(type: :literal, value: build_inst[1]); @pc += 1
+              when IL::CONST_TRUE then stack << Expr.new(type: :literal, value: true); @pc += 1
+              when IL::CONST_FALSE then stack << Expr.new(type: :literal, value: false); @pc += 1
+              when IL::CONST_NIL then stack << Expr.new(type: :literal, value: nil); @pc += 1
+              when IL::CONST_EMPTY then stack << Expr.new(type: :empty); @pc += 1
+              when IL::CONST_BLANK then stack << Expr.new(type: :blank); @pc += 1
               when IL::FIND_VAR then stack << Expr.new(type: :var, value: build_inst[1]); @pc += 1
               when IL::FIND_VAR_PATH then stack << Expr.new(type: :var_path, value: build_inst[1], children: build_inst[2].map { |k| Expr.new(type: :literal, value: k) }); @pc += 1
               when IL::LOOKUP_CONST_KEY
                 obj = stack.pop || Expr.new(type: :literal, value: nil)
                 stack << Expr.new(type: :lookup, value: build_inst[1], children: [obj])
                 @pc += 1
+              when IL::COMPARE
+                right_cmp = stack.pop || Expr.new(type: :literal, value: nil)
+                left_cmp = stack.pop || Expr.new(type: :literal, value: nil)
+                stack << Expr.new(type: :compare, value: build_inst[1], children: [left_cmp, right_cmp])
+                @pc += 1
+              when IL::CONTAINS
+                right_cmp = stack.pop || Expr.new(type: :literal, value: nil)
+                left_cmp = stack.pop || Expr.new(type: :literal, value: nil)
+                stack << Expr.new(type: :contains, children: [left_cmp, right_cmp])
+                @pc += 1
+              when IL::BOOL_NOT
+                operand = stack.pop || Expr.new(type: :literal, value: false)
+                stack << Expr.new(type: :not, children: [operand])
+                @pc += 1
+              when IL::JUMP_IF_FALSE
+                # Nested AND pattern: JUMP_IF_FALSE -> CONST_FALSE
+                nested_target = build_inst[1]
+                nested_actual = nested_target
+                while @instructions[nested_actual]&.[](0) == IL::LABEL
+                  nested_actual += 1
+                end
+                if @instructions[nested_actual]&.[](0) == IL::CONST_FALSE
+                  # This is nested AND - build it
+                  and_left = stack.pop || Expr.new(type: :literal, value: false)
+                  @pc += 1
+                  # Build AND's right operand until we hit JUMP
+                  while @pc < nested_target
+                    and_inst = @instructions[@pc]
+                    break if and_inst.nil? || and_inst[0] == IL::JUMP
+                    case and_inst[0]
+                    when IL::FIND_VAR then stack << Expr.new(type: :var, value: and_inst[1]); @pc += 1
+                    when IL::CONST_TRUE then stack << Expr.new(type: :literal, value: true); @pc += 1
+                    when IL::CONST_FALSE then stack << Expr.new(type: :literal, value: false); @pc += 1
+                    when IL::LABEL then @pc += 1
+                    else @pc += 1
+                    end
+                  end
+                  # Skip JUMP that skips CONST_FALSE
+                  if @instructions[@pc]&.[](0) == IL::JUMP
+                    @pc = @instructions[@pc][1]
+                  end
+                  and_right = stack.pop || Expr.new(type: :literal, value: false)
+                  stack << Expr.new(type: :and, children: [and_left, and_right])
+                else
+                  @pc += 1
+                end
               when IL::IS_TRUTHY then @pc += 1
+              when IL::LABEL then @pc += 1
               when IL::JUMP then @pc = build_inst[1]; break
               else @pc += 1
               end
@@ -699,10 +852,10 @@ module LiquidIL
         @pc += 1
         Expr.new(type: :literal, value: inst[1])
       when IL::FIND_VAR
-        # Variable lookup - could be followed by lookups/filters
-        # Use full expression builder but track starting stack size
-        expr, _ = build_expression
-        expr
+        # Simple variable lookup - just consume this one instruction
+        # Don't use full build_expression which would consume subsequent FIND_VARs
+        @pc += 1
+        Expr.new(type: :var, value: inst[1])
       when IL::LOAD_TEMP
         @pc += 1
         Expr.new(type: :temp, value: inst[1])
@@ -739,6 +892,11 @@ module LiquidIL
         else # dynamic key
           "__lookup__.call(#{obj}, #{expr_to_ruby(expr.children[1])})"
         end
+      when :bracket_lookup
+        # Bracket access obj[key] - stricter semantics than property access
+        obj = expr_to_ruby(expr.children[0])
+        key = expr_to_ruby(expr.children[1])
+        "__bracket_lookup__.call(#{obj}, #{key})"
       when :command
         obj = expr_to_ruby(expr.children[0])
         case expr.value
@@ -761,6 +919,17 @@ module LiquidIL
         "__contains__.call(#{left}, #{right})"
       when :not
         "!__is_truthy__.call(#{expr_to_ruby(expr.children[0])})"
+      when :hash
+        # Build hash from pairs: children = [key1, val1, key2, val2, ...]
+        pairs = []
+        i = 0
+        while i < expr.children.length
+          key = expr_to_ruby(expr.children[i])
+          val = expr_to_ruby(expr.children[i + 1])
+          pairs << "#{key} => #{val}"
+          i += 2
+        end
+        "{#{pairs.join(', ')}}"
       when :filter
         input = expr_to_ruby(expr.children[0])
         args = expr.children[1..].map { |a| expr_to_ruby(a) }
@@ -1016,13 +1185,32 @@ module LiquidIL
         end
       end
 
-      # Consume cleanup
+      # Consume cleanup and detect for-else pattern
+      else_end_target = nil
       while @pc < @instructions.length
-        case @instructions[@pc]&.[](0)
-        when IL::POP_INTERRUPT, IL::POP_FORLOOP, IL::POP_SCOPE, IL::FOR_END, IL::JUMP, IL::LABEL
+        inst = @instructions[@pc]
+        case inst&.[](0)
+        when IL::POP_INTERRUPT, IL::POP_FORLOOP, IL::POP_SCOPE, IL::FOR_END, IL::LABEL
+          @pc += 1
+        when IL::JUMP
+          # If this JUMP targets past end_pc, there's an else block
+          if end_pc && inst[1] > end_pc
+            else_end_target = inst[1]
+          end
           @pc += 1
         else
           break
+        end
+      end
+
+      # Parse else block if present (between end_pc and else_end_target)
+      else_code = String.new
+      if else_end_target && end_pc && @pc == end_pc
+        while @pc < else_end_target
+          inst = @instructions[@pc]
+          break if inst.nil? || inst[0] == IL::HALT
+          result = generate_statement(indent + 1)
+          else_code << result if result
         end
       end
 
@@ -1041,25 +1229,32 @@ module LiquidIL
       parent_forloop = depth > 0 ? "__forloop_#{depth - 1}__" : "nil"
 
       code << "#{prefix}# for #{item_var}\n"
-      code << "#{prefix}#{coll_var} = #{coll_ruby}\n"
-      code << "#{prefix}#{coll_var} = #{coll_var}.to_a if #{coll_var}.respond_to?(:to_a) && !#{coll_var}.is_a?(String)\n"
-      code << "#{prefix}#{coll_var} = #{coll_var}.reverse if #{reversed.inspect} && #{coll_var}.is_a?(Array)\n" if reversed
+      code << "#{prefix}#{coll_var} = __to_iterable__.call(#{coll_ruby})\n"
+      code << "#{prefix}#{coll_var} = #{coll_var}.reverse if #{reversed.inspect}\n" if reversed
 
-      # Apply offset and limit if specified
-      if limit_expr || offset_expr
-        if offset_expr
-          offset_ruby = expr_to_ruby(offset_expr)
-          code << "#{prefix}__offset__ = (#{offset_ruby}).to_i\n"
-          code << "#{prefix}#{coll_var} = #{coll_var}.drop(__offset__) if __offset__ > 0\n"
-        end
-        if limit_expr
-          limit_ruby = expr_to_ruby(limit_expr)
-          code << "#{prefix}__limit__ = (#{limit_ruby}).to_i\n"
-          code << "#{prefix}#{coll_var} = #{coll_var}.take(__limit__) if __limit__ > 0\n"
-        end
+      # Calculate starting offset for offset:continue or explicit offset
+      offset_var = "__start_offset_#{depth}__"
+      if offset_continue
+        # offset:continue uses stored offset from previous loop with same name
+        code << "#{prefix}#{offset_var} = __scope__.for_offset(#{loop_name.inspect})\n"
+      elsif offset_expr
+        offset_ruby = expr_to_ruby(offset_expr)
+        code << "#{prefix}#{offset_var} = (#{offset_ruby}).to_i\n"
+      else
+        code << "#{prefix}#{offset_var} = 0\n"
       end
 
-      code << "#{prefix}if #{coll_var}.is_a?(Array) && !#{coll_var}.empty?\n"
+      # Apply offset
+      code << "#{prefix}#{coll_var} = #{coll_var}.drop(#{offset_var}) if #{offset_var} > 0\n"
+
+      # Apply limit if specified
+      if limit_expr
+        limit_ruby = expr_to_ruby(limit_expr)
+        code << "#{prefix}__limit__ = (#{limit_ruby}).to_i\n"
+        code << "#{prefix}#{coll_var} = #{coll_var}.take(__limit__) if __limit__ > 0\n"
+      end
+
+      code << "#{prefix}if !#{coll_var}.empty?\n"
       code << "#{prefix}  __scope__.push_scope\n"
       code << "#{prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
       code << "#{prefix}  #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
@@ -1068,7 +1263,16 @@ module LiquidIL
       code << "#{prefix}    __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
       code << body_code
       code << "#{prefix}  end\n"
+      code << "#{prefix}  # Update offset:continue position for next loop with same name\n"
+      code << "#{prefix}  __scope__.set_for_offset(#{loop_name.inspect}, #{offset_var} + #{coll_var}.length)\n"
       code << "#{prefix}  __scope__.pop_scope\n"
+
+      # Add else block if present (for-else pattern)
+      if !else_code.empty?
+        code << "#{prefix}else\n"
+        code << else_code
+      end
+
       code << "#{prefix}end\n"
 
       @loop_depth -= 1
