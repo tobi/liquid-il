@@ -496,6 +496,11 @@ module LiquidIL
         when IL::FIND_VAR_PATH
           stack << Expr.new(type: :var_path, value: inst[1], children: inst[2].map { |k| Expr.new(type: :literal, value: k) })
           @pc += 1
+        when IL::FIND_VAR_DYNAMIC
+          # Indirect variable lookup: pop name from stack, lookup by that name
+          name_expr = stack.pop || Expr.new(type: :literal, value: nil)
+          stack << Expr.new(type: :dynamic_var, children: [name_expr])
+          @pc += 1
         when IL::LOOKUP_KEY
           key = stack.pop || Expr.new(type: :literal, value: nil)
           obj = stack.pop || Expr.new(type: :literal, value: nil)
@@ -740,6 +745,10 @@ module LiquidIL
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
         "(__is_truthy__.call(#{left}) || __is_truthy__.call(#{right}))"
+      when :dynamic_var
+        # Indirect variable lookup: {{ [name_var] }} looks up variable by name in name_var
+        name_code = expr_to_ruby(expr.children[0])
+        "__scope__.lookup((#{name_code}).to_s)"
       else
         "nil # unknown expr type: #{expr.type}"
       end
