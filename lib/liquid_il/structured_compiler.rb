@@ -164,6 +164,14 @@ module LiquidIL
           left = left.to_liquid_value if left.respond_to?(:to_liquid_value)
           right = right.to_liquid_value if right.respond_to?(:to_liquid_value)
 
+          # Normalize Ruby Ranges to RangeValue for comparison
+          # (Ruby Range's == doesn't know about RangeValue)
+          if left.is_a?(Range) && right.is_a?(LiquidIL::RangeValue)
+            left = LiquidIL::RangeValue.new(left.begin, left.end)
+          elsif left.is_a?(LiquidIL::RangeValue) && right.is_a?(Range)
+            right = LiquidIL::RangeValue.new(right.begin, right.end)
+          end
+
           # Handle EmptyLiteral comparisons
           # NOTE: nil does NOT equal empty in Liquid Ruby
           if right.is_a?(LiquidIL::EmptyLiteral)
