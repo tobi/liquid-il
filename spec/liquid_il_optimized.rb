@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Combined optimized + AOT-compiled Ruby adapter for liquid-spec
-# Uses LiquidIL::Optimizer for IL optimization + LiquidIL::Compiler::Ruby for AOT compilation
+# Optimized IL adapter for liquid-spec (VM execution with optimizer)
+# Uses LiquidIL::Optimizer for IL optimization, runs via VM (not AOT-compiled to Ruby)
 
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"

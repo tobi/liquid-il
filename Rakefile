@@ -68,12 +68,12 @@ end
 
 desc "Run spec matrix comparing LiquidIL against reference implementations"
 task :matrix do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_OPTIMIZED},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run benchmarks comparing LiquidIL against reference implementations"
 task :bench do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_OPTIMIZED},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run partials benchmarks (local)"
