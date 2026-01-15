@@ -113,6 +113,37 @@ module LiquidIL
       seen.delete(hash.object_id)
     end
 
+    # Case/when comparison for case statements
+    # Similar to VM's case_compare but simplified for structured compiler
+    def self.case_equal?(when_value, case_value)
+      # Handle drops with to_liquid_value for comparisons
+      case_value = case_value.to_liquid_value if case_value.respond_to?(:to_liquid_value)
+      when_value = when_value.to_liquid_value if when_value.respond_to?(:to_liquid_value)
+
+      # Handle blank/empty comparisons
+      if case_value.is_a?(BlankLiteral)
+        return when_value.nil? || when_value == false || when_value == "" ||
+               (when_value.respond_to?(:empty?) && when_value.empty?)
+      end
+      if case_value.is_a?(EmptyLiteral)
+        return when_value.nil? || when_value == "" || when_value == [] ||
+               (when_value.respond_to?(:empty?) && when_value.empty?)
+      end
+
+      # When value is blank/empty - check if case value is blank
+      if when_value.is_a?(BlankLiteral)
+        return case_value.nil? || case_value == false || case_value == "" ||
+               (case_value.respond_to?(:empty?) && case_value.empty?)
+      end
+      if when_value.is_a?(EmptyLiteral)
+        return case_value.nil? || case_value == "" || case_value == [] ||
+               (case_value.respond_to?(:empty?) && case_value.empty?)
+      end
+
+      # Standard equality
+      case_value == when_value
+    end
+
     private_constant :HASH_TO_S_METHOD, :HASH_INSPECT_METHOD
   end
 end
