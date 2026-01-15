@@ -398,37 +398,37 @@ module LiquidIL
 
       # Pattern: FIND_VAR [+ lookups/filters] + WRITE_VALUE
       if opcode == IL::FIND_VAR
-        expr, consumed, preamble = build_expression_chain(instructions, start_idx)
+        expr, consumed, preamble, can_error = build_expression_chain(instructions, start_idx)
         return nil unless expr && consumed > 1  # Must consume more than just FIND_VAR
 
         # Check if chain ends with WRITE_VALUE
         last_idx = start_idx + consumed - 1
         if last_idx < instructions.length && instructions[last_idx][0] == IL::WRITE_VALUE
-          output_code = generate_output_expression(expr, indent, preamble)
+          output_code = generate_output_expression(expr, indent, preamble, can_error: can_error)
           return { code: output_code, consumed: consumed }
         end
       end
 
       # Pattern: FIND_VAR_PATH [+ lookups/filters] + WRITE_VALUE
       if opcode == IL::FIND_VAR_PATH
-        expr, consumed, preamble = build_expression_chain(instructions, start_idx)
+        expr, consumed, preamble, can_error = build_expression_chain(instructions, start_idx)
         return nil unless expr && consumed > 1
 
         last_idx = start_idx + consumed - 1
         if last_idx < instructions.length && instructions[last_idx][0] == IL::WRITE_VALUE
-          output_code = generate_output_expression(expr, indent, preamble)
+          output_code = generate_output_expression(expr, indent, preamble, can_error: can_error)
           return { code: output_code, consumed: consumed }
         end
       end
 
       # Pattern: LOAD_TEMP [+ lookups/filters] + WRITE_VALUE (cached value)
       if opcode == IL::LOAD_TEMP
-        expr, consumed, preamble = build_expression_chain(instructions, start_idx)
+        expr, consumed, preamble, can_error = build_expression_chain(instructions, start_idx)
         return nil unless expr && consumed > 1
 
         last_idx = start_idx + consumed - 1
         if last_idx < instructions.length && instructions[last_idx][0] == IL::WRITE_VALUE
-          output_code = generate_output_expression(expr, indent, preamble)
+          output_code = generate_output_expression(expr, indent, preamble, can_error: can_error)
           return { code: output_code, consumed: consumed }
         end
       end
@@ -437,8 +437,8 @@ module LiquidIL
     end
 
     # Build an expression chain from instructions starting at idx
-    # Returns [expression_string, instructions_consumed] or nil
-    # Also returns optional preamble code for temp assignments
+    # Returns [expression_string, instructions_consumed, preamble, can_error] or nil
+    # can_error is true if the expression includes operations that can produce ErrorMarker
     def build_expression_chain(instructions, start_idx)
       return nil if start_idx >= instructions.length
 
@@ -446,6 +446,7 @@ module LiquidIL
       idx = start_idx
       expr = nil
       preamble = nil  # Optional code to run before the expression (for temp caching)
+      can_error = false  # Track if any operation in the chain can produce ErrorMarker
 
       # Start with variable lookup or cached temp
       case inst[0]
@@ -488,6 +489,7 @@ module LiquidIL
           name, argc = next_inst[1], next_inst[2]
           if argc == 0
             expr = "__call_filter__(#{name.inspect}, #{expr}, [], __scope__, __spans__, __template_source__, #{idx}, __current_file__)"
+            can_error = true  # Filters can produce ErrorMarker
           else
             # Filters with args are complex - bail out for now
             # TODO: could handle constant args
@@ -516,14 +518,18 @@ module LiquidIL
         end
       end
 
-      [expr, idx - start_idx, preamble]
+      [expr, idx - start_idx, preamble, can_error]
     end
 
     # Generate optimized output code for an expression
-    def generate_output_expression(expr, indent, preamble = nil)
-      # Skip ErrorMarker check for simple lookups (they don't produce errors)
-      # For now, keep the check for safety
-      output_expr = "(__v__ = #{expr}; __v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__))"
+    # can_error: if false, skip the ErrorMarker check (for operations that can't produce errors)
+    def generate_output_expression(expr, indent, preamble = nil, can_error: true)
+      # Skip ErrorMarker check for operations that can't produce errors (lookups, property access)
+      output_expr = if can_error
+                      "(__v__ = #{expr}; __v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__))"
+                    else
+                      "LiquidIL::Utils.output_string(#{expr})"
+                    end
 
       code = String.new
       code << "#{indent}#{preamble}\n" if preamble

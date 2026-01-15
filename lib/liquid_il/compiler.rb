@@ -5,6 +5,15 @@ module LiquidIL
   class Compiler
     attr_reader :source
 
+    # Opcodes that mark control flow boundaries (used for O(1) lookup)
+    CONTROL_FLOW_OPCODES = [
+      IL::LABEL, IL::JUMP, IL::JUMP_IF_TRUE, IL::JUMP_IF_FALSE, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT,
+      IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END, IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
+      IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HALT,
+      IL::ASSIGN, IL::ASSIGN_LOCAL,
+      IL::INCREMENT, IL::DECREMENT
+    ].to_set.freeze
+
     def initialize(source, **options)
       @source = source
       @options = options
@@ -49,6 +58,9 @@ module LiquidIL
     # See LiquidIL::Passes for configuration options
     def optimize(instructions, spans)
       enabled = Passes.enabled
+
+      # Lazy-initialized max temp index, cached across passes
+      @cached_max_temp_index = nil
 
       # Optimization pass 0: Inline simple partials (enables cross-template optimizations)
       inline_simple_partials(instructions, spans) if enabled.include?(0)
@@ -476,9 +488,8 @@ module LiquidIL
       loops = find_loop_ranges(instructions)
       return if loops.empty?
 
-      # Find the maximum temp index already in use to avoid conflicts
-      # Each loop processing needs to use unique temp slots
-      @hoist_temp_counter = find_max_temp_index(instructions) + 1
+      # Initialize temp counter for hoisting
+      @hoist_temp_counter = max_temp_index(instructions) + 1
 
       # Process loops from innermost to outermost (reverse order by start index)
       loops.sort_by { |l| -l[:start] }.each do |loop_info|
@@ -486,7 +497,11 @@ module LiquidIL
       end
     end
 
-    def find_max_temp_index(instructions)
+    # Get max temp index used in instructions (cached for efficiency)
+    # First call scans instructions; subsequent calls return cached value
+    def max_temp_index(instructions)
+      return @cached_max_temp_index if @cached_max_temp_index
+
       max_idx = -1
       instructions.each do |inst|
         case inst[0]
@@ -494,7 +509,13 @@ module LiquidIL
           max_idx = [max_idx, inst[1]].max
         end
       end
-      max_idx
+      @cached_max_temp_index = max_idx
+    end
+
+    # Allocate a new temp index (increments cached max and returns it)
+    def allocate_temp_index(instructions)
+      max_temp_index(instructions) # ensure cache is populated
+      @cached_max_temp_index += 1
     end
 
     def find_loop_ranges(instructions)
@@ -745,16 +766,19 @@ module LiquidIL
     end
 
     def control_flow_boundary?(inst)
-      case inst[0]
-      when IL::LABEL, IL::JUMP, IL::JUMP_IF_TRUE, IL::JUMP_IF_FALSE, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT,
-           IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END, IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
-           IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HALT,
-           IL::ASSIGN, IL::ASSIGN_LOCAL,  # Assignments invalidate cached values
-           IL::INCREMENT, IL::DECREMENT   # Counters also invalidate cached values
-        true
-      else
-        false
+      CONTROL_FLOW_OPCODES.include?(inst[0])
+    end
+
+    # Find the maximum temp index used in the instructions
+    def find_max_temp_index(instructions)
+      max_idx = -1
+      instructions.each do |inst|
+        case inst[0]
+        when IL::STORE_TEMP, IL::LOAD_TEMP
+          max_idx = [max_idx, inst[1]].max
+        end
       end
+      max_idx
     end
 
     # Local value numbering: eliminate redundant computations within basic blocks
