@@ -326,8 +326,9 @@ class Pass4CollapseConstPathsTest < Minitest::Test
   def test_chained_lookups_collapsed
     template = @ctx.parse("{{ user.profile.name }}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    # Should have FIND_VAR_PATH, not multiple LOOKUP_CONST_KEY
-    assert_includes opcodes, LiquidIL::IL::FIND_VAR_PATH
+    # Should have FIND_VAR_PATH or WRITE_VAR_PATH (fused), not multiple LOOKUP_CONST_KEY
+    has_var_path = opcodes.include?(LiquidIL::IL::FIND_VAR_PATH) || opcodes.include?(LiquidIL::IL::WRITE_VAR_PATH)
+    assert has_var_path, "Expected either FIND_VAR_PATH or WRITE_VAR_PATH in opcodes"
     refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_KEY
 
     assert_equal "Alice", template.render("user" => { "profile" => { "name" => "Alice" } })
@@ -336,7 +337,9 @@ class Pass4CollapseConstPathsTest < Minitest::Test
   def test_deep_path_collapsed
     template = @ctx.parse("{{ a.b.c.d.e }}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    assert_includes opcodes, LiquidIL::IL::FIND_VAR_PATH
+    # Should have FIND_VAR_PATH or WRITE_VAR_PATH (fused)
+    has_var_path = opcodes.include?(LiquidIL::IL::FIND_VAR_PATH) || opcodes.include?(LiquidIL::IL::WRITE_VAR_PATH)
+    assert has_var_path, "Expected either FIND_VAR_PATH or WRITE_VAR_PATH in opcodes"
     refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_KEY
   end
 end
@@ -350,7 +353,9 @@ class Pass5CollapseFindVarPathsTest < Minitest::Test
     # Need 2+ keys for LOOKUP_CONST_PATH to be created, then merged with FIND_VAR
     template = @ctx.parse("{{ x.y.z }}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    assert_includes opcodes, LiquidIL::IL::FIND_VAR_PATH
+    # Should have FIND_VAR_PATH or WRITE_VAR_PATH (fused)
+    has_var_path = opcodes.include?(LiquidIL::IL::FIND_VAR_PATH) || opcodes.include?(LiquidIL::IL::WRITE_VAR_PATH)
+    assert has_var_path, "Expected either FIND_VAR_PATH or WRITE_VAR_PATH in opcodes"
     refute_includes opcodes, LiquidIL::IL::FIND_VAR
     refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_PATH
     assert_equal "value", template.render("x" => { "y" => { "z" => "value" } })

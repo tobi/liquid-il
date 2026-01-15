@@ -153,7 +153,9 @@ class ILOptimizationTest < Minitest::Test
   def test_lookup_const_path_collapsed
     template = @ctx.parse("{{ user.name.first }}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    assert_includes opcodes, LiquidIL::IL::FIND_VAR_PATH
+    # Either FIND_VAR_PATH or WRITE_VAR_PATH (fused) is valid - both indicate path collapse
+    has_var_path = opcodes.include?(LiquidIL::IL::FIND_VAR_PATH) || opcodes.include?(LiquidIL::IL::WRITE_VAR_PATH)
+    assert has_var_path, "Expected either FIND_VAR_PATH or WRITE_VAR_PATH in opcodes"
     refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_KEY
     refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_PATH
   end

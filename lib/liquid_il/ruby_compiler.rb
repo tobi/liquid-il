@@ -475,12 +475,14 @@ module LiquidIL
 
         case next_inst[0]
         when IL::LOOKUP_CONST_KEY
-          expr = "__lookup_property__(#{expr}, #{next_inst[1].inspect})"
+          # Inline Hash fast path: most template data is Hashes
+          key = next_inst[1]
+          expr = inline_hash_lookup(expr, key)
           idx += 1
         when IL::LOOKUP_CONST_PATH
           path = next_inst[1]
           if path.length == 1
-            expr = "__lookup_property__(#{expr}, #{path[0].inspect})"
+            expr = inline_hash_lookup(expr, path[0])
           else
             expr = "__lookup_path__(#{expr}, #{path.map(&:inspect).join(", ")})"
           end
@@ -521,14 +523,55 @@ module LiquidIL
       [expr, idx - start_idx, preamble, can_error]
     end
 
+    # Generate inline Hash lookup code for expression chains
+    # Avoids __lookup_property__ method call for normal Hash keys
+    # For special keys (first, last, size, length), we must call the helper
+    def inline_hash_lookup(expr, key)
+      key_str = key.inspect
+
+      # Special keys require full lookup (Hash.first returns key-value pair, etc.)
+      if %w[first last size length].include?(key.to_s)
+        return "__lookup_property__(#{expr}, #{key_str})"
+      end
+
+      # For normal keys, try string then symbol
+      "((__h__ = #{expr}; __h__.is_a?(Hash)) ? ((__hv__ = __h__[#{key_str}]; __hv__.nil? ? __h__[#{key.to_sym.inspect}] : __hv__)) : __lookup_property__(__h__, #{key_str}))"
+    end
+
+    # Generate inline Hash lookup code for instruction generation
+    # Can either return an expression or a statement that pushes to stack
+    def generate_inline_hash_lookup(expr, key, pop_input: false)
+      key_str = key.inspect
+
+      # Special keys require full lookup (Hash.first returns key-value pair, etc.)
+      if %w[first last size length].include?(key.to_s)
+        if pop_input
+          return "__o__ = #{expr}; __stack__ << __lookup_property__(__o__, #{key_str})"
+        else
+          return "__lookup_property__(#{expr}, #{key_str})"
+        end
+      end
+
+      # For normal keys, inline the Hash fast path
+      key_sym = key.to_sym.inspect
+      if pop_input
+        "__o__ = #{expr}; __stack__ << ((__o__.is_a?(Hash)) ? ((__hv__ = __o__[#{key_str}]; __hv__.nil? ? __o__[#{key_sym}] : __hv__)) : __lookup_property__(__o__, #{key_str}))"
+      else
+        "((__h__ = #{expr}; __h__.is_a?(Hash)) ? ((__hv__ = __h__[#{key_str}]; __hv__.nil? ? __h__[#{key_sym}] : __hv__)) : __lookup_property__(__h__, #{key_str}))"
+      end
+    end
+
     # Generate optimized output code for an expression
     # can_error: if false, skip the ErrorMarker check (for operations that can't produce errors)
     def generate_output_expression(expr, indent, preamble = nil, can_error: true)
-      # Skip ErrorMarker check for operations that can't produce errors (lookups, property access)
+      # Inline fast path: String passes through, Integer/Float calls .to_s, others use helper
+      # This avoids method call overhead for the most common cases (strings from lookups/filters)
       output_expr = if can_error
-                      "(__v__ = #{expr}; __v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__))"
+                      # Need to check for ErrorMarker first
+                      "(__v__ = #{expr}; __v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : __v__.is_a?(String) ? __v__ : __output_string__(__v__))"
                     else
-                      "LiquidIL::Utils.output_string(#{expr})"
+                      # No error possible - inline the type check
+                      "(__v__ = #{expr}; __v__.is_a?(String) ? __v__ : __output_string__(__v__))"
                     end
 
       code = String.new
@@ -649,38 +692,43 @@ module LiquidIL
           "  __output__ << #{inst[1].inspect}\n"
         end
       when IL::WRITE_VALUE
+        # Inline String check for fast path, use __output_string__ for others
         if @uses_capture
-          "  __v__ = __stack__.pop; __write_output__(__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__), __output__, __scope__)\n"
+          "  __v__ = __stack__.pop; __write_output__(__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : __v__.is_a?(String) ? __v__ : __output_string__(__v__), __output__, __scope__)\n"
         elsif @uses_interrupts
           # Need interrupt check (break/continue possible)
-          "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__)) unless __scope__&.has_interrupt?\n"
+          "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : __v__.is_a?(String) ? __v__ : __output_string__(__v__)) unless __scope__&.has_interrupt?\n"
         else
           # Fast path: no capture, no interrupts - direct write
-          "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__))\n"
+          "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : __v__.is_a?(String) ? __v__ : __output_string__(__v__))\n"
         end
       when IL::WRITE_VAR
         # Fused FIND_VAR + WRITE_VALUE (no stack needed, no ErrorMarker possible)
+        # Inline String check for fast path
         if @uses_capture
-          "  __write_output__(LiquidIL::Utils.output_string(__scope__.lookup(#{inst[1].inspect})), __output__, __scope__)\n"
+          "  __v__ = __scope__.lookup(#{inst[1].inspect}); __write_output__(__v__.is_a?(String) ? __v__ : __output_string__(__v__), __output__, __scope__)\n"
         elsif @uses_interrupts
-          "  __output__ << LiquidIL::Utils.output_string(__scope__.lookup(#{inst[1].inspect})) unless __scope__&.has_interrupt?\n"
+          "  __v__ = __scope__.lookup(#{inst[1].inspect}); __output__ << (__v__.is_a?(String) ? __v__ : __output_string__(__v__)) unless __scope__&.has_interrupt?\n"
         else
-          "  __output__ << LiquidIL::Utils.output_string(__scope__.lookup(#{inst[1].inspect}))\n"
+          "  __v__ = __scope__.lookup(#{inst[1].inspect}); __output__ << (__v__.is_a?(String) ? __v__ : __output_string__(__v__))\n"
         end
       when IL::WRITE_VAR_PATH
         # Fused FIND_VAR_PATH + WRITE_VALUE (no stack needed, no ErrorMarker possible)
+        # Inline String check and Hash lookup for fast path
         name, path = inst[1], inst[2]
         lookup_expr = if path.length == 1
-          "__lookup_property__(__scope__.lookup(#{name.inspect}), #{path[0].inspect})"
+          # Inline Hash fast path for single property (handles special keys too)
+          key = path[0]
+          generate_inline_hash_lookup("__scope__.lookup(#{name.inspect})", key)
         else
           "__lookup_path__(__scope__.lookup(#{name.inspect}), #{path.map(&:inspect).join(", ")})"
         end
         if @uses_capture
-          "  __write_output__(LiquidIL::Utils.output_string(#{lookup_expr}), __output__, __scope__)\n"
+          "  __v__ = #{lookup_expr}; __write_output__(__v__.is_a?(String) ? __v__ : __output_string__(__v__), __output__, __scope__)\n"
         elsif @uses_interrupts
-          "  __output__ << LiquidIL::Utils.output_string(#{lookup_expr}) unless __scope__&.has_interrupt?\n"
+          "  __v__ = #{lookup_expr}; __output__ << (__v__.is_a?(String) ? __v__ : __output_string__(__v__)) unless __scope__&.has_interrupt?\n"
         else
-          "  __output__ << LiquidIL::Utils.output_string(#{lookup_expr})\n"
+          "  __v__ = #{lookup_expr}; __output__ << (__v__.is_a?(String) ? __v__ : __output_string__(__v__))\n"
         end
       when IL::CONST_NIL
         "  __stack__ << nil\n"
@@ -718,8 +766,10 @@ module LiquidIL
       when IL::FIND_VAR_PATH
         name, path = inst[1], inst[2]
         if path.length == 1
-          # Single property - use direct lookup
-          "  __obj__ = __scope__.lookup(#{name.inspect}); __stack__ << __lookup_property__(__obj__, #{path[0].inspect})\n"
+          # Single property - inline Hash fast path for normal keys
+          key = path[0]
+          lookup_code = generate_inline_hash_lookup("__scope__.lookup(#{name.inspect})", key)
+          "  __stack__ << #{lookup_code}\n"
         else
           # Multiple properties - use optimized path lookup
           "  __stack__ << __lookup_path__(__scope__.lookup(#{name.inspect}), #{path.map(&:inspect).join(", ")})\n"
@@ -727,12 +777,17 @@ module LiquidIL
       when IL::LOOKUP_KEY
         "  __k__ = __stack__.pop; __o__ = __stack__.pop; __stack__ << __lookup_key__(__o__, __k__)\n"
       when IL::LOOKUP_CONST_KEY
-        "  __stack__ << __lookup_property__(__stack__.pop, #{inst[1].inspect})\n"
+        # Inline Hash fast path for normal keys
+        key = inst[1]
+        lookup_code = generate_inline_hash_lookup("__stack__.pop", key, pop_input: true)
+        "  #{lookup_code}\n"
       when IL::LOOKUP_CONST_PATH
         path = inst[1]
         if path.length == 1
-          # Single property - use direct lookup
-          "  __stack__ << __lookup_property__(__stack__.pop, #{path[0].inspect})\n"
+          # Single property - inline Hash fast path for normal keys
+          key = path[0]
+          lookup_code = generate_inline_hash_lookup("__stack__.pop", key, pop_input: true)
+          "  #{lookup_code}\n"
         else
           # Multiple properties - use optimized path lookup
           "  __stack__ << __lookup_path__(__stack__.pop, #{path.map(&:inspect).join(", ")})\n"
@@ -1203,6 +1258,25 @@ module LiquidIL
             scope.current_capture << str
           else
             output << str
+          end
+        end
+
+        # Inlined output_string for non-String values (String handled inline in generated code)
+        # This is faster than calling LiquidIL::Utils.output_string because it avoids module lookup
+        def __output_string__(value)
+          case value
+          when Integer, Float
+            value.to_s
+          when nil
+            "".freeze
+          when true
+            "true".freeze
+          when false
+            "false".freeze
+          when Array
+            value.map { |item| item.is_a?(String) ? item : __output_string__(item) }.join
+          else
+            LiquidIL::Utils.output_string(value)
           end
         end
 
