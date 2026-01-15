@@ -653,7 +653,7 @@ module LiquidIL
           "  __v__ = __stack__.pop; __write_output__(__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__), __output__, __scope__)\n"
         elsif @uses_interrupts
           # Need interrupt check (break/continue possible)
-          "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__)) unless __scope__.has_interrupt?\n"
+          "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__)) unless __scope__&.has_interrupt?\n"
         else
           # Fast path: no capture, no interrupts - direct write
           "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__))\n"
@@ -663,7 +663,7 @@ module LiquidIL
         if @uses_capture
           "  __write_output__(LiquidIL::Utils.output_string(__scope__.lookup(#{inst[1].inspect})), __output__, __scope__)\n"
         elsif @uses_interrupts
-          "  __output__ << LiquidIL::Utils.output_string(__scope__.lookup(#{inst[1].inspect})) unless __scope__.has_interrupt?\n"
+          "  __output__ << LiquidIL::Utils.output_string(__scope__.lookup(#{inst[1].inspect})) unless __scope__&.has_interrupt?\n"
         else
           "  __output__ << LiquidIL::Utils.output_string(__scope__.lookup(#{inst[1].inspect}))\n"
         end
@@ -678,7 +678,7 @@ module LiquidIL
         if @uses_capture
           "  __write_output__(LiquidIL::Utils.output_string(#{lookup_expr}), __output__, __scope__)\n"
         elsif @uses_interrupts
-          "  __output__ << LiquidIL::Utils.output_string(#{lookup_expr}) unless __scope__.has_interrupt?\n"
+          "  __output__ << LiquidIL::Utils.output_string(#{lookup_expr}) unless __scope__&.has_interrupt?\n"
         else
           "  __output__ << LiquidIL::Utils.output_string(#{lookup_expr})\n"
         end
@@ -869,9 +869,8 @@ module LiquidIL
         var_expr = generate_eval_expression(for_expr)
         item_var = as_alias || name
         code << "  __partial_args__ = {#{arg_assignments.join(", ")}}\n"
-        code << "  __for_coll__ = #{var_expr}\n"
-        code << "  __for_coll__ = __to_iterable__(__for_coll__) if __for_coll__.is_a?(Array) || __for_coll__.is_a?(LiquidIL::RangeValue)\n"
-        code << "  if __for_coll__.is_a?(Array)\n"
+        code << "  __for_coll__ = __to_iterable__(#{var_expr})\n"
+        code << "  if __for_coll__.respond_to?(:each)\n"
         code << "    __for_coll__.each_with_index do |__item__, __idx__|\n"
         code << "      __partial_args__[#{item_var.inspect}] = __item__\n"
         if isolated
@@ -1154,10 +1153,10 @@ module LiquidIL
 
         def __write_output__(str, output, scope)
           return unless str
-          return if scope.has_interrupt?
+          return if scope&.has_interrupt?
           # Fast path: skip .to_s for strings (most common case)
           str = str.to_s unless str.is_a?(String)
-          if scope.capturing?
+          if scope&.capturing?
             scope.current_capture << str
           else
             output << str
@@ -1920,8 +1919,8 @@ module LiquidIL
       <<~'RUBY'
         def __write_output__(str, output, scope)
           return unless str
-          return if scope.has_interrupt?
-          if scope.capturing?
+          return if scope&.has_interrupt?
+          if scope&.capturing?
             scope.current_capture << str.to_s
           else
             output << str.to_s
