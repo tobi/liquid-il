@@ -35,7 +35,7 @@
 
 # macOS
 .DS_Store
-
+.ralph-tui/
 # Bundler lock (optional - remove if you want to track it)
 # Gemfile.lock
 
