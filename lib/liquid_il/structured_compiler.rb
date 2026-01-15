@@ -189,6 +189,11 @@ module LiquidIL
             return op == :eq ? is_blank : !is_blank if [:eq, :ne].include?(op)
           end
 
+          # For ordered comparisons (<, <=, >, >=), nil makes comparison false
+          if [:lt, :le, :gt, :ge].include?(op) && (left.nil? || right.nil?)
+            return false
+          end
+
           case op
           when :eq then left == right
           when :ne then left != right
