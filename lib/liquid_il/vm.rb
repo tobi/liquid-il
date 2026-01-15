@@ -87,6 +87,22 @@ module LiquidIL
           end
           @pc += 1
 
+        when IL::WRITE_VAR
+          # Fused FIND_VAR + WRITE_VALUE (no stack needed)
+          value = @context.lookup(inst[1])
+          write_output(to_output(value))
+          @pc += 1
+
+        when IL::WRITE_VAR_PATH
+          # Fused FIND_VAR_PATH + WRITE_VALUE (no stack needed)
+          obj = @context.lookup(inst[1])
+          inst[2].each do |key|
+            obj = lookup_property(obj, key)
+            break if obj.nil?
+          end
+          write_output(to_output(obj))
+          @pc += 1
+
         when IL::CONST_NIL
           @stack.push(nil)
           @pc += 1

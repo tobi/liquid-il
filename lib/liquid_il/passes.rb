@@ -39,6 +39,8 @@ module LiquidIL
   #  17: cache_repeated_lookups     - Cache repeated variable lookups
   #  18: value_numbering            - Eliminate redundant computations
   #  19: register_allocation        - Reuse dead temp register slots
+  #  20: fuse_write_var             - Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR
+  #  21: strip_labels               - Remove LABEL instructions after linking
   #
   # ## Testing with Rake
   #
@@ -89,7 +91,9 @@ module LiquidIL
       16 => "hoist_loop_invariants",
       17 => "cache_repeated_lookups",
       18 => "value_numbering",
-      19 => "register_allocation"
+      19 => "register_allocation",
+      20 => "fuse_write_var",
+      21 => "strip_labels"
     }.freeze
 
     # All available pass numbers (derived from PASS_NAMES)

@@ -8,6 +8,8 @@ module LiquidIL
     # Output opcodes
     WRITE_RAW = :WRITE_RAW           # [:WRITE_RAW, string]
     WRITE_VALUE = :WRITE_VALUE       # [:WRITE_VALUE]
+    WRITE_VAR = :WRITE_VAR           # [:WRITE_VAR, name] - fused FIND_VAR + WRITE_VALUE
+    WRITE_VAR_PATH = :WRITE_VAR_PATH # [:WRITE_VAR_PATH, name, [path]] - fused FIND_VAR_PATH + WRITE_VALUE
 
     # Constant opcodes (no lookup needed)
     CONST_NIL = :CONST_NIL           # [:CONST_NIL]

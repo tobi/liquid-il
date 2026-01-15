@@ -48,6 +48,12 @@ module LiquidIL
 
       IL.link(instructions)
 
+      # Optimization pass 21: Strip labels after linking (VM speedup)
+      # Must run after IL.link since it adjusts jump target indices
+      if @options[:optimize] && Passes.enabled.include?(21)
+        strip_labels(instructions, spans)
+      end
+
       { instructions: instructions, spans: spans }
     end
 
@@ -125,6 +131,9 @@ module LiquidIL
 
       # Optimization pass 19: Temp register allocation - reuse dead temp slots
       RegisterAllocator.optimize(instructions) if enabled.include?(19)
+
+      # Optimization pass 20: Fuse FIND_VAR + WRITE_VALUE -> WRITE_VAR (VM speedup)
+      fuse_write_var(instructions, spans) if enabled.include?(20)
 
       instructions
     end
@@ -667,6 +676,83 @@ module LiquidIL
           end
         end
         i += 1
+      end
+    end
+
+    # Fuse FIND_VAR + WRITE_VALUE into WRITE_VAR (and FIND_VAR_PATH + WRITE_VALUE into WRITE_VAR_PATH)
+    # This is a VM optimization that eliminates stack operations for simple variable output
+    def fuse_write_var(instructions, spans)
+      i = 0
+      while i < instructions.length - 1
+        inst = instructions[i]
+        next_inst = instructions[i + 1]
+
+        if next_inst[0] == IL::WRITE_VALUE
+          case inst[0]
+          when IL::FIND_VAR
+            # Fuse FIND_VAR + WRITE_VALUE -> WRITE_VAR
+            instructions[i] = [IL::WRITE_VAR, inst[1]]
+            spans[i] = spans[i + 1] || spans[i]
+            instructions.delete_at(i + 1)
+            spans.delete_at(i + 1)
+            next
+          when IL::FIND_VAR_PATH
+            # Fuse FIND_VAR_PATH + WRITE_VALUE -> WRITE_VAR_PATH
+            instructions[i] = [IL::WRITE_VAR_PATH, inst[1], inst[2]]
+            spans[i] = spans[i + 1] || spans[i]
+            instructions.delete_at(i + 1)
+            spans.delete_at(i + 1)
+            next
+          end
+        end
+
+        i += 1
+      end
+    end
+
+    # Strip LABEL instructions after linking and adjust jump targets
+    # Labels are only needed during linking - after that they're just no-ops
+    # This must run AFTER IL.link since it adjusts absolute instruction indices
+    def strip_labels(instructions, spans)
+      # Build a map of old index -> new index (accounting for removed labels)
+      label_indices = []
+      instructions.each_with_index do |inst, idx|
+        label_indices << idx if inst[0] == IL::LABEL
+      end
+
+      return if label_indices.empty?
+
+      # Build index adjustment map: for each original index, how many labels
+      # were removed before it (not including labels AT the index)
+      adjustment = Array.new(instructions.length, 0)
+      removed_count = 0
+      label_set = label_indices.to_set
+
+      instructions.length.times do |idx|
+        adjustment[idx] = removed_count
+        if label_set.include?(idx)
+          removed_count += 1
+        end
+      end
+
+      # Adjust all jump targets
+      instructions.each do |inst|
+        case inst[0]
+        when IL::JUMP, IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT
+          target = inst[1]
+          inst[1] = target - adjustment[target] if target < adjustment.length
+        when IL::FOR_NEXT, IL::TABLEROW_NEXT
+          target1 = inst[1]
+          target2 = inst[2]
+          inst[1] = target1 - adjustment[target1] if target1 < adjustment.length
+          inst[2] = target2 - adjustment[target2] if target2 < adjustment.length
+        end
+      end
+
+      # Remove label instructions (in reverse order to maintain indices)
+      label_indices.reverse.each do |idx|
+        instructions.delete_at(idx)
+        spans.delete_at(idx)
       end
     end
 
