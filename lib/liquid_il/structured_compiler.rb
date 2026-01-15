@@ -159,7 +159,9 @@ module LiquidIL
           LiquidIL::Filters.apply(name, input, args, scope)
         }
 
-        __compare__ = ->(left, right, op) {
+        # Compare helper that outputs errors for incomparable types
+        # Takes output and current_file parameters for error reporting
+        __compare__ = ->(left, right, op, output = nil, current_file = nil) {
           # Convert drops to their liquid values for comparison
           left = left.to_liquid_value if left.respond_to?(:to_liquid_value)
           right = right.to_liquid_value if right.respond_to?(:to_liquid_value)
@@ -205,10 +207,24 @@ module LiquidIL
           case op
           when :eq then left == right
           when :ne then left != right
-          when :lt then (left <=> right) == -1 rescue false
-          when :le then (cmp = left <=> right) && cmp <= 0 rescue false
-          when :gt then (left <=> right) == 1 rescue false
-          when :ge then (cmp = left <=> right) && cmp >= 0 rescue false
+          when :lt, :le, :gt, :ge
+            # Ordered comparison - need to validate types are comparable
+            cmp = left <=> right
+            if cmp.nil?
+              # Incomparable types - output error and return false
+              if output
+                right_str = right.is_a?(Numeric) ? right.to_s : right.class.to_s
+                location = current_file ? "#{current_file} line 1" : "line 1"
+                output << "Liquid error (#{location}): comparison of #{left.class} with #{right_str} failed"
+              end
+              return false
+            end
+            case op
+            when :lt then cmp == -1
+            when :le then cmp <= 0
+            when :gt then cmp == 1
+            when :ge then cmp >= 0
+            end
           else false
           end
         }
@@ -283,6 +299,30 @@ module LiquidIL
           else
             nil
           end
+        }
+
+        # Slice collection for for loops - mimics VM's slice algorithm
+        # from = offset, to = from + limit
+        # Includes items where from <= index, breaks when to <= index
+        __slice_collection__ = ->(collection, from, to) {
+          segments = []
+          index = 0
+          collection.each do |item|
+            break if to && to <= index
+            segments << item if from <= index
+            index += 1
+          end
+          segments
+        }
+
+        # Validate integer for limit/offset (mimics VM's valid_integer?)
+        __valid_integer__ = ->(value) {
+          return true if value.nil?
+          return true if value.is_a?(Integer)
+          return true if value.is_a?(Float)
+          # Strings starting with optional minus and digit are valid
+          return true if value.is_a?(String) && value.match?(/\A-?\d/)
+          false
         }
 
       RUBY
@@ -938,7 +978,7 @@ module LiquidIL
       when :compare
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "__compare__.call(#{left}, #{right}, #{expr.value.inspect})"
+        "__compare__.call(#{left}, #{right}, #{expr.value.inspect}, __output__, __current_file__)"
       when :contains
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
@@ -1255,7 +1295,12 @@ module LiquidIL
       parent_forloop = depth > 0 ? "__forloop_#{depth - 1}__" : "nil"
 
       code << "#{prefix}# for #{item_var}\n"
-      code << "#{prefix}#{coll_var} = __to_iterable__.call(#{coll_ruby})\n"
+      # Store original collection to check if it's a string (strings ignore offset/limit)
+      code << "#{prefix}__orig_coll_#{depth}__ = #{coll_ruby}\n"
+      code << "#{prefix}__is_string_#{depth}__ = __orig_coll_#{depth}__.is_a?(String)\n"
+      # Check if collection is nil/false (skip validation for nil/false)
+      code << "#{prefix}__is_nil_#{depth}__ = __orig_coll_#{depth}__.nil? || __orig_coll_#{depth}__ == false\n"
+      code << "#{prefix}#{coll_var} = __to_iterable__.call(__orig_coll_#{depth}__)\n"
       code << "#{prefix}#{coll_var} = #{coll_var}.reverse if #{reversed.inspect}\n" if reversed
 
       # Calculate starting offset for offset:continue or explicit offset
@@ -1265,19 +1310,34 @@ module LiquidIL
         code << "#{prefix}#{offset_var} = __scope__.for_offset(#{loop_name.inspect})\n"
       elsif offset_expr
         offset_ruby = expr_to_ruby(offset_expr)
-        code << "#{prefix}#{offset_var} = (#{offset_ruby}).to_i\n"
+        # Validate offset is a valid integer (unless collection is nil/false)
+        if has_offset
+          code << "#{prefix}__offset_val_#{depth}__ = #{offset_ruby}\n"
+          code << "#{prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || __valid_integer__.call(__offset_val_#{depth}__)\n"
+          code << "#{prefix}#{offset_var} = __offset_val_#{depth}__.to_i\n"
+        else
+          code << "#{prefix}#{offset_var} = (#{offset_ruby}).to_i\n"
+        end
       else
         code << "#{prefix}#{offset_var} = 0\n"
       end
 
-      # Apply offset
-      code << "#{prefix}#{coll_var} = #{coll_var}.drop(#{offset_var}) if #{offset_var} > 0\n"
-
-      # Apply limit if specified
+      # Slice collection using Liquid's algorithm (to = from + limit)
+      # Strings ignore offset and limit
       if limit_expr
         limit_ruby = expr_to_ruby(limit_expr)
-        code << "#{prefix}__limit__ = (#{limit_ruby}).to_i\n"
-        code << "#{prefix}#{coll_var} = #{coll_var}.take(__limit__) if __limit__ > 0\n"
+        # Validate limit is a valid integer (unless collection is nil/false)
+        if has_limit
+          code << "#{prefix}__limit_val_#{depth}__ = #{limit_ruby}\n"
+          code << "#{prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || __valid_integer__.call(__limit_val_#{depth}__)\n"
+          code << "#{prefix}__to_#{depth}__ = #{offset_var} + __limit_val_#{depth}__.to_i\n"
+        else
+          code << "#{prefix}__to_#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
+        end
+        code << "#{prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, __to_#{depth}__) unless __is_string_#{depth}__\n"
+      else
+        # No limit - just apply offset using slice (from <= index)
+        code << "#{prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
       end
 
       code << "#{prefix}if !#{coll_var}.empty?\n"
