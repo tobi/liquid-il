@@ -3,12 +3,12 @@
 # See: ralph-tui config help
 
 tracker = "beads"
-agent = "claude"
+agent = "opencode"
 maxIterations = 10
 autoCommit = true
 
 [trackerOptions]
 beadsDir = ".beads"
-labels = ""
+labels = "ralph"
 
 [agentOptions]

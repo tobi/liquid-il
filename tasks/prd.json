@@ -1,0 +1,127 @@
+{
+  "name": "Global Registers Optimization",
+  "branchName": "feature/global-registers-optimization",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Implement backward pass liveness analysis",
+      "description": "As a compiler developer, I want a backward pass that scans IL instructions to identify the last-use point for each temp register, so that I know when temps become dead and available for reuse.",
+      "acceptanceCriteria": [
+        "Single backward pass scans all instructions",
+        "Correctly identifies LOADTEMP as temp usage",
+        "Correctly identifies STORETEMP as temp definition",
+        "Tracks last-use instruction index for each temp",
+        "Returns a mapping of temp index to last-use index"
+      ],
+      "priority": 1,
+      "passes": true,
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-002",
+      "title": "Implement forward allocation pass for temp reuse",
+      "description": "As a compiler developer, I want a forward pass that rewrites temp indices to reuse slots from dead temps, so that peak register usage is minimized.",
+      "acceptanceCriteria": [
+        "Forward pass processes instructions in order",
+        "Maintains pool of available (dead) temp slots",
+        "Rewrites STORETEMP indices to reuse available slots",
+        "Rewrites corresponding LOADTEMP indices consistently",
+        "Temp is returned to pool after its last use"
+      ],
+      "priority": 1,
+      "passes": true,
+      "dependsOn": [
+        "US-001"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-003",
+      "title": "Create RegisterAllocator optimization pass",
+      "description": "As a compiler developer, I want a RegisterAllocator class that combines liveness analysis and temp rewriting into a single optimization pass, so that it integrates cleanly with the existing optimization pipeline.",
+      "acceptanceCriteria": [
+        "Follows existing optimization pass patterns",
+        "Has optimize(ir) method that returns optimized IR",
+        "Combines backward liveness analysis and forward allocation",
+        "Located in lib/liquid_il/ with other optimization passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "dependsOn": [
+        "US-001",
+        "US-002"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-004",
+      "title": "Integrate register allocation into compilation pipeline",
+      "description": "As a compiler developer, I want the register allocator to run after all other optimization passes and before linking, so that it operates on the final optimized IR.",
+      "acceptanceCriteria": [
+        "Register allocator runs after loop hoisting, inlining, etc.",
+        "Register allocator runs before label resolution/linking",
+        "Integration point is configurable/toggleable",
+        "No changes required to existing optimization passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "dependsOn": [
+        "US-003"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-005",
+      "title": "Verify all existing tests pass with register allocation",
+      "description": "As a compiler developer, I want all existing liquid-spec tests to pass with register allocation enabled, so that the optimization is proven correct.",
+      "acceptanceCriteria": [
+        "All liquid-spec tests pass",
+        "No regressions in template output",
+        "No regressions in error handling"
+      ],
+      "priority": 1,
+      "passes": true,
+      "dependsOn": [
+        "US-004"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-006",
+      "title": "Add tests for register reuse scenarios",
+      "description": "As a compiler developer, I want specific tests that verify temp reuse behavior, so that the optimization is well-tested for edge cases.",
+      "acceptanceCriteria": [
+        "Test: sequential non-overlapping temps are reused",
+        "Test: overlapping live ranges prevent reuse",
+        "Test: temps used in loops maintain correctness",
+        "Test: nested temp usage is handled correctly"
+      ],
+      "priority": 2,
+      "passes": true,
+      "dependsOn": [
+        "US-003"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-007",
+      "title": "Measure and document peak register reduction",
+      "description": "As a compiler developer, I want to measure the reduction in peak temp usage on representative templates, so that the optimization's benefit is quantified.",
+      "acceptanceCriteria": [
+        "Benchmark on at least 3 real-world templates",
+        "Report before/after peak temp usage",
+        "Document typical reduction percentage"
+      ],
+      "priority": 3,
+      "passes": true,
+      "dependsOn": [
+        "US-005"
+      ],
+      "completionNotes": "Completed by agent"
+    }
+  ],
+  "metadata": {
+    "updatedAt": "2026-01-13T21:23:58.494Z"
+  }
+}
