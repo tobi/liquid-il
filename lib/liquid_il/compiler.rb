@@ -875,9 +875,8 @@ module LiquidIL
       blocks = find_straight_line_blocks(instructions)
 
       blocks.each do |block_start, block_end|
-        value_number_block(instructions, spans, block_start, block_end, temp_counter)
-        # Update temp_counter for next block
-        temp_counter = find_max_temp_index(instructions) + 1
+        # value_number_block returns updated temp_counter - no need to rescan
+        temp_counter = value_number_block(instructions, spans, block_start, block_end, temp_counter)
       end
     end
 
@@ -1004,6 +1003,8 @@ module LiquidIL
 
         i += 1
       end
+
+      temp_counter  # Return updated temp_counter for next block
     end
 
     # Inline simple partials: Replace RENDER_PARTIAL/INCLUDE_PARTIAL with inlined instructions
