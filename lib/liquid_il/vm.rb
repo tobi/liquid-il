@@ -336,8 +336,9 @@ module LiquidIL
           offset_continue = inst[5]
           reversed = inst[6]
           recovery_label = inst[7]
-          offset = has_offset ? @stack.pop : nil
+          # IL emits: offset, limit (in that order) so limit is on top of stack
           limit = has_limit ? @stack.pop : nil
+          offset = has_offset ? @stack.pop : nil
           collection = @stack.pop
           begin
             iterator = create_iterator(collection, loop_name, has_limit, limit, has_offset, offset, offset_continue, reversed)

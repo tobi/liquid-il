@@ -1174,9 +1174,10 @@ module LiquidIL
       when IL::FOR_INIT
         var_name, loop_name, has_limit, has_offset, offset_continue, reversed, recovery_label = inst[1..]
         recovery_target = recovery_label ? @label_to_block[recovery_label] : "(__pc__ = #{block.id + 1}; break)"
+        # IL emits: offset, limit (in that order) so limit is on top of stack
         <<~RUBY
-              __offset__ = #{has_offset} ? __stack__.pop : nil
               __limit__ = #{has_limit} ? __stack__.pop : nil
+              __offset__ = #{has_offset} ? __stack__.pop : nil
               __coll__ = __stack__.pop
               __iter__ = __create_iterator__(__coll__, #{loop_name.inspect}, #{has_limit}, __limit__, #{has_offset}, __offset__, #{offset_continue}, #{reversed}, __scope__, __output__)
               __for_iterators__ << __iter__

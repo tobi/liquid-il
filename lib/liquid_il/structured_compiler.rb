@@ -682,6 +682,37 @@ module LiquidIL
       [stack.last, :none]
     end
 
+    # Build a single value expression (for limit/offset which are simple values)
+    # This reads one logical value, which may be a single constant or a complete expression
+    def build_single_value_expression
+      inst = @instructions[@pc]
+      return nil if inst.nil?
+
+      case inst[0]
+      when IL::CONST_INT
+        @pc += 1
+        Expr.new(type: :literal, value: inst[1])
+      when IL::CONST_FLOAT
+        @pc += 1
+        Expr.new(type: :literal, value: inst[1])
+      when IL::CONST_STRING
+        @pc += 1
+        Expr.new(type: :literal, value: inst[1])
+      when IL::FIND_VAR
+        # Variable lookup - could be followed by lookups/filters
+        # Use full expression builder but track starting stack size
+        expr, _ = build_expression
+        expr
+      when IL::LOAD_TEMP
+        @pc += 1
+        Expr.new(type: :temp, value: inst[1])
+      else
+        # For complex expressions, use full builder
+        expr, _ = build_expression
+        expr
+      end
+    end
+
     # Convert expression tree to Ruby code
     def expr_to_ruby(expr)
       return "nil" if expr.nil?
@@ -860,31 +891,67 @@ module LiquidIL
       prefix = "  " * indent
       pre_loop_code = String.new
 
+      # First, look ahead to find FOR_INIT and determine offset/limit presence
+      # This helps us avoid consuming offset/limit values as pre-loop expressions
+      for_init_idx = @pc
+      while for_init_idx < @instructions.length && @instructions[for_init_idx][0] != IL::FOR_INIT
+        for_init_idx += 1
+      end
+
+      has_limit = false
+      has_offset = false
+      if for_init_idx < @instructions.length
+        fi = @instructions[for_init_idx]
+        has_limit = fi[3]
+        has_offset = fi[4]
+      end
+
+      # Count how many values need to be on stack for offset/limit
+      values_needed = (has_offset ? 1 : 0) + (has_limit ? 1 : 0)
+
       # Handle any pre-loop setup (optimizer may hoist expressions before FOR_INIT)
+      # But ONLY look for FIND_VAR + STORE_TEMP patterns, not bare constants
+      # (bare constants before FOR_INIT are offset/limit values)
       while @pc < @instructions.length && @instructions[@pc][0] != IL::FOR_INIT
         inst = @instructions[@pc]
         case inst[0]
-        when IL::FIND_VAR, IL::CONST_INT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE
-          # Check if this is an expression followed by STORE_TEMP
-          start_pc = @pc
-          expr, term = build_expression
-          if term == :store_temp
-            # Get slot from STORE_TEMP instruction
-            store_inst = @instructions[@pc]
-            if store_inst && store_inst[0] == IL::STORE_TEMP
-              slot = store_inst[1]
-              @pc += 1
-              pre_loop_code << "#{prefix}__temp_#{slot}__ = #{expr_to_ruby(expr)}\n" if expr
-            end
+        when IL::FIND_VAR
+          # Check if this is a hoisted variable followed by STORE_TEMP
+          next_inst = @instructions[@pc + 1]
+          if next_inst && next_inst[0] == IL::STORE_TEMP
+            # This is a hoisted FIND_VAR -> STORE_TEMP pattern
+            var_name = inst[1]
+            slot = next_inst[1]
+            @pc += 2
+            pre_loop_code << "#{prefix}__temp_#{slot}__ = __scope__.lookup(#{var_name.inspect})\n"
           else
-            # Not a store pattern, restore pc and break
-            @pc = start_pc
+            # Not followed by STORE_TEMP, this is an offset/limit expression
             break
           end
         when IL::STORE_TEMP
           @pc += 1 # Skip orphaned STORE_TEMP
+        when IL::CONST_INT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_FLOAT, IL::CONST_NIL
+          # Bare constants before FOR_INIT are offset/limit values, stop here
+          break
         else
           break
+        end
+      end
+
+      # Handle offset/limit expressions if present (pushed onto stack before FOR_INIT)
+      # IL emits: offset, limit (in that order) so we read offset first, then limit
+      limit_expr = nil
+      offset_expr = nil
+
+      if for_init_idx < @instructions.length
+        # Build offset expression if present (emitted first in IL)
+        if has_offset && @pc < for_init_idx
+          offset_expr = build_single_value_expression
+        end
+
+        # Build limit expression if present (emitted second in IL)
+        if has_limit && @pc < for_init_idx
+          limit_expr = build_single_value_expression
         end
       end
 
@@ -894,7 +961,10 @@ module LiquidIL
 
       item_var = for_init[1]
       loop_name = for_init[2]
-      reversed = for_init[3]
+      has_limit = for_init[3]
+      has_offset = for_init[4]
+      offset_continue = for_init[5]
+      reversed = for_init[6]
       @pc += 1
 
       # Track loop depth for nested loops - increment BEFORE parsing body
@@ -974,6 +1044,21 @@ module LiquidIL
       code << "#{prefix}#{coll_var} = #{coll_ruby}\n"
       code << "#{prefix}#{coll_var} = #{coll_var}.to_a if #{coll_var}.respond_to?(:to_a) && !#{coll_var}.is_a?(String)\n"
       code << "#{prefix}#{coll_var} = #{coll_var}.reverse if #{reversed.inspect} && #{coll_var}.is_a?(Array)\n" if reversed
+
+      # Apply offset and limit if specified
+      if limit_expr || offset_expr
+        if offset_expr
+          offset_ruby = expr_to_ruby(offset_expr)
+          code << "#{prefix}__offset__ = (#{offset_ruby}).to_i\n"
+          code << "#{prefix}#{coll_var} = #{coll_var}.drop(__offset__) if __offset__ > 0\n"
+        end
+        if limit_expr
+          limit_ruby = expr_to_ruby(limit_expr)
+          code << "#{prefix}__limit__ = (#{limit_ruby}).to_i\n"
+          code << "#{prefix}#{coll_var} = #{coll_var}.take(__limit__) if __limit__ > 0\n"
+        end
+      end
+
       code << "#{prefix}if #{coll_var}.is_a?(Array) && !#{coll_var}.empty?\n"
       code << "#{prefix}  __scope__.push_scope\n"
       code << "#{prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
@@ -1004,6 +1089,13 @@ module LiquidIL
       jump_type = inst[0]
       jump_target = inst[1]
       @pc += 1
+
+      # Detect case/when OR pattern: multiple JUMP_IF_TRUE to same target
+      # Pattern: CASE_COMPARE, JUMP_IF_TRUE target, LOAD_TEMP, CONST, CASE_COMPARE, JUMP_IF_TRUE target, ...
+      # All pointing to CONST_TRUE, STORE_TEMP (success marker)
+      if jump_type == IL::JUMP_IF_TRUE && is_case_when_or_pattern?(jump_target)
+        return generate_case_when_or(cond_expr, jump_target, indent)
+      end
 
       # Parse then branch (until jump_target or JUMP)
       then_code = String.new
@@ -1067,6 +1159,89 @@ module LiquidIL
       unless else_code.empty?
         code << "#{prefix}else\n"
         code << else_code
+      end
+
+      code << "#{prefix}end\n"
+      code
+    end
+
+    # Detect case/when OR pattern: multiple conditions jumping to same success block
+    # Target should be CONST_TRUE followed by STORE_TEMP (case/when success marker)
+    def is_case_when_or_pattern?(jump_target)
+      return false if jump_target >= @instructions.length
+
+      target_inst = @instructions[jump_target]
+      next_inst = @instructions[jump_target + 1]
+
+      # Success block starts with CONST_TRUE, STORE_TEMP
+      target_inst&.[](0) == IL::CONST_TRUE && next_inst&.[](0) == IL::STORE_TEMP
+    end
+
+    # Generate case/when with OR conditions (when 1, 2, 3 or when 1 or 2 or 3)
+    def generate_case_when_or(first_cond, success_target, indent)
+      prefix = "  " * indent
+      conditions = [first_cond]
+
+      # Collect remaining OR conditions that jump to the same target
+      while @pc < success_target
+        inst = @instructions[@pc]
+        break if inst.nil?
+
+        case inst[0]
+        when IL::LOAD_TEMP, IL::CONST_INT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_NIL
+          # Start of next condition - build expression
+          expr, _ = build_expression
+          # Should now be at JUMP_IF_TRUE
+          if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE && @instructions[@pc][1] == success_target
+            conditions << expr
+            @pc += 1
+          else
+            break
+          end
+        when IL::JUMP
+          # No more conditions, this is the "else" jump
+          break
+        else
+          break
+        end
+      end
+
+      # Skip to success target
+      @pc = success_target
+
+      # Skip CONST_TRUE and get the STORE_TEMP slot (success marker)
+      success_slot = nil
+      @pc += 1 if @instructions[@pc]&.[](0) == IL::CONST_TRUE
+      if @instructions[@pc]&.[](0) == IL::STORE_TEMP
+        success_slot = @instructions[@pc][1]
+        @pc += 1
+      end
+
+      # Generate the combined OR condition
+      cond_parts = conditions.map { |c| expr_to_ruby(c) }
+      combined_cond = cond_parts.map { |c| "__is_truthy__.call(#{c})" }.join(" || ")
+
+      code = String.new
+      code << "#{prefix}if #{combined_cond}\n"
+
+      # Set the success flag to prevent else branch
+      code << "#{prefix}  __temp_#{success_slot}__ = true\n" if success_slot
+
+      # Parse success body until we hit LOAD_TEMP (checking matched flag) or end
+      while @pc < @instructions.length
+        inst = @instructions[@pc]
+        break if inst.nil?
+
+        case inst[0]
+        when IL::LOAD_TEMP
+          # This is checking the matched flag for else branch - done with body
+          break
+        when IL::HALT
+          break
+        else
+          result = generate_statement(indent + 1)
+          code << result if result
+        end
       end
 
       code << "#{prefix}end\n"

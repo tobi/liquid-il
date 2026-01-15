@@ -947,16 +947,18 @@ module LiquidIL
       # Check for empty BEFORE initializing iterator - jump_if_empty peeks then pops if empty
       @builder.jump_if_empty(label_else)
 
-      if limit_expr
-        limit_lexer = ExpressionLexer.new(limit_expr)
-        limit_lexer.advance
-        parse_expression(limit_lexer)
-      end
-
+      # Emit offset first, then limit (IL order matches application order)
+      # Sequential readers can apply: offset first (drop N), then limit (take M)
       if offset_expr
         offset_lexer = ExpressionLexer.new(offset_expr)
         offset_lexer.advance
         parse_expression(offset_lexer)
+      end
+
+      if limit_expr
+        limit_lexer = ExpressionLexer.new(limit_expr)
+        limit_lexer.advance
+        parse_expression(limit_lexer)
       end
 
       # Initialize for loop (pops collection, creates iterator)
@@ -1647,16 +1649,18 @@ module LiquidIL
 
       @builder.jump_if_empty(label_else)
 
-      if limit_expr
-        limit_lexer = ExpressionLexer.new(limit_expr)
-        limit_lexer.advance
-        parse_expression(limit_lexer)
-      end
-
+      # Emit offset first, then limit (IL order matches application order)
+      # Sequential readers can apply: offset first (drop N), then limit (take M)
       if offset_expr
         offset_lexer = ExpressionLexer.new(offset_expr)
         offset_lexer.advance
         parse_expression(offset_lexer)
+      end
+
+      if limit_expr
+        limit_lexer = ExpressionLexer.new(limit_expr)
+        limit_lexer.advance
+        parse_expression(limit_lexer)
       end
 
       @builder.for_init(var_name, loop_name, !limit_expr.nil?, !offset_expr.nil?, offset_continue, reversed, label_end)
