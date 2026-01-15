@@ -865,21 +865,47 @@ module LiquidIL
       as_alias = args["__as__"]
 
       if for_expr
-        # Render once per item in collection
+        # Render once per item in collection - match VM semantics exactly
         var_expr = generate_eval_expression(for_expr)
         item_var = as_alias || name
         code << "  __partial_args__ = {#{arg_assignments.join(", ")}}\n"
-        code << "  __for_coll__ = __to_iterable__(#{var_expr})\n"
-        code << "  if __for_coll__.respond_to?(:each)\n"
-        code << "    __for_coll__.each_with_index do |__item__, __idx__|\n"
+        code << "  __for_coll_raw__ = #{var_expr}\n"
+        code << "  if __for_coll_raw__.is_a?(Array)\n"
+        code << "    # Arrays: iterate (empty = don't render)\n"
+        code << "    __for_coll_raw__.each_with_index do |__item__, __idx__|\n"
         code << "      __partial_args__[#{item_var.inspect}] = __item__\n"
         if isolated
-          code << "      __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = __idx__ }\n"
+          code << "      __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll_raw__.length).tap { |f| f.index0 = __idx__ }\n"
         end
         code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
         code << "    end\n"
+        if isolated
+          # Ranges iterate for render (isolated) but not for include
+          code << "  elsif __for_coll_raw__.is_a?(LiquidIL::RangeValue) || __for_coll_raw__.is_a?(Range)\n"
+          code << "    # Ranges: iterate for render\n"
+          code << "    __items__ = __for_coll_raw__.to_a\n"
+          code << "    __items__.each_with_index do |__item__, __idx__|\n"
+          code << "      __partial_args__[#{item_var.inspect}] = __item__\n"
+          code << "      __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
+          code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+          code << "    end\n"
+        end
+        code << "  elsif !__for_coll_raw__.is_a?(Hash) && !__for_coll_raw__.is_a?(String) && !__for_coll_raw__.is_a?(Range) && !__for_coll_raw__.is_a?(LiquidIL::RangeValue) && __for_coll_raw__.respond_to?(:each) && __for_coll_raw__.respond_to?(:to_a)\n"
+        code << "    # Enumerable drops: iterate\n"
+        code << "    __items__ = __for_coll_raw__.to_a\n"
+        code << "    __items__.each_with_index do |__item__, __idx__|\n"
+        code << "      __partial_args__[#{item_var.inspect}] = __item__\n"
+        if isolated
+          code << "      __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
+        end
+        code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+        code << "    end\n"
+        code << "  elsif __for_coll_raw__.nil?\n"
+        code << "    # Nil: render once with named args only (don't set item var)\n"
+        code << "    #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
         code << "  else\n"
-        code << "    __partial_args__[#{item_var.inspect}] = __for_coll__\n"
+        code << "    # Scalar value (int, string, hash, range for include): render once with that value\n"
+        code << "    __partial_args__[#{item_var.inspect}] = __for_coll_raw__\n"
         code << "    #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
         code << "  end\n"
       elsif with_expr
@@ -887,8 +913,25 @@ module LiquidIL
         var_expr = generate_eval_expression(with_expr)
         item_var = as_alias || name
         code << "  __partial_args__ = {#{arg_assignments.join(", ")}}\n"
-        code << "  __partial_args__[#{item_var.inspect}] = #{var_expr}\n"
-        code << "  #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+        code << "  __with_val__ = #{var_expr}\n"
+        if isolated
+          # For render (isolated): arrays render once as single item
+          # nil/undefined with value lets keyword arg take precedence
+          code << "  __partial_args__[#{item_var.inspect}] = __with_val__ unless __with_val__.nil?\n"
+          code << "  #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+        else
+          # For include (non-isolated) with arrays: iterate like "for"
+          code << "  if __with_val__.is_a?(Array)\n"
+          code << "    __with_val__.each do |__item__|\n"
+          code << "      __partial_args__[#{item_var.inspect}] = __item__\n"
+          code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+          code << "    end\n"
+          code << "  else\n"
+          code << "    # with value always overrides (even nil)\n"
+          code << "    __partial_args__[#{item_var.inspect}] = __with_val__\n"
+          code << "    #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+          code << "  end\n"
+        end
       else
         # Simple render
         if arg_assignments.empty?
