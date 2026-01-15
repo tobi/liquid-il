@@ -278,7 +278,7 @@ module LiquidIL
         body = info[:compiled_body]
 
         code << "\n"
-        code << "def #{method_name}(assigns, __output__, __parent_scope__, isolated)\n"
+        code << "def #{method_name}(assigns, __output__, __parent_scope__, isolated, caller_line: 1)\n"
         code << "  # Save and set file context for error reporting\n"
         code << "  __prev_file__ = __parent_scope__.current_file\n"
         code << "  __parent_scope__.current_file = #{name.inspect}\n"
@@ -286,7 +286,7 @@ module LiquidIL
         code << "  # Check render depth to prevent infinite recursion\n"
         code << "  __parent_scope__.push_render_depth\n"
         code << "  if __parent_scope__.render_depth_exceeded?(strict: !isolated)\n"
-        code << "    raise LiquidIL::RuntimeError.new(\"Nesting too deep\", file: #{name.inspect}, line: 1)\n"
+        code << "    raise LiquidIL::RuntimeError.new(\"Nesting too deep\", file: #{name.inspect}, line: caller_line)\n"
         code << "  end\n"
         code << "\n"
         code << "  __scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
@@ -894,25 +894,42 @@ module LiquidIL
       method_name = partial_method_name(name)
       tag_type = isolated ? "render" : "include"
 
-      # Build argument hash
-      arg_assignments = []
+      # Compute caller line for error reporting
+      caller_line_expr = "__compute_line__(__spans__, __template_source__, #{idx})"
+
+      # Build sequential argument assignments
+      # For include (non-isolated), args are evaluated in order and each is assigned to the scope
+      # so that later args can reference earlier ones (e.g., a: 1, b: a)
+      sequential_arg_code = String.new
+      sequential_arg_code << "  __partial_args__ = {}\n"
+      has_regular_args = false
       args.each do |k, v|
         next if k.start_with?("__")
+        has_regular_args = true
         if v.is_a?(Hash) && v[:__var__]
           # Variable lookup - handles both simple vars and dotted paths
           var_path = v[:__var__]
-          if var_path.is_a?(Array)
-            arg_assignments << "#{k.inspect} => #{generate_eval_expression(var_path[0])}"
-          else
-            arg_assignments << "#{k.inspect} => #{generate_eval_expression(var_path)}"
+          expr = if var_path.is_a?(Array)
+                   generate_eval_expression(var_path[0])
+                 else
+                   generate_eval_expression(var_path)
+                 end
+          sequential_arg_code << "  __partial_args__[#{k.inspect}] = #{expr}\n"
+          # For include (non-isolated), also assign to current scope so later args can read it
+          unless isolated
+            sequential_arg_code << "  __scope__.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
           end
         else
-          arg_assignments << "#{k.inspect} => #{v.inspect}"
+          sequential_arg_code << "  __partial_args__[#{k.inspect}] = #{v.inspect}\n"
+          unless isolated
+            sequential_arg_code << "  __scope__.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
+          end
         end
       end
 
       code = String.new
       code << "  # #{tag_type} '#{name}'\n"
+      code << "  __caller_line__ = #{caller_line_expr}\n"
 
       # Handle with/for expressions
       with_expr = args["__with__"]
@@ -921,10 +938,11 @@ module LiquidIL
 
       if for_expr
         # Render once per item in collection - match VM semantics exactly
+        # IMPORTANT: Evaluate for expression BEFORE sequential args, to match VM behavior
         var_expr = generate_eval_expression(for_expr)
         item_var = as_alias || name
-        code << "  __partial_args__ = {#{arg_assignments.join(", ")}}\n"
         code << "  __for_coll_raw__ = #{var_expr}\n"
+        code << sequential_arg_code
         code << "  if __for_coll_raw__.is_a?(Array)\n"
         code << "    # Arrays: iterate (empty = don't render)\n"
         code << "    __for_coll_raw__.each_with_index do |__item__, __idx__|\n"
@@ -932,7 +950,7 @@ module LiquidIL
         if isolated
           code << "      __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll_raw__.length).tap { |f| f.index0 = __idx__ }\n"
         end
-        code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+        code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated}, caller_line: __caller_line__)\n"
         code << "    end\n"
         if isolated
           # Ranges iterate for render (isolated) but not for include
@@ -942,7 +960,7 @@ module LiquidIL
           code << "    __items__.each_with_index do |__item__, __idx__|\n"
           code << "      __partial_args__[#{item_var.inspect}] = __item__\n"
           code << "      __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
-          code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+          code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated}, caller_line: __caller_line__)\n"
           code << "    end\n"
         end
         code << "  elsif !__for_coll_raw__.is_a?(Hash) && !__for_coll_raw__.is_a?(String) && !__for_coll_raw__.is_a?(Range) && !__for_coll_raw__.is_a?(LiquidIL::RangeValue) && __for_coll_raw__.respond_to?(:each) && __for_coll_raw__.respond_to?(:to_a)\n"
@@ -953,46 +971,48 @@ module LiquidIL
         if isolated
           code << "      __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
         end
-        code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+        code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated}, caller_line: __caller_line__)\n"
         code << "    end\n"
         code << "  elsif __for_coll_raw__.nil?\n"
         code << "    # Nil: render once with named args only (don't set item var)\n"
-        code << "    #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+        code << "    #{method_name}(__partial_args__, __output__, __scope__, #{isolated}, caller_line: __caller_line__)\n"
         code << "  else\n"
         code << "    # Scalar value (int, string, hash, range for include): render once with that value\n"
         code << "    __partial_args__[#{item_var.inspect}] = __for_coll_raw__\n"
-        code << "    #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+        code << "    #{method_name}(__partial_args__, __output__, __scope__, #{isolated}, caller_line: __caller_line__)\n"
         code << "  end\n"
       elsif with_expr
         # Render with a specific value
+        # IMPORTANT: Evaluate with expression BEFORE sequential args, to match VM behavior
         var_expr = generate_eval_expression(with_expr)
         item_var = as_alias || name
-        code << "  __partial_args__ = {#{arg_assignments.join(", ")}}\n"
         code << "  __with_val__ = #{var_expr}\n"
+        code << sequential_arg_code
         if isolated
           # For render (isolated): arrays render once as single item
           # nil/undefined with value lets keyword arg take precedence
           code << "  __partial_args__[#{item_var.inspect}] = __with_val__ unless __with_val__.nil?\n"
-          code << "  #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+          code << "  #{method_name}(__partial_args__, __output__, __scope__, #{isolated}, caller_line: __caller_line__)\n"
         else
           # For include (non-isolated) with arrays: iterate like "for"
           code << "  if __with_val__.is_a?(Array)\n"
           code << "    __with_val__.each do |__item__|\n"
           code << "      __partial_args__[#{item_var.inspect}] = __item__\n"
-          code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+          code << "      #{method_name}(__partial_args__, __output__, __scope__, #{isolated}, caller_line: __caller_line__)\n"
           code << "    end\n"
           code << "  else\n"
           code << "    # with value always overrides (even nil)\n"
           code << "    __partial_args__[#{item_var.inspect}] = __with_val__\n"
-          code << "    #{method_name}(__partial_args__, __output__, __scope__, #{isolated})\n"
+          code << "    #{method_name}(__partial_args__, __output__, __scope__, #{isolated}, caller_line: __caller_line__)\n"
           code << "  end\n"
         end
       else
         # Simple render
-        if arg_assignments.empty?
-          code << "  #{method_name}({}, __output__, __scope__, #{isolated})\n"
+        if has_regular_args
+          code << sequential_arg_code
+          code << "  #{method_name}(__partial_args__, __output__, __scope__, #{isolated}, caller_line: __caller_line__)\n"
         else
-          code << "  #{method_name}({#{arg_assignments.join(", ")}}, __output__, __scope__, #{isolated})\n"
+          code << "  #{method_name}({}, __output__, __scope__, #{isolated}, caller_line: __caller_line__)\n"
         end
       end
 
@@ -1051,9 +1071,13 @@ module LiquidIL
         raise PartialCompilationError, "Cannot load partial '#{name}': no file system available or partial not found"
       end
 
-      # Compile the partial
-      compiler = LiquidIL::Compiler.new(source, optimize: true)
-      result = compiler.compile
+      # Compile the partial - syntax errors fall back to VM
+      begin
+        compiler = LiquidIL::Compiler.new(source, optimize: true)
+        result = compiler.compile
+      rescue LiquidIL::SyntaxError => e
+        raise PartialCompilationError, "Partial '#{name}' has syntax error: #{e.message}"
+      end
       instructions = result[:instructions]
       spans = result[:spans]
 
@@ -1972,7 +1996,7 @@ module LiquidIL
 
         code << "\n"
         code << "  # Partial: #{name}\n"
-        code << "  def #{method_name}(assigns, __output__, __parent_scope__, isolated)\n"
+        code << "  def #{method_name}(assigns, __output__, __parent_scope__, isolated, caller_line: 1)\n"
         code << "    # Save and set file context for error reporting\n"
         code << "    __prev_file__ = __parent_scope__.current_file\n"
         code << "    __parent_scope__.current_file = #{name.inspect}\n"
@@ -1980,7 +2004,7 @@ module LiquidIL
         code << "    # Check render depth to prevent infinite recursion\n"
         code << "    __parent_scope__.push_render_depth\n"
         code << "    if __parent_scope__.render_depth_exceeded?(strict: !isolated)\n"
-        code << "      raise LiquidIL::RuntimeError.new(\"Nesting too deep\", file: #{name.inspect}, line: 1)\n"
+        code << "      raise LiquidIL::RuntimeError.new(\"Nesting too deep\", file: #{name.inspect}, line: caller_line)\n"
         code << "    end\n"
         code << "\n"
         code << "    __scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
