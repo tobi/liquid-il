@@ -1281,6 +1281,8 @@ module LiquidIL
       code << "#{prefix}    __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
       code << body_code
       code << "#{prefix}  end\n"
+      code << "#{prefix}  # Update forloop.index0 to final count (for escaped references)\n"
+      code << "#{prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
       code << "#{prefix}  # Update offset:continue position for next loop with same name\n"
       code << "#{prefix}  __scope__.set_for_offset(#{loop_name.inspect}, #{offset_var} + #{coll_var}.length)\n"
       code << "#{prefix}  __scope__.pop_scope\n"
