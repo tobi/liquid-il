@@ -593,7 +593,14 @@ module LiquidIL
           # Pattern: JUMP_IF_TRUE -> CONST_TRUE -> end (this is the true branch of 'or')
           jump_target = inst[1]
           target_inst = @instructions[jump_target]
-          if inst[0] == IL::JUMP_IF_FALSE && target_inst&.[](0) == IL::CONST_FALSE
+          # For short-circuit detection, check if CONST_TRUE/FALSE is followed by expression continuation
+          # vs STORE_TEMP (which indicates case/when pattern where it sets a "matched" flag)
+          next_after_target = @instructions[jump_target + 1]
+          is_short_circuit_pattern = next_after_target &&
+            next_after_target[0] != IL::STORE_TEMP &&
+            next_after_target[0] != IL::WRITE_RAW &&
+            next_after_target[0] != IL::WRITE_VALUE
+          if inst[0] == IL::JUMP_IF_FALSE && target_inst&.[](0) == IL::CONST_FALSE && is_short_circuit_pattern
             # This is 'and' short-circuit - build the full expression
             # Save current position, parse right operand, then return combined expr
             left = stack.pop || Expr.new(type: :literal, value: false)
@@ -636,7 +643,7 @@ module LiquidIL
             if @instructions[@pc]&.[](0) == IL::IS_TRUTHY
               @pc += 1
             end
-          elsif inst[0] == IL::JUMP_IF_TRUE && target_inst&.[](0) == IL::CONST_TRUE
+          elsif inst[0] == IL::JUMP_IF_TRUE && target_inst&.[](0) == IL::CONST_TRUE && is_short_circuit_pattern
             # This is 'or' short-circuit
             left = stack.pop || Expr.new(type: :literal, value: false)
             @pc += 1
