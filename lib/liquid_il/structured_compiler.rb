@@ -84,7 +84,8 @@ module LiquidIL
       code << "  __output__ = String.new(capacity: #{OUTPUT_CAPACITY})\n"
       code << "  __current_file__ = nil\n"
       code << "  __cycle_state__ = {}\n"
-      code << "  __capture_stack__ = []\n\n"
+      code << "  __capture_stack__ = []\n"
+      code << "  __ifchanged_state__ = {}\n\n"
       code << generate_body
       code << "\n  __output__\n"
       code << "end\n"
@@ -317,12 +318,23 @@ module LiquidIL
 
       when IL::POP_CAPTURE
         @pc += 1
-        # POP_CAPTURE pushes captured value onto stack, followed by ASSIGN
-        # Peek ahead to get the variable name from ASSIGN
+        # POP_CAPTURE pushes captured value onto stack, followed by ASSIGN or IFCHANGED_CHECK
+        # Peek ahead to determine what follows
         if @instructions[@pc]&.[](0) == IL::ASSIGN
           var = @instructions[@pc][1]
           @pc += 1
           "#{prefix}__captured__ = __output__; __output__ = __capture_stack__.pop; __scope__.assign(#{var.inspect}, __captured__)\n"
+        elsif @instructions[@pc]&.[](0) == IL::IFCHANGED_CHECK
+          tag_id = @instructions[@pc][1]
+          @pc += 1
+          # ifchanged: output captured content only if it differs from previous
+          code = String.new
+          code << "#{prefix}__captured__ = __output__; __output__ = __capture_stack__.pop\n"
+          code << "#{prefix}if __captured__ != __ifchanged_state__[#{tag_id.inspect}]\n"
+          code << "#{prefix}  __ifchanged_state__[#{tag_id.inspect}] = __captured__\n"
+          code << "#{prefix}  __output__ << __captured__\n"
+          code << "#{prefix}end\n"
+          code
         else
           # Fallback - just restore output (captured value is lost)
           "#{prefix}__output__ = __capture_stack__.pop\n"
@@ -373,9 +385,10 @@ module LiquidIL
         "#{prefix}__cycle_key__ = __scope__.lookup(#{var_name.inspect}); __cycle_idx__ = __cycle_state__[__cycle_key__] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[__cycle_key__] = __cycle_idx__ + 1\n"
 
       when IL::LABEL, IL::POP_INTERRUPT, IL::JUMP_IF_INTERRUPT, IL::POP_FORLOOP,
-           IL::FOR_END, IL::FOR_NEXT, IL::JUMP_IF_EMPTY, IL::PUSH_FORLOOP, IL::POP
+           IL::FOR_END, IL::FOR_NEXT, IL::JUMP_IF_EMPTY, IL::PUSH_FORLOOP, IL::POP,
+           IL::IFCHANGED_CHECK
         @pc += 1
-        "" # No-ops in structured code
+        "" # No-ops in structured code (IFCHANGED_CHECK handled by POP_CAPTURE)
 
       when IL::LOAD_TEMP
         # Load from temp generates expression - peek ahead to see if it's part of an if
@@ -948,11 +961,13 @@ module LiquidIL
       code << "#{prefix}if #{coll_var}.is_a?(Array) && !#{coll_var}.empty?\n"
       code << "#{prefix}  __scope__.push_scope\n"
       code << "#{prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
-      code << "#{prefix}  #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
+      code << "#{prefix}  #{idx_var} = 0\n"
+      code << "#{prefix}  #{coll_var}.each do |#{item_var_internal}|\n"
       code << "#{prefix}    #{forloop_var}.index0 = #{idx_var}\n"
       code << "#{prefix}    __scope__.assign_local('forloop', #{forloop_var})\n"
       code << "#{prefix}    __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
       code << body_code
+      code << "#{prefix}    #{idx_var} += 1\n"
       code << "#{prefix}  end\n"
       code << "#{prefix}  __scope__.pop_scope\n"
       code << "#{prefix}end\n"
