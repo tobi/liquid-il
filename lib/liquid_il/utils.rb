@@ -131,8 +131,10 @@ module LiquidIL
       end
 
       # When value is blank/empty - check if case value is blank
+      # blank includes: nil, false, empty string, whitespace-only strings, empty arrays/hashes
       if when_value.is_a?(BlankLiteral)
-        return case_value.nil? || case_value == false || case_value == "" ||
+        return case_value.nil? || case_value == false ||
+               (case_value.is_a?(String) && case_value.strip.empty?) ||
                (case_value.respond_to?(:empty?) && case_value.empty?)
       end
       if when_value.is_a?(EmptyLiteral)
