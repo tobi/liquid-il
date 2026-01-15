@@ -18,7 +18,8 @@ module LiquidIL
     end
 
     # Expression node for reconstructed expressions
-    Expr = Data.define(:type, :value, :children) do
+    # Using Struct instead of Data.define to avoid Ruby 4.0 segfaults with deep recursion
+    Expr = Struct.new(:type, :value, :children, keyword_init: true) do
       def initialize(type:, value: nil, children: [])
         super
       end
@@ -32,6 +33,7 @@ module LiquidIL
       @spans = spans || []
       @template_source = template_source
       @context = context
+      @loop_depth = 0 # Track nested loop depth for parentloop support
     end
 
     def compile
@@ -81,7 +83,8 @@ module LiquidIL
       code << generate_helpers
       code << "  __output__ = String.new(capacity: #{OUTPUT_CAPACITY})\n"
       code << "  __current_file__ = nil\n"
-      code << "  __cycle_state__ = {}\n\n"
+      code << "  __cycle_state__ = {}\n"
+      code << "  __capture_stack__ = []\n\n"
       code << generate_body
       code << "\n  __output__\n"
       code << "end\n"
@@ -245,7 +248,7 @@ module LiquidIL
         var_expr = generate_var_path_expr(inst[1], inst[2])
         "#{prefix}__output__ << ((__v__ = #{var_expr}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
 
-      when IL::FIND_VAR
+      when IL::FIND_VAR, IL::FIND_VAR_PATH
         if peek_for_loop?
           generate_for_loop(indent)
         elsif peek_if_statement?
@@ -289,15 +292,16 @@ module LiquidIL
         var = inst[1]
         # Skip WRITE_VALUE if it follows (we output directly)
         @pc += 1 if @instructions[@pc]&.[](0) == IL::WRITE_VALUE
-        "#{prefix}__v__ = __scope__.lookup(#{var.inspect}) || 0; __scope__.assign(#{var.inspect}, __v__ + 1); __output__ << __v__.to_s\n"
+        # Use scope's increment - it handles counter independence and proper lookup integration
+        "#{prefix}__output__ << __scope__.increment(#{var.inspect}).to_s\n"
 
       when IL::DECREMENT
         @pc += 1
         var = inst[1]
         # Skip WRITE_VALUE if it follows (we output directly)
         @pc += 1 if @instructions[@pc]&.[](0) == IL::WRITE_VALUE
-        # Decrement outputs the NEW value (after decrementing), unlike increment which outputs the OLD value
-        "#{prefix}__v__ = (__scope__.lookup(#{var.inspect}) || 0) - 1; __scope__.assign(#{var.inspect}, __v__); __output__ << __v__.to_s\n"
+        # Use scope's decrement - it handles counter independence and proper lookup integration
+        "#{prefix}__output__ << __scope__.decrement(#{var.inspect}).to_s\n"
 
       when IL::PUSH_SCOPE
         @pc += 1
@@ -309,12 +313,20 @@ module LiquidIL
 
       when IL::PUSH_CAPTURE
         @pc += 1
-        "#{prefix}__capture_stack__ ||= []; __capture_stack__ << __output__; __output__ = String.new\n"
+        "#{prefix}__capture_stack__ << __output__; __output__ = String.new\n"
 
       when IL::POP_CAPTURE
         @pc += 1
-        var = inst[1]
-        "#{prefix}__scope__.assign(#{var.inspect}, __output__); __output__ = __capture_stack__.pop\n"
+        # POP_CAPTURE pushes captured value onto stack, followed by ASSIGN
+        # Peek ahead to get the variable name from ASSIGN
+        if @instructions[@pc]&.[](0) == IL::ASSIGN
+          var = @instructions[@pc][1]
+          @pc += 1
+          "#{prefix}__captured__ = __output__; __output__ = __capture_stack__.pop; __scope__.assign(#{var.inspect}, __captured__)\n"
+        else
+          # Fallback - just restore output (captured value is lost)
+          "#{prefix}__output__ = __capture_stack__.pop\n"
+        end
 
       when IL::CYCLE_STEP
         @pc += 1
@@ -339,6 +351,27 @@ module LiquidIL
         # Use __cycle_idx__ to avoid conflict with __idx__ in for loops
         "#{prefix}__cycle_idx__ = __cycle_state__[#{identity.inspect}] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[#{identity.inspect}] = __cycle_idx__ + 1\n"
 
+      when IL::CYCLE_STEP_VAR
+        @pc += 1
+        var_name = inst[1]
+        raw_values = inst[2]
+        # Extract actual values from tuples
+        values_ruby = raw_values.map do |v|
+          if v.is_a?(Array)
+            case v[0]
+            when :lit then v[1].inspect
+            when :var then "__scope__.lookup(#{v[1].inspect})"
+            else v.inspect
+            end
+          else
+            v.inspect
+          end
+        end
+        # Skip WRITE_VALUE if it follows (we output directly)
+        @pc += 1 if @instructions[@pc]&.[](0) == IL::WRITE_VALUE
+        # Identity is a variable - look it up at runtime
+        "#{prefix}__cycle_key__ = __scope__.lookup(#{var_name.inspect}); __cycle_idx__ = __cycle_state__[__cycle_key__] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[__cycle_key__] = __cycle_idx__ + 1\n"
+
       when IL::LABEL, IL::POP_INTERRUPT, IL::JUMP_IF_INTERRUPT, IL::POP_FORLOOP,
            IL::FOR_END, IL::FOR_NEXT, IL::JUMP_IF_EMPTY, IL::PUSH_FORLOOP, IL::POP
         @pc += 1
@@ -362,32 +395,44 @@ module LiquidIL
     def generate_expression_statement(indent)
       prefix = "  " * indent
 
+      # Clear temp assignments before building expression
+      @temp_assignments = nil
+
       # Build expression from current position
       expr, terminator = build_expression
 
       return nil if expr.nil?
 
+      # Collect any temp assignments that were generated during expression building
+      temp_code = ""
+      if @temp_assignments
+        @temp_assignments.each do |slot, temp_expr|
+          temp_code << "#{prefix}__temp_#{slot}__ = #{expr_to_ruby(temp_expr)}\n"
+        end
+        @temp_assignments = nil
+      end
+
       case terminator
       when :write_value
         expr_code = expr_to_ruby(expr)
-        "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
+        temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
       when :assign
         var = @instructions[@pc - 1][1]
-        "#{prefix}__scope__.assign(#{var.inspect}, #{expr_to_ruby(expr)})\n"
+        temp_code + "#{prefix}__scope__.assign(#{var.inspect}, #{expr_to_ruby(expr)})\n"
       when :assign_local
         var = @instructions[@pc - 1][1]
-        "#{prefix}__scope__.assign_local(#{var.inspect}, #{expr_to_ruby(expr)})\n"
+        temp_code + "#{prefix}__scope__.assign_local(#{var.inspect}, #{expr_to_ruby(expr)})\n"
       when :store_temp
         slot = @instructions[@pc][1]
         @pc += 1
-        "#{prefix}__temp_#{slot}__ = #{expr_to_ruby(expr)}\n"
+        temp_code + "#{prefix}__temp_#{slot}__ = #{expr_to_ruby(expr)}\n"
       when :condition
         # Expression is part of a condition, handled by if_statement
         @pc -= 1 # Back up to let if_statement handle it
         nil
       else
         # Just evaluate expression for side effects (rare)
-        "#{prefix}#{expr_to_ruby(expr)}\n"
+        temp_code + "#{prefix}#{expr_to_ruby(expr)}\n"
       end
     end
 
@@ -477,14 +522,29 @@ module LiquidIL
           # Just marks the value as being used as a boolean, no change needed
           @pc += 1
         when IL::STORE_TEMP
-          # STORE_TEMP is a terminator - the expression should be stored
-          return [stack.last, :store_temp]
+          # STORE_TEMP pops from stack. If stack has >1 items (from DUP), store and continue
+          if stack.length > 1
+            slot = inst[1]
+            @pc += 1
+            # Store temp and continue - used for DUP + STORE_TEMP + WRITE_VALUE patterns
+            # Mark that we need to generate temp assignment as a side effect
+            @temp_assignments ||= []
+            @temp_assignments << [slot, stack.pop]
+          else
+            # Single item - this is the terminator case
+            # DON'T increment @pc here - generate_expression_statement will read slot from inst
+            return [stack.last, :store_temp]
+          end
         when IL::LOAD_TEMP
           slot = inst[1]
           stack << Expr.new(type: :temp, value: slot)
           @pc += 1
         when IL::POP
           stack.pop
+          @pc += 1
+        when IL::DUP
+          # Duplicate top of stack
+          stack << stack.last if stack.any?
           @pc += 1
         when IL::CASE_COMPARE
           right = stack.pop || Expr.new(type: :literal, value: nil)
@@ -510,7 +570,84 @@ module LiquidIL
           @pc += 1
           return [stack.last, :assign_local]
         when IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE
-          return [stack.last, :condition]
+          # Check if this is a short-circuit and/or pattern, not an actual if condition
+          # Pattern: JUMP_IF_FALSE -> CONST_FALSE -> end (this is the false branch of 'and')
+          # Pattern: JUMP_IF_TRUE -> CONST_TRUE -> end (this is the true branch of 'or')
+          jump_target = inst[1]
+          target_inst = @instructions[jump_target]
+          if inst[0] == IL::JUMP_IF_FALSE && target_inst&.[](0) == IL::CONST_FALSE
+            # This is 'and' short-circuit - build the full expression
+            # Save current position, parse right operand, then return combined expr
+            left = stack.pop || Expr.new(type: :literal, value: false)
+            @pc += 1
+            # Build right operand expression until we hit JUMP or IS_TRUTHY
+            right_start = @pc
+            while @pc < jump_target
+              build_inst = @instructions[@pc]
+              break if build_inst.nil?
+              case build_inst[0]
+              when IL::JUMP
+                @pc = build_inst[1]
+                break
+              when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE,
+                   IL::CONST_NIL, IL::CONST_EMPTY, IL::CONST_BLANK, IL::CONST_RANGE, IL::NEW_RANGE,
+                   IL::FIND_VAR, IL::FIND_VAR_PATH, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY, IL::LOOKUP_CONST_PATH,
+                   IL::LOOKUP_COMMAND, IL::COMPARE, IL::CONTAINS, IL::BOOL_NOT, IL::IS_TRUTHY, IL::CALL_FILTER
+                # Continue building expression for right operand
+                case build_inst[0]
+                when IL::CONST_INT then stack << Expr.new(type: :literal, value: build_inst[1]); @pc += 1
+                when IL::CONST_STRING then stack << Expr.new(type: :literal, value: build_inst[1]); @pc += 1
+                when IL::CONST_TRUE then stack << Expr.new(type: :literal, value: true); @pc += 1
+                when IL::CONST_FALSE then stack << Expr.new(type: :literal, value: false); @pc += 1
+                when IL::FIND_VAR then stack << Expr.new(type: :var, value: build_inst[1]); @pc += 1
+                when IL::FIND_VAR_PATH then stack << Expr.new(type: :var_path, value: build_inst[1], children: build_inst[2].map { |k| Expr.new(type: :literal, value: k) }); @pc += 1
+                when IL::LOOKUP_CONST_KEY
+                  obj = stack.pop || Expr.new(type: :literal, value: nil)
+                  stack << Expr.new(type: :lookup, value: build_inst[1], children: [obj])
+                  @pc += 1
+                when IL::IS_TRUTHY then @pc += 1
+                else @pc += 1
+                end
+              else
+                break
+              end
+            end
+            right = stack.pop || Expr.new(type: :literal, value: false)
+            stack << Expr.new(type: :and, children: [left, right])
+            # Skip IS_TRUTHY if present (the JUMP in right operand skips CONST_FALSE)
+            if @instructions[@pc]&.[](0) == IL::IS_TRUTHY
+              @pc += 1
+            end
+          elsif inst[0] == IL::JUMP_IF_TRUE && target_inst&.[](0) == IL::CONST_TRUE
+            # This is 'or' short-circuit
+            left = stack.pop || Expr.new(type: :literal, value: false)
+            @pc += 1
+            # Build right operand
+            while @pc < jump_target
+              build_inst = @instructions[@pc]
+              break if build_inst.nil? || build_inst[0] == IL::JUMP
+              case build_inst[0]
+              when IL::FIND_VAR then stack << Expr.new(type: :var, value: build_inst[1]); @pc += 1
+              when IL::FIND_VAR_PATH then stack << Expr.new(type: :var_path, value: build_inst[1], children: build_inst[2].map { |k| Expr.new(type: :literal, value: k) }); @pc += 1
+              when IL::LOOKUP_CONST_KEY
+                obj = stack.pop || Expr.new(type: :literal, value: nil)
+                stack << Expr.new(type: :lookup, value: build_inst[1], children: [obj])
+                @pc += 1
+              when IL::IS_TRUTHY then @pc += 1
+              when IL::JUMP then @pc = build_inst[1]; break
+              else @pc += 1
+              end
+            end
+            right = stack.pop || Expr.new(type: :literal, value: false)
+            stack << Expr.new(type: :or, children: [left, right])
+            # Skip IS_TRUTHY if present (the JUMP in right operand skips CONST_TRUE)
+            if @instructions[@pc]&.[](0) == IL::IS_TRUTHY
+              @pc += 1
+            end
+          else
+            # Regular if condition
+            return [stack.last, :condition]
+          end
         else
           # Unknown or terminating instruction
           break
@@ -582,6 +719,14 @@ module LiquidIL
         "LiquidIL::Utils.case_equal?(#{right}, #{left})"
       when :temp
         "__temp_#{expr.value}__"
+      when :and
+        left = expr_to_ruby(expr.children[0])
+        right = expr_to_ruby(expr.children[1])
+        "(__is_truthy__.call(#{left}) && __is_truthy__.call(#{right}))"
+      when :or
+        left = expr_to_ruby(expr.children[0])
+        right = expr_to_ruby(expr.children[1])
+        "(__is_truthy__.call(#{left}) || __is_truthy__.call(#{right}))"
       else
         "nil # unknown expr type: #{expr.type}"
       end
@@ -723,6 +868,10 @@ module LiquidIL
       reversed = for_init[3]
       @pc += 1
 
+      # Track loop depth for nested loops - increment BEFORE parsing body
+      depth = @loop_depth
+      @loop_depth += 1
+
       # Skip structural instructions
       while @pc < @instructions.length
         case @instructions[@pc][0]
@@ -778,27 +927,37 @@ module LiquidIL
         end
       end
 
-      # Generate the loop code
+      # Generate the loop code with unique variable names for nested loops
       code = String.new
       code << pre_loop_code unless pre_loop_code.empty?
       coll_ruby = expr_to_ruby(coll_expr)
 
+      # Use depth-indexed variables for forloop and collection
+      forloop_var = "__forloop_#{depth}__"
+      coll_var = "__coll_#{depth}__"
+      item_var_internal = "__item_#{depth}__"
+      idx_var = "__idx_#{depth}__"
+
+      # Get parent forloop reference (if nested)
+      parent_forloop = depth > 0 ? "__forloop_#{depth - 1}__" : "nil"
+
       code << "#{prefix}# for #{item_var}\n"
-      code << "#{prefix}__coll__ = #{coll_ruby}\n"
-      code << "#{prefix}__coll__ = __coll__.to_a if __coll__.respond_to?(:to_a) && !__coll__.is_a?(String)\n"
-      code << "#{prefix}__coll__ = __coll__.reverse if #{reversed.inspect} && __coll__.is_a?(Array)\n" if reversed
-      code << "#{prefix}if __coll__.is_a?(Array) && !__coll__.empty?\n"
+      code << "#{prefix}#{coll_var} = #{coll_ruby}\n"
+      code << "#{prefix}#{coll_var} = #{coll_var}.to_a if #{coll_var}.respond_to?(:to_a) && !#{coll_var}.is_a?(String)\n"
+      code << "#{prefix}#{coll_var} = #{coll_var}.reverse if #{reversed.inspect} && #{coll_var}.is_a?(Array)\n" if reversed
+      code << "#{prefix}if #{coll_var}.is_a?(Array) && !#{coll_var}.empty?\n"
       code << "#{prefix}  __scope__.push_scope\n"
-      code << "#{prefix}  __forloop__ = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, __coll__.length)\n"
-      code << "#{prefix}  __coll__.each_with_index do |__item__, __idx__|\n"
-      code << "#{prefix}    __forloop__.index0 = __idx__\n"
-      code << "#{prefix}    __scope__.assign_local('forloop', __forloop__)\n"
-      code << "#{prefix}    __scope__.assign_local(#{item_var.inspect}, __item__)\n"
+      code << "#{prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
+      code << "#{prefix}  #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
+      code << "#{prefix}    #{forloop_var}.index0 = #{idx_var}\n"
+      code << "#{prefix}    __scope__.assign_local('forloop', #{forloop_var})\n"
+      code << "#{prefix}    __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
       code << body_code
       code << "#{prefix}  end\n"
       code << "#{prefix}  __scope__.pop_scope\n"
       code << "#{prefix}end\n"
 
+      @loop_depth -= 1
       code
     end
 
@@ -841,25 +1000,26 @@ module LiquidIL
       # Skip to jump_target if we haven't reached it
       @pc = jump_target if @pc < jump_target
 
-      # Parse else branch
+      # Parse else branch (only if there IS an else - indicated by end_target being set)
       else_code = String.new
-      target_end = end_target || jump_target
 
-      while @pc < @instructions.length && (end_target.nil? || @pc < end_target)
-        inst = @instructions[@pc]
-        break if inst.nil?
+      if end_target
+        while @pc < @instructions.length && @pc < end_target
+          inst = @instructions[@pc]
+          break if inst.nil?
 
-        case inst[0]
-        when IL::HALT
-          break
-        when IL::JUMP
-          @pc += 1
-          break
-        when IL::LABEL
-          @pc += 1
-        else
-          result = generate_statement(indent + 1)
-          else_code << result if result
+          case inst[0]
+          when IL::HALT
+            break
+          when IL::JUMP
+            @pc += 1
+            break
+          when IL::LABEL
+            @pc += 1
+          else
+            result = generate_statement(indent + 1)
+            else_code << result if result
+          end
         end
       end
 
