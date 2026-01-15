@@ -658,6 +658,30 @@ module LiquidIL
           # Fast path: no capture, no interrupts - direct write
           "  __v__ = __stack__.pop; __output__ << (__v__.is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : LiquidIL::Utils.output_string(__v__))\n"
         end
+      when IL::WRITE_VAR
+        # Fused FIND_VAR + WRITE_VALUE (no stack needed, no ErrorMarker possible)
+        if @uses_capture
+          "  __write_output__(LiquidIL::Utils.output_string(__scope__.lookup(#{inst[1].inspect})), __output__, __scope__)\n"
+        elsif @uses_interrupts
+          "  __output__ << LiquidIL::Utils.output_string(__scope__.lookup(#{inst[1].inspect})) unless __scope__.has_interrupt?\n"
+        else
+          "  __output__ << LiquidIL::Utils.output_string(__scope__.lookup(#{inst[1].inspect}))\n"
+        end
+      when IL::WRITE_VAR_PATH
+        # Fused FIND_VAR_PATH + WRITE_VALUE (no stack needed, no ErrorMarker possible)
+        name, path = inst[1], inst[2]
+        lookup_expr = if path.length == 1
+          "__lookup_property__(__scope__.lookup(#{name.inspect}), #{path[0].inspect})"
+        else
+          "__lookup_path__(__scope__.lookup(#{name.inspect}), #{path.map(&:inspect).join(", ")})"
+        end
+        if @uses_capture
+          "  __write_output__(LiquidIL::Utils.output_string(#{lookup_expr}), __output__, __scope__)\n"
+        elsif @uses_interrupts
+          "  __output__ << LiquidIL::Utils.output_string(#{lookup_expr}) unless __scope__.has_interrupt?\n"
+        else
+          "  __output__ << LiquidIL::Utils.output_string(#{lookup_expr})\n"
+        end
       when IL::CONST_NIL
         "  __stack__ << nil\n"
       when IL::CONST_TRUE
