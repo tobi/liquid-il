@@ -10,6 +10,15 @@ require_relative "../lib/liquid_il"
 
 LiquidSpec.setup do |ctx|
   require "liquid"
+
+  # Mock Time.now to return 2024 for date filter tests
+  # liquid-spec expects dates to be in 2024
+  module TimeMock
+    def now
+      Time.new(2024, 1, 1, 0, 0, 0, "+00:00")
+    end
+  end
+  Time.singleton_class.prepend(TimeMock)
 end
 
 LiquidSpec.configure do |config|
