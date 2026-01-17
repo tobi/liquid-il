@@ -418,8 +418,16 @@ module LiquidIL
 
       when IL::JUMP
         target = inst[1]
-        @pc = target
-        generate_statement(indent)
+        # Only follow forward jumps to avoid infinite loops
+        # Backward jumps are loop-back instructions handled by for_loop
+        if target > @pc
+          @pc = target
+          generate_statement(indent)
+        else
+          # Backward jump - skip it (handled by loop structure)
+          @pc += 1
+          ""
+        end
 
       when IL::ASSIGN
         @pc += 1
@@ -1262,8 +1270,8 @@ module LiquidIL
             body_code << result if result
           end
         when IL::JUMP_IF_INTERRUPT, IL::POP_INTERRUPT, IL::POP_FORLOOP, IL::POP_SCOPE, IL::FOR_END
-          @pc += 1
-          break if inst[0] == IL::JUMP_IF_INTERRUPT
+          # These mark end of loop body - don't consume, let cleanup handle them
+          break
         when IL::HALT
           break
         else
