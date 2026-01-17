@@ -210,7 +210,17 @@ The structured compiler is currently **slower** than even the interpreter. This 
 
 ## Key Files
 
-- `lib/liquid_il/compiler/structured.rb` - The structured code generator
-- `lib/liquid_il/compiler/ruby.rb` - The state machine compiler (for comparison)
+- `lib/liquid_il/structured_compiler.rb` - The structured code generator
+- `lib/liquid_il/ruby_compiler.rb` - The state machine compiler (for comparison)
 - `spec/liquid_il_structured.rb` - The liquid-spec adapter
 - `docs/structured_ruby_prd.md` - Original PRD for this work
+
+## Implementation Notes
+
+The current implementation uses verbose naming (`__scope__`, `__output__`, etc.) and helper lambdas.
+To achieve the clean Ruby vision, we need to:
+
+1. **Make Scope subscriptable** - Implement `scope[name]` as alias for `scope.lookup(name)`
+2. **Use Ruby truthiness** - For most cases, `if scope["x"]` works directly
+3. **Handle edge cases efficiently** - Drops with `to_liquid_value`, EmptyLiteral, BlankLiteral
+4. **Clean variable names** - Use `output`, `scope`, `filters` not double-underscore prefixed names

@@ -208,22 +208,43 @@ module LiquidIL
           when :eq then left == right
           when :ne then left != right
           when :lt, :le, :gt, :ge
-            # Ordered comparison - need to validate types are comparable
-            cmp = left <=> right
-            if cmp.nil?
+            # Ordered comparison - matches VM compare_numeric logic
+            # nil, true, false, Array, Hash, Range comparisons are silently false
+            return false if left == true || left == false || right == true || right == false
+            return false if left.is_a?(Array) || left.is_a?(Hash) || right.is_a?(Array) || right.is_a?(Hash)
+            return false if left.is_a?(LiquidIL::RangeValue) || right.is_a?(LiquidIL::RangeValue)
+
+            # Try to convert both sides to numbers
+            to_num = ->(v) {
+              case v
+              when Integer, Float then v
+              when String
+                if v =~ /\\A-?\\d+\\z/ then v.to_i
+                elsif v =~ /\\A-?\\d+\\.\\d+\\z/ then v.to_f
+                else nil
+                end
+              else nil
+              end
+            }
+
+            left_num = to_num.call(left)
+            right_num = to_num.call(right)
+
+            if left_num.nil? || right_num.nil?
               # Incomparable types - output error and return false
               if output
                 right_str = right.is_a?(Numeric) ? right.to_s : right.class.to_s
-                location = current_file ? "#{current_file} line 1" : "line 1"
-                output << "Liquid error (#{location}): comparison of #{left.class} with #{right_str} failed"
+                location = current_file ? "\#{current_file} line 1" : "line 1"
+                output << "Liquid error (\#{location}): comparison of \#{left.class} with \#{right_str} failed"
               end
               return false
             end
+
             case op
-            when :lt then cmp == -1
-            when :le then cmp <= 0
-            when :gt then cmp == 1
-            when :ge then cmp >= 0
+            when :lt then left_num < right_num
+            when :le then left_num <= right_num
+            when :gt then left_num > right_num
+            when :ge then left_num >= right_num
             end
           else false
           end
@@ -289,7 +310,7 @@ module LiquidIL
             # Only integer keys for bracket notation
             if key.is_a?(Integer)
               obj[key]
-            elsif key.to_s =~ /\A-?\d+\z/
+            elsif key.to_s =~ /\\A-?\\d+\\z/
               obj[key.to_i]
             else
               nil
@@ -321,7 +342,7 @@ module LiquidIL
           return true if value.is_a?(Integer)
           return true if value.is_a?(Float)
           # Strings starting with optional minus and digit are valid
-          return true if value.is_a?(String) && value.match?(/\A-?\d/)
+          return true if value.is_a?(String) && value.match?(/\\A-?\\d/)
           false
         }
 
