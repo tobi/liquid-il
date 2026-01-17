@@ -37,6 +37,9 @@ module LiquidIL
       end
     end
 
+    # Alias for cleaner generated code
+    alias [] lookup
+
     def assign(key, value)
       key = key.to_s unless key.is_a?(String)
       @locals[key] = value
@@ -200,6 +203,9 @@ module LiquidIL
       # Check static_environments (shared with render)
       @static_environments[key] if @static_environments&.key?(key)
     end
+
+    # Alias for cleaner generated code
+    alias [] lookup
 
     def assign(key, value)
       key = key.to_s
