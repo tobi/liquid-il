@@ -154,11 +154,11 @@ So `if scope["show_name"]` does exactly what `{% if show_name %}` does.
 **Benchmark results (render time):**
 | Adapter | vs liquid_ruby |
 |---------|----------------|
-| `liquid_il_optimized_compiled` | 1.85x faster |
-| `liquid_il_compiled` | 1.45x faster |
-| `liquid_il_structured` | **1.64x slower** |
+| `liquid_il_optimized_compiled` | 2.13x faster |
+| `liquid_il_compiled` | 2.13x faster |
+| `liquid_il_structured` | **1.21x slower** |
 
-The structured compiler is currently **slower** than even the interpreter. This needs investigation - either the code generation has overhead issues, or the current implementation is missing optimizations.
+The structured compiler is still slower than the baseline, but improved from 1.64x to 1.21x slower. The generated code has fewer allocations on render than the state machine compiler (398 vs 435), but the helper lambda creation overhead at proc instantiation time is significant.
 
 **Known Issues (10 failing specs):**
 - Dynamic range type validation (float bounds)
