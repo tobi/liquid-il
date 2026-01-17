@@ -149,6 +149,8 @@ So `if scope["show_name"]` does exactly what `{% if show_name %}` does.
 
 ## Current Status
 
+**Spec results:** 4422 passed, 10 failed (edge cases)
+
 **Benchmark results (render time):**
 | Adapter | vs liquid_ruby |
 |---------|----------------|
@@ -158,15 +160,27 @@ So `if scope["show_name"]` does exactly what `{% if show_name %}` does.
 
 The structured compiler is currently **slower** than even the interpreter. This needs investigation - either the code generation has overhead issues, or the current implementation is missing optimizations.
 
+**Known Issues (10 failing specs):**
+- Dynamic range type validation (float bounds)
+- Filter error handling (should be silent)
+- Cycle with 0 choices
+- For loop limit/offset validation
+- Forloop reset after nested loop
+- gsub escape sequences
+- Integer.size
+
 ---
 
 ## TODO
 
 ### Phase 1: Get Basic Specs to Pass
-- [ ] Run `bundle exec liquid-spec run spec/liquid_il_structured.rb` and identify failures
-- [ ] Fix failing basic tests (variables, filters, simple if/else)
-- [ ] Fix for loop iteration semantics
-- [ ] Ensure forloop drop (index, first, last, etc.) works correctly
+- [x] Run `bundle exec liquid-spec run spec/liquid_il_structured.rb` and identify failures
+- [x] Fix failing basic tests (variables, filters, simple if/else)
+- [x] Fix for loop iteration semantics
+- [x] Ensure forloop drop (index, first, last, etc.) works correctly
+- [x] Fix heredoc escaping (regex patterns, string interpolation)
+- [x] Fix comparison logic to match VM behavior
+- [x] Fix infinite loop when optimizer creates jump cycles
 
 ### Phase 2: Get All Specs to Pass
 - [ ] Implement missing features:
