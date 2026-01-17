@@ -26,6 +26,8 @@ require_relative "../lib/liquid_il"
 # 17. cache_repeated_lookups
 # 18. value_numbering
 # 19. RegisterAllocator.optimize
+# 20. fuse_write_var
+# 22. remove_interrupt_checks
 
 class Pass0InlineSimplePartialsTest < Minitest::Test
   class MemoryFS
@@ -326,9 +328,9 @@ class Pass4CollapseConstPathsTest < Minitest::Test
   def test_chained_lookups_collapsed
     template = @ctx.parse("{{ user.profile.name }}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    # Should have FIND_VAR_PATH or WRITE_VAR_PATH (fused), not multiple LOOKUP_CONST_KEY
-    has_var_path = opcodes.include?(LiquidIL::IL::FIND_VAR_PATH) || opcodes.include?(LiquidIL::IL::WRITE_VAR_PATH)
-    assert has_var_path, "Expected either FIND_VAR_PATH or WRITE_VAR_PATH in opcodes"
+    # Should have FIND_VAR_PATH (or WRITE_VAR_PATH after later fusing),
+    # not multiple LOOKUP_CONST_KEY
+    assert(opcodes.include?(LiquidIL::IL::FIND_VAR_PATH) || opcodes.include?(LiquidIL::IL::WRITE_VAR_PATH))
     refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_KEY
 
     assert_equal "Alice", template.render("user" => { "profile" => { "name" => "Alice" } })
@@ -337,9 +339,7 @@ class Pass4CollapseConstPathsTest < Minitest::Test
   def test_deep_path_collapsed
     template = @ctx.parse("{{ a.b.c.d.e }}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    # Should have FIND_VAR_PATH or WRITE_VAR_PATH (fused)
-    has_var_path = opcodes.include?(LiquidIL::IL::FIND_VAR_PATH) || opcodes.include?(LiquidIL::IL::WRITE_VAR_PATH)
-    assert has_var_path, "Expected either FIND_VAR_PATH or WRITE_VAR_PATH in opcodes"
+    assert(opcodes.include?(LiquidIL::IL::FIND_VAR_PATH) || opcodes.include?(LiquidIL::IL::WRITE_VAR_PATH))
     refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_KEY
   end
 end
@@ -353,9 +353,7 @@ class Pass5CollapseFindVarPathsTest < Minitest::Test
     # Need 2+ keys for LOOKUP_CONST_PATH to be created, then merged with FIND_VAR
     template = @ctx.parse("{{ x.y.z }}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    # Should have FIND_VAR_PATH or WRITE_VAR_PATH (fused)
-    has_var_path = opcodes.include?(LiquidIL::IL::FIND_VAR_PATH) || opcodes.include?(LiquidIL::IL::WRITE_VAR_PATH)
-    assert has_var_path, "Expected either FIND_VAR_PATH or WRITE_VAR_PATH in opcodes"
+    assert(opcodes.include?(LiquidIL::IL::FIND_VAR_PATH) || opcodes.include?(LiquidIL::IL::WRITE_VAR_PATH))
     refute_includes opcodes, LiquidIL::IL::FIND_VAR
     refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_PATH
     assert_equal "value", template.render("x" => { "y" => { "z" => "value" } })
@@ -755,5 +753,57 @@ class OptimizationCorrectnessTest < Minitest::Test
 
   def test_tablerow
     assert_same_output "{% tablerow i in items %}{{ i }}{% endtablerow %}", "items" => [1, 2, 3]
+  end
+end
+
+class Pass22RemoveInterruptChecksTest < Minitest::Test
+  class MemoryFS
+    def initialize(templates)
+      @templates = templates
+    end
+
+    def read(name)
+      @templates[name]
+    end
+  end
+
+  def setup
+    @ctx = LiquidIL::Context.new
+  end
+
+  def test_removes_interrupt_checks_when_no_break_or_continue
+    template = @ctx.parse("{% for i in (1..3) %}{{ i }}{% endfor %}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::JUMP_IF_INTERRUPT
+    refute_includes opcodes, LiquidIL::IL::POP_INTERRUPT
+    assert_equal "123", template.render
+  end
+
+  def test_keeps_interrupt_checks_when_break_is_used
+    template = @ctx.parse("{% for i in (1..3) %}{% break %}{{ i }}{% endfor %}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    assert_includes opcodes, LiquidIL::IL::JUMP_IF_INTERRUPT
+    assert_includes opcodes, LiquidIL::IL::POP_INTERRUPT
+    assert_equal "", template.render
+  end
+
+  def test_include_without_break_removes_interrupt_checks
+    fs = MemoryFS.new("part" => "x")
+    ctx = LiquidIL::Context.new(file_system: fs)
+    template = ctx.parse("{% for i in (1..3) %}{% include 'part' %}{% endfor %}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::JUMP_IF_INTERRUPT
+    refute_includes opcodes, LiquidIL::IL::POP_INTERRUPT
+    assert_equal "xxx", template.render
+  end
+
+  def test_include_with_break_keeps_interrupt_checks
+    fs = MemoryFS.new("part" => "{% break %}")
+    ctx = LiquidIL::Context.new(file_system: fs)
+    template = ctx.parse("{% for i in (1..3) %}{% include 'part' %}{% endfor %}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    assert_includes opcodes, LiquidIL::IL::JUMP_IF_INTERRUPT
+    assert_includes opcodes, LiquidIL::IL::POP_INTERRUPT
+    assert_equal "", template.render
   end
 end

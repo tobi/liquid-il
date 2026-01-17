@@ -38,12 +38,29 @@ module LiquidIL
     end
 
     # Check if template uses break/continue (enables simpler code without interrupt checks)
-    # Also returns true if template uses INCLUDE_PARTIAL since included partials may
-    # contain break/continue that propagate to the parent template
+    # Include can propagate interrupts only if its compiled template can push one.
     def detect_uses_interrupts
-      @instructions.any? do |inst|
-        inst[0] == IL::PUSH_INTERRUPT || inst[0] == IL::INCLUDE_PARTIAL
+      interrupt_possible_in_instructions?(@instructions)
+    end
+
+    def interrupt_possible_in_instructions?(instructions, visited = {})
+      key = instructions.object_id
+      return false if visited[key]
+      visited[key] = true
+
+      instructions.each do |inst|
+        case inst[0]
+        when IL::PUSH_INTERRUPT
+          return true
+        when IL::INCLUDE_PARTIAL
+          args = inst[2] || {}
+          compiled = args["__compiled_template__"]
+          return true unless compiled
+          return true if interrupt_possible_in_instructions?(compiled[:instructions], visited)
+        end
       end
+
+      false
     end
 
     # Check if any loop uses forloop variable

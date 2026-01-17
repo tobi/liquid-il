@@ -41,6 +41,7 @@ module LiquidIL
   #  19: register_allocation        - Reuse dead temp register slots
   #  20: fuse_write_var             - Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR
   #  21: strip_labels               - Remove LABEL instructions after linking
+  #  22: remove_interrupt_checks    - Remove JUMP_IF_INTERRUPT/POP_INTERRUPT when unused
   #
   # ## Testing with Rake
   #
@@ -93,7 +94,8 @@ module LiquidIL
       18 => "value_numbering",
       19 => "register_allocation",
       20 => "fuse_write_var",
-      21 => "strip_labels"
+      21 => "strip_labels",
+      22 => "remove_interrupt_checks"
     }.freeze
 
     # All available pass numbers (derived from PASS_NAMES)

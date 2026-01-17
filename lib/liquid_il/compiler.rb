@@ -135,6 +135,9 @@ module LiquidIL
       # Optimization pass 20: Fuse FIND_VAR + WRITE_VALUE -> WRITE_VAR (VM speedup)
       fuse_write_var(instructions, spans) if enabled.include?(20)
 
+      # Optimization pass 22: Remove interrupt checks when no break/continue exists
+      remove_interrupt_checks(instructions, spans) if enabled.include?(22)
+
       instructions
     end
 
@@ -754,6 +757,43 @@ module LiquidIL
         instructions.delete_at(idx)
         spans.delete_at(idx)
       end
+    end
+
+    # Remove interrupt handling when template never pushes interrupts.
+    # This eliminates JUMP_IF_INTERRUPT/POP_INTERRUPT overhead in loops.
+    def remove_interrupt_checks(instructions, spans)
+      return if interrupt_possible_in_instructions?(instructions)
+
+      i = 0
+      while i < instructions.length
+        case instructions[i][0]
+        when IL::JUMP_IF_INTERRUPT, IL::POP_INTERRUPT
+          instructions.delete_at(i)
+          spans.delete_at(i)
+        else
+          i += 1
+        end
+      end
+    end
+
+    def interrupt_possible_in_instructions?(instructions, visited = {})
+      key = instructions.object_id
+      return false if visited[key]
+      visited[key] = true
+
+      instructions.each do |inst|
+        case inst[0]
+        when IL::PUSH_INTERRUPT
+          return true
+        when IL::INCLUDE_PARTIAL
+          args = inst[2] || {}
+          compiled = args["__compiled_template__"]
+          return true unless compiled
+          return true if interrupt_possible_in_instructions?(compiled[:instructions], visited)
+        end
+      end
+
+      false
     end
 
     # Cache repeated base object lookups in straight-line code
