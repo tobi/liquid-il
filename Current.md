@@ -2,14 +2,22 @@
 
 ## Goal
 
-The `liquid_il_structured` compiler generates **native Ruby control flow** instead of a state machine, enabling YJIT to optimize the generated code effectively.
+The `liquid_il_structured` compiler generates **clean, readable Ruby** with native control flow. The generated code should look like something a Ruby developer would write by hand.
 
-### The Problem with State Machine Code
+### Design Principles
 
-The current `ruby_compiler.rb` generates state machine code that YJIT cannot optimize well:
+1. **Readable Ruby** - Generated code is a readable artifact, not just an execution target
+2. **Native control flow** - Use `if/else`, `each`, `case/when` instead of state machines
+3. **Minimal ceremony** - No unnecessary prefixes, wrappers, or abstractions
+4. **Ruby semantics** - Use Ruby's truthiness directly (no `__is_truthy__` wrapper)
+5. **YJIT-friendly** - Straightline code that YJIT can optimize
+
+### The Problem: State Machine Code
+
+The current `ruby_compiler.rb` generates state machine code:
 
 ```ruby
-# What we DON'T want (state machine - defeats YJIT)
+# DON'T want: State machine with ceremony
 proc do |__scope__|
   __output__ = String.new
   __pc__ = 0
@@ -35,100 +43,107 @@ proc do |__scope__|
 end
 ```
 
-**Why this is bad for YJIT:**
-- Dynamic dispatch via `case __pc__` - unpredictable branches
-- Loop with variable iteration count - can't specialize
-- Indirect jumps via `__pc__ = N` - defeats inlining
-- No stable code shape - YJIT can't learn patterns
+**Problems:**
+- Unreadable - no one would write this by hand
+- `__is_truthy__` wrapper when Ruby's truthiness is the same as Liquid's
+- `__scope__.lookup("name")` instead of `scope["name"]`
+- State machine defeats YJIT optimization
 
-### The Solution: Native Control Flow
+### The Solution: Clean Ruby
 
-The structured compiler generates code that looks like hand-written Ruby:
+**Liquid template:**
+```liquid
+Hello {% if show_name %}{{ name }}{% endif %}!
+```
 
+**DO want: Readable Ruby**
 ```ruby
-# What we DO want (native control flow - YJIT friendly)
-proc do |__scope__|
-  __output__ = String.new
-
-  __output__ << "Hello "
-
-  if __is_truthy__(__scope__.lookup("show_name"))
-    __output__ << __scope__.lookup("name").to_s
+proc do |scope|
+  output = +""
+  output << "Hello "
+  if scope["show_name"]
+    output << scope["name"].to_s
   end
-
-  __output__ << "!"
-  __output__
+  output << "!"
+  output
 end
 ```
 
-**Why this is good for YJIT:**
-- Straight-line code with clear branch targets
-- Native `if/else` - predictable branch patterns
-- No loop for linear code - direct execution
-- Stable code shape - YJIT can inline and specialize
+This is Ruby code you'd be proud to show someone. It reads naturally and does exactly what the template says.
 
-### For Loops: Native `.each` vs State Machine
+### For Loops
 
-**DON'T want (state machine for loop):**
-```ruby
-when 5
-  __forloop_idx__ += 1
-  if __forloop_idx__ >= __forloop_len__
-    __pc__ = 8  # exit loop
-  else
-    __pc__ = 6  # loop body
-  end
-when 6
-  __scope__.set("item", __forloop_coll__[__forloop_idx__])
-  __output__ << __scope__.lookup("item").to_s
-  __pc__ = 5  # back to loop check
-```
-
-**DO want (native Ruby each):**
-```ruby
-__coll__ = __to_iterable__(__scope__.lookup("items"))
-unless __coll__.empty?
-  __scope__.push_scope
-  __coll__.each_with_index do |__item__, __idx__|
-    __scope__.set_local("item", __item__)
-    __output__ << __item__.to_s
-  end
-  __scope__.pop_scope
-end
-```
-
-### Conditionals: Native `if/elsif/else`
-
-**DON'T want:**
-```ruby
-when 2
-  if __is_truthy__(__scope__.lookup("a"))
-    __pc__ = 3
-  else
-    __pc__ = 4
-  end
-when 3
-  __output__ << "A"
-  __pc__ = 7
-when 4
-  if __is_truthy__(__scope__.lookup("b"))
-    __pc__ = 5
-  else
-    __pc__ = 6
-  end
-# ... more cases
+**Liquid:**
+```liquid
+{% for item in items %}{{ item }}{% endfor %}
 ```
 
 **DO want:**
 ```ruby
-if __is_truthy__(__scope__.lookup("a"))
-  __output__ << "A"
-elsif __is_truthy__(__scope__.lookup("b"))
-  __output__ << "B"
-else
-  __output__ << "C"
+items = scope["items"]
+items.each do |item|
+  output << item.to_s
 end
 ```
+
+**With forloop drop (when used):**
+```ruby
+items = scope["items"]
+items.each_with_index do |item, idx|
+  forloop = ForloopDrop.new(items.size, idx)
+  output << item.to_s
+  output << forloop.index.to_s  # only if template uses forloop.index
+end
+```
+
+### Conditionals
+
+**Liquid:**
+```liquid
+{% if a %}A{% elsif b %}B{% else %}C{% endif %}
+```
+
+**DO want:**
+```ruby
+if scope["a"]
+  output << "A"
+elsif scope["b"]
+  output << "B"
+else
+  output << "C"
+end
+```
+
+### Filters
+
+**Liquid:**
+```liquid
+{{ name | upcase | truncate: 10 }}
+```
+
+**DO want:**
+```ruby
+output << filters.truncate(filters.upcase(scope["name"]), 10).to_s
+```
+
+### Key Simplifications
+
+| Instead of | Use |
+|------------|-----|
+| `__scope__.lookup("name")` | `scope["name"]` |
+| `__is_truthy__(x)` | `x` (Ruby's truthiness) |
+| `__output__` | `output` |
+| `String.new(capacity: 8192)` | `+""` |
+| `__to_iterable__.call(x)` | Direct iteration |
+
+### Why Ruby Truthiness Works
+
+Liquid's truthiness rules match Ruby's exactly:
+- `false` → falsy
+- `nil` → falsy
+- Everything else → truthy (including `0`, `""`, `[]`)
+
+So `if scope["show_name"]` does exactly what `{% if show_name %}` does.
 
 ---
 
@@ -186,6 +201,7 @@ The structured compiler is currently **slower** than even the interpreter. This 
 
 ### Success Criteria
 - [ ] All specs pass for `liquid_il_structured`
+- [ ] **Generated code is readable Ruby** - looks like hand-written code
 - [ ] Structured compiler is faster than `liquid_ruby` for render
 - [ ] Structured compiler shows better YJIT speedup than state machine compiler
 - [ ] Render time within 10% of `liquid_il_optimized_compiled`
