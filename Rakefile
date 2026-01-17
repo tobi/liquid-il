@@ -59,6 +59,7 @@ ADAPTER_VM = "spec/liquid_il.rb"
 ADAPTER_OPTIMIZED = "spec/liquid_il_optimized.rb"
 ADAPTER_COMPILED = "spec/liquid_il_compiled.rb"
 ADAPTER_OPTIMIZED_COMPILED = "spec/liquid_il_optimized_compiled.rb"
+ADAPTER_STRUCTURED = "spec/liquid_il_structured.rb"
 
 desc "Run the liquid-spec test suite"
 task :spec do
@@ -68,12 +69,12 @@ end
 
 desc "Run spec matrix comparing LiquidIL against reference implementations"
 task :matrix do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_OPTIMIZED},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_OPTIMIZED},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED},#{ADAPTER_STRUCTURED} 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run benchmarks comparing LiquidIL against reference implementations"
 task :bench do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_OPTIMIZED},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_OPTIMIZED},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED},#{ADAPTER_STRUCTURED} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run partials benchmarks (local)"
