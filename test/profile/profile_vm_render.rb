@@ -4,7 +4,7 @@
 # Goal: find hot paths in the interpreter that can be optimized
 
 require "liquid"
-require_relative "lib/liquid_il"
+require_relative "../../lib/liquid_il"
 require "stackprof"
 
 # Use the product listing benchmark template (realistic e-commerce workload)

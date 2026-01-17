@@ -3,7 +3,7 @@
 # Profile script focused on render-time performance of optimized+compiled templates
 
 require "liquid"
-require_relative "lib/liquid_il"
+require_relative "../../lib/liquid_il"
 require "yaml"
 require "json"
 require "stackprof"

@@ -4,7 +4,7 @@
 # Profiles: parsing, IL generation, Ruby compilation, and rendering
 
 require "liquid"
-require_relative "lib/liquid_il"
+require_relative "../../lib/liquid_il"
 require "yaml"
 require "json"
 require "stackprof"
