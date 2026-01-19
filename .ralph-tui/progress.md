@@ -106,3 +106,21 @@ after each iteration and included in agent prompts for context.
   - VM's `render_partial` handles `__with__`, `__for__`, `__as__` args (lib/liquid_il/vm.rb:1289-1353)
   - The `has_item` flag ensures "with" clause values override keyword args with same name (line 1384-1387)
 ---
+
+## 2026-01-19 - liquid-il-omv.6
+- **What was implemented**: Verified parentloop in nested contexts (already implemented)
+- **Files changed**: None - implementation was already complete
+- **Status**: All acceptance criteria tests pass:
+  - `parentloop` available in include (shared scope) ✅
+  - `parentloop` is nil in render (isolated scope) ✅
+  - Nested for loops track parentloop chain correctly ✅
+  - All for_parentloop_* tests pass ✅
+  - 4432/4432 liquid-spec tests pass on VM adapter ✅
+  - 4422/4432 tests pass on StructuredCompiler (10 unrelated failures)
+- **Learnings:**
+  - `PUSH_FORLOOP` (vm.rb:378-384) gets `parent = @context.current_forloop` before creating new ForloopDrop
+  - `ForloopDrop` stores `parentloop` as a readonly attribute (drops.rb:6, 9-12)
+  - Include shares the same context/for_stack, so parentloop chain is preserved
+  - Render creates fresh `RenderScope` with empty `@for_stack = []` (context.rb:21), so parentloop is nil
+  - `forloop_parentloop_three_levels` test confirms multi-level parentloop chaining works
+---
