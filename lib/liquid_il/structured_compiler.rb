@@ -36,6 +36,15 @@ module LiquidIL
       @loop_depth = 0 # Track nested loop depth for parentloop support
     end
 
+    # Calculate line number from PC using spans
+    def line_for_pc(pc)
+      return 1 unless @spans && @template_source
+      span = @spans[pc]
+      return 1 unless span
+      pos = span[0]
+      @template_source[0, pos].count("\n") + 1
+    end
+
     def compile
       return fallback_result unless can_compile?
 
@@ -598,6 +607,9 @@ module LiquidIL
       # Clear temp assignments before building expression
       @temp_assignments = nil
 
+      # Save starting PC for line number calculation
+      start_pc = @pc
+
       # Build expression from current position
       expr, terminator = build_expression
 
@@ -615,7 +627,18 @@ module LiquidIL
       case terminator
       when :write_value
         expr_code = expr_to_ruby(expr)
-        temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
+        # Check if expression contains filters that could throw errors
+        if expr_contains_filter?(expr)
+          line_num = line_for_pc(start_pc)
+          code = "#{prefix}begin\n"
+          code << "#{prefix}  __output__ << ((__v__ = #{expr_code}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
+          code << "#{prefix}rescue LiquidIL::FilterRuntimeError => __e__\n"
+          code << "#{prefix}  __output__ << \"Liquid error (\" << (__current_file__ ? \"\#{__current_file__} line #{line_num}\" : \"line #{line_num}\") << \"): \" << __e__.message\n"
+          code << "#{prefix}end\n"
+          temp_code + code
+        else
+          temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
+        end
       when :assign
         var = @instructions[@pc - 1][1]
         temp_code + "#{prefix}__scope__.assign(#{var.inspect}, #{expr_to_ruby(expr)})\n"
@@ -634,6 +657,14 @@ module LiquidIL
         # Just evaluate expression for side effects (rare)
         temp_code + "#{prefix}#{expr_to_ruby(expr)}\n"
       end
+    end
+
+    # Check if expression tree contains any filter calls
+    def expr_contains_filter?(expr)
+      return false unless expr
+      return true if expr.type == :filter
+      return false unless expr.children
+      expr.children.any? { |child| expr_contains_filter?(child) }
     end
 
     # Build an expression tree from IL instructions

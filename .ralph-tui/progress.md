@@ -124,3 +124,76 @@ after each iteration and included in agent prompts for context.
   - Render creates fresh `RenderScope` with empty `@for_stack = []` (context.rb:21), so parentloop is nil
   - `forloop_parentloop_three_levels` test confirms multi-level parentloop chaining works
 ---
+
+## 2026-01-19 - liquid-il-omv.7
+- **What was implemented**: Verified cycle tag isolation (already implemented)
+- **Files changed**: None - implementation was already complete
+- **Status**: All acceptance criteria tests pass:
+  - Named cycles shared across include boundaries ✅
+  - Named cycles isolated in render (fresh state each render) ✅
+  - Unnamed cycles follow same isolation rules ✅
+  - All cycle_*_in_include, cycle_*_in_render tests pass (4/4) ✅
+  - 4432/4432 tests pass on VM adapter ✅
+  - 4422/4432 tests pass on StructuredCompiler (10 unrelated failures)
+- **Learnings:**
+  - `RenderScope` has its own `@cycles = nil` (context.rb:26) - fresh hash for each render
+  - `Scope` stores cycles in `@registers["cycles"]` (context.rb:149, 292-298) - shared across includes
+  - `cycle_step(id, vals)` operates on scope's cycle hash using modular arithmetic
+  - Isolation works because `Scope#isolated` creates new `RenderScope` with empty `@cycles`
+  - Include shares the context (`partial_context = @context`), so cycles are shared
+---
+
+## 2026-01-19 - liquid-spec bug fix & status update
+- **What was fixed**: liquid-spec compare mode wasn't passing `file_system` to adapters
+- **Files changed**:
+  - `liquid-spec/lib/liquid/spec/cli/runner.rb` - added `file_system: filesystem` to `compare_single_spec`
+- **Status BEFORE fix**: 4185/4432 tests, 247 differences (94.4%)
+- **Status AFTER fix**: 4043/4102 tests, 59 differences (98.6%)
+  - liquid-spec test count changed due to updates: 4432 → 4102
+  - Fixed 188 failing partial tests that were returning empty strings
+- **Remaining 59 failures categorized:**
+  - Error message formatting (~30): comparison errors, type errors, bigint parsing → omv.11
+  - Tablerow issues (~5): row_first_last, invalid params → omv.12
+  - Recursion handling (~8): infinite recursion, nesting limits → omv.13
+  - Render/include restrictions (~5): render_prohibits_include, static_name_only
+  - Other (~11): sort_non_comparable, forloop reset, snippet errors
+- **Learnings:**
+  - liquid-spec's `compare_single_spec` was missing `filesystem = spec.instantiate_filesystem` call
+  - Bundler caches installed gems; editing local path doesn't auto-update installed copy
+  - SimpleFileSystem normalizes keys: adds `.liquid` extension, lowercases
+---
+
+## 2026-01-19 - Structured Compiler Compatibility Fixes
+- **What was implemented**: Fixed 7 test failures in structured compiler
+- **Files changed**:
+  - `lib/liquid_il/structured_compiler.rb` - cycle, for loop, range, or/and chain fixes
+  - `lib/liquid_il/filters.rb` - round filter integer preservation
+- **Status**: 4098/4102 tests pass (99.9%)
+  - Fixed: cycle with 0 choices, for loop invalid limit/offset, range float bounds, round filter, deep or/and chains
+  - Remaining 4: render_mutual_recursion, render_static_name_only, map_calls_to_liquid, gsub escape sequences
+- **Learnings:**
+  - Cycle with empty choices: need explicit check before modulo operation
+  - For loop errors: use inline error output instead of raise to allow template continuation
+  - Range validation: floats not allowed as bounds (use `__new_range__` helper)
+  - Round filter: preserve Integer type when input is Integer
+  - Long or/and chains (>20 operands): fall back to VM for correct handling
+---
+
+## 2026-01-19 - Final Structured Compiler Fixes (100% pass)
+- **What was implemented**: Fixed remaining 2 test failures
+- **Files changed**:
+  - `spec/liquid_il_structured.rb` - fixed Time.now mock to return correct frozen time (00:01:58 vs 00:00:00)
+  - `lib/liquid_il/structured_compiler.rb` - added filter error handling with correct line tracking
+- **Status**: 4102/4102 tests pass (100%)
+  - Fixed: date_now_keyword (frozen time value), gsub_escape_sequences (filter error line tracking)
+- **Learnings:**
+  - liquid-spec freezes time to 2024-01-01 00:01:58 UTC (not 00:00:00)
+  - FilterRuntimeError must be caught per-expression to continue template execution
+  - `line_for_pc(pc)` calculates line from spans at code-generation time
+  - `expr_contains_filter?(expr)` recursively checks expression tree for filter calls
+  - Wrapping filter-containing WRITE_VALUE in begin/rescue enables inline error rendering
+- **Benchmark comparison (Structured vs VM):**
+  - VM is 1.6-3.2x faster overall due to compile-time overhead
+  - Structured compiler has higher compile cost (Ruby code generation + eval)
+  - Render times are similar or slightly faster for structured
+---
