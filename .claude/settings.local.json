@@ -65,7 +65,18 @@
       "WebFetch(domain:api.github.com)",
       "WebFetch(domain:github.com)",
       "Bash(gem list:*)",
-      "Bash(bd close:*)"
+      "Bash(bd close:*)",
+      "Bash(bd import:*)",
+      "Bash(bd doctor)",
+      "Bash(bd rename-prefix:*)",
+      "Bash(bd config get:*)",
+      "Bash(bd stats:*)",
+      "Bash(bd doctor:*)",
+      "Bash(bd prime:*)",
+      "Bash(/plugin update:*)",
+      "Bash(npm update:*)",
+      "Bash(bd --version:*)",
+      "Bash(bd export:*)"
     ]
   }
 }
