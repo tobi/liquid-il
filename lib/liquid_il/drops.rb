@@ -100,7 +100,8 @@ module LiquidIL
     def col_last
       # When cols:nil is explicitly written, col_last is always false
       return false if @cols_explicit_nil
-      col0 == @cols - 1 || @index0 == @length - 1
+      # col_last is only true when at the last column position (cols-1 in 0-indexed)
+      col0 == @cols - 1
     end
 
     def [](key)

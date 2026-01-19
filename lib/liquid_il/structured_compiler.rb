@@ -150,6 +150,11 @@ module LiquidIL
             when "first" then obj[0]
             when "last" then obj[-1]
             end
+          when Integer
+            # Integer.size returns byte size (like in liquid-ruby)
+            case key.to_s
+            when "size" then obj.size
+            end
           else
             obj.respond_to?(:[]) ? obj[key.to_s] : nil
           end
@@ -889,6 +894,39 @@ module LiquidIL
                   end
                   and_right = stack.pop || Expr.new(type: :literal, value: false)
                   stack << Expr.new(type: :and, children: [and_left, and_right])
+                else
+                  @pc += 1
+                end
+              when IL::JUMP_IF_TRUE
+                # Nested OR pattern: JUMP_IF_TRUE -> CONST_TRUE
+                # Note: deep nesting (>2 levels) not fully supported, falls back to VM
+                nested_target = build_inst[1]
+                nested_actual = nested_target
+                while @instructions[nested_actual]&.[](0) == IL::LABEL
+                  nested_actual += 1
+                end
+                if @instructions[nested_actual]&.[](0) == IL::CONST_TRUE
+                  # This is nested OR - build it
+                  or_left = stack.pop || Expr.new(type: :literal, value: false)
+                  @pc += 1
+                  # Build OR's right operand until we hit JUMP
+                  while @pc < nested_target
+                    or_inst = @instructions[@pc]
+                    break if or_inst.nil? || or_inst[0] == IL::JUMP
+                    case or_inst[0]
+                    when IL::FIND_VAR then stack << Expr.new(type: :var, value: or_inst[1]); @pc += 1
+                    when IL::CONST_TRUE then stack << Expr.new(type: :literal, value: true); @pc += 1
+                    when IL::CONST_FALSE then stack << Expr.new(type: :literal, value: false); @pc += 1
+                    when IL::LABEL then @pc += 1
+                    else @pc += 1
+                    end
+                  end
+                  # Skip JUMP that skips CONST_TRUE
+                  if @instructions[@pc]&.[](0) == IL::JUMP
+                    @pc = @instructions[@pc][1]
+                  end
+                  or_right = stack.pop || Expr.new(type: :literal, value: false)
+                  stack << Expr.new(type: :or, children: [or_left, or_right])
                 else
                   @pc += 1
                 end

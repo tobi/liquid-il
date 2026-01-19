@@ -39,6 +39,9 @@ LiquidSpec.compile do |ctx, source, compile_options|
 end
 
 LiquidSpec.render do |ctx, assigns, render_options|
-  render_errors = render_options.fetch(:render_errors, true)
+  # strict_errors means rethrow exceptions, render_errors means render inline
+  # These are inverses: strict_errors: true = render_errors: false
+  strict_errors = render_options.fetch(:strict_errors, false)
+  render_errors = !strict_errors
   ctx[:template].render(assigns, render_errors: render_errors)
 end

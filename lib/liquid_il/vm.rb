@@ -439,8 +439,8 @@ module LiquidIL
           name = inst[1]
           args = inst[2]
           if @context.disable_include
-            # Include is not allowed inside render tag
-            write_output("Liquid error (#{@current_file || 'line'} line 1): include usage is not allowed in this context")
+            # Include is not allowed inside render tag - raise exception
+            raise LiquidIL::RuntimeError.new("include usage is not allowed in this context", file: @current_file, line: 1, partial_output: @output.dup)
           else
             render_partial(name, args, isolated: false)
           end

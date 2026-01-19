@@ -890,8 +890,7 @@ module LiquidIL
         name = inst[1]
         code = String.new
         code << "  if __scope__.disable_include\n"
-        code << "    __location__ = __current_file__ ? \"\#{__current_file__} line 1\" : \"line 1\"\n"
-        code << "    __write_output__(\"Liquid error (\#{__location__}): include usage is not allowed in this context\", __output__, __scope__)\n"
+        code << "    raise LiquidIL::RuntimeError.new(\"include usage is not allowed in this context\", file: __current_file__, line: 1, partial_output: __output__.dup)\n"
         code << "  else\n"
         code << generate_partial_call(inst, idx, isolated: false).gsub(/^/, "  ")
         code << "  end\n"

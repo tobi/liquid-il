@@ -1,6 +1,6 @@
 GIT
   remote: /Users/tobi/src/tries/2025-12-31-liquid-4_0-optimizations/liquid-spec
-  revision: 26fe1ded5a5fef36979ce46384bb36ba8c72b0f8
+  revision: 0a6511924d2c3e91e6dca1b296c37f7034220925
   specs:
     liquid-spec (0.9.1)
       super_diff (~> 0.18)
