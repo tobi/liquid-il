@@ -37,3 +37,36 @@ after each iteration and included in agent prompts for context.
   - StructuredCompiler explicitly falls back to VM for RENDER_PARTIAL (line 67-68)
 ---
 
+## 2026-01-19 - liquid-il-omv.2
+- **What was implemented**: Verified render tag with/as variants (already implemented)
+- **Files changed**: None - implementation was already complete
+- **Status**: All acceptance criteria tests pass:
+  - `{% render 'x' with val %}` binds `val` to variable named after partial ✅
+  - `{% render 'x' with val as name %}` binds `val` to `name` ✅
+  - Can combine with additional parameters: `{% render 'x' with val as name, extra: 1 %}` ✅
+  - All 37 render tests pass on both VM and StructuredCompiler adapters ✅
+- **Learnings:**
+  - Parser handles `with/for/as` in `parse_render_tag` (lib/liquid_il/parser.rb:1774-1863)
+  - VM handles `__with__`, `__for__`, `__as__` in `render_partial` (lib/liquid_il/vm.rb:1289-1353)
+  - `with_expr` binds to `as_alias` or partial name (lines 1384-1387)
+  - `for_expr` iterates over collection with forloop object (lines 1389-1395)
+---
+
+## 2026-01-19 - liquid-il-omv.3
+- **What was implemented**: Verified render tag for variant with forloop (already implemented)
+- **Files changed**: None - implementation was already complete
+- **Status**: All acceptance criteria tests pass:
+  - `{% render 'x' for items %}` iterates, binding each element to `x` ✅
+  - `{% render 'x' for items as name %}` binds each element to `name` ✅
+  - `forloop` object available inside partial (index, index0, first, last, length, rindex, rindex0) ✅
+  - Fresh scope each iteration (variables don't leak between iterations) ✅
+  - Can combine with parameters: `{% render 'x' for items, extra: 1 %}` ✅
+  - All 12 render_for_* tests pass ✅
+  - 4432/4432 tests pass on VM adapter
+- **Learnings:**
+  - Parser already handles `for` in `parse_render_tag` (lib/liquid_il/parser.rb:1815-1833)
+  - VM iterates over collection in `render_partial` (lib/liquid_il/vm.rb:1294-1331)
+  - ForloopDrop is created for isolated render only (lines 1391-1395)
+  - Empty arrays produce no output (line 1300-1301)
+  - Ranges iterate for render but not include (line 1306-1314)
+---
