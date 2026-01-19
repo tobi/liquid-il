@@ -70,3 +70,21 @@ after each iteration and included in agent prompts for context.
   - Empty arrays produce no output (line 1300-1301)
   - Ranges iterate for render but not include (line 1306-1314)
 ---
+
+## 2026-01-19 - liquid-il-omv.4
+- **What was implemented**: Verified include tag with shared scope (already implemented)
+- **Files changed**: None - implementation was already complete
+- **Status**: All acceptance criteria tests pass:
+  - Include tag shares scope with parent - outer variables visible ✅
+  - Variables assigned in partial leak back to outer scope ✅
+  - Modifications to outer variables persist after include ✅
+  - Auto-binds variable matching partial name if it exists ✅
+  - All 22 include_* tests pass on both VM and StructuredCompiler adapters ✅
+  - 4432/4432 liquid-spec tests pass on VM adapter ✅
+- **Learnings:**
+  - Key difference: `render` uses `isolated: true` creating `RenderScope`, `include` uses `isolated: false` keeping same context
+  - VM's `render_partial_once` (lib/liquid_il/vm.rb:1364-1369): `partial_context = @context` for include vs `@context.isolated` for render
+  - Include's break/continue propagation handled at lines 448-456 via `JUMP_IF_INTERRUPT` scanning
+  - Include has stricter nesting limit (`>= 100` vs `> 100` for render) - line 1360
+  - Include with `for` does NOT provide forloop object (line 1391: `forloop_index && isolated`)
+---
