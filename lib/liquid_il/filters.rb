@@ -313,7 +313,14 @@ module LiquidIL
       end
 
       def round(input, precision = 0)
-        to_number(input).to_f.round(precision.to_i)
+        num = to_number(input)
+        prec = precision.to_i
+        # Preserve integer type when input is integer
+        if num.is_a?(Integer)
+          num.round(prec)
+        else
+          num.to_f.round(prec)
+        end
       end
 
       def at_least(input, minimum)

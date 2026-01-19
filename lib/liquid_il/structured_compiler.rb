@@ -62,7 +62,11 @@ module LiquidIL
 
     # Check if we can compile this template
     def can_compile?
-      @instructions.each do |inst|
+      # Count short-circuit jump patterns to detect long or/and chains
+      # Pattern: CONST/FIND_VAR followed by JUMP_IF_TRUE/FALSE indicates or/and operand
+      short_circuit_count = 0
+
+      @instructions.each_with_index do |inst, idx|
         case inst[0]
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
           return false # Partials not yet supported
@@ -70,8 +74,18 @@ module LiquidIL
           return false # Tablerow not yet supported
         when IL::PUSH_INTERRUPT
           return false # Break/continue not yet supported
+        when IL::JUMP_IF_TRUE, IL::JUMP_IF_FALSE
+          # Check if this looks like a short-circuit pattern (preceded by value/variable)
+          prev_inst = idx > 0 ? @instructions[idx - 1] : nil
+          if prev_inst && [IL::CONST_TRUE, IL::CONST_FALSE, IL::FIND_VAR].include?(prev_inst[0])
+            short_circuit_count += 1
+          end
         end
       end
+
+      # Long or/and chains (>20 total short-circuit jumps) are not handled well, fall back to VM
+      return false if short_circuit_count > 20
+
       true
     end
 
@@ -351,6 +365,14 @@ module LiquidIL
           false
         }
 
+        # Create range with validation (floats are not allowed as range bounds)
+        __new_range__ = ->(start_val, end_val) {
+          if start_val.is_a?(Float) || end_val.is_a?(Float)
+            raise LiquidIL::RuntimeError.new("invalid integer", file: nil, line: 1)
+          end
+          LiquidIL::RangeValue.new(start_val, end_val)
+        }
+
       RUBY
     end
 
@@ -499,45 +521,55 @@ module LiquidIL
         @pc += 1
         identity = inst[1]
         raw_values = inst[2]
-        # Extract actual values from tuples, handle both literals and variables
-        # [:lit, value] -> literal value
-        # [:var, name] -> runtime variable lookup
-        values_ruby = raw_values.map do |v|
-          if v.is_a?(Array)
-            case v[0]
-            when :lit then v[1].inspect
-            when :var then "__scope__.lookup(#{v[1].inspect})"
-            else v.inspect
-            end
-          else
-            v.inspect
-          end
-        end
         # Skip WRITE_VALUE if it follows (we output directly)
         @pc += 1 if @instructions[@pc]&.[](0) == IL::WRITE_VALUE
-        # Use __cycle_idx__ to avoid conflict with __idx__ in for loops
-        "#{prefix}__cycle_idx__ = __cycle_state__[#{identity.inspect}] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[#{identity.inspect}] = __cycle_idx__ + 1\n"
+        # Handle empty cycle - output nothing
+        if raw_values.empty?
+          ""
+        else
+          # Extract actual values from tuples, handle both literals and variables
+          # [:lit, value] -> literal value
+          # [:var, name] -> runtime variable lookup
+          values_ruby = raw_values.map do |v|
+            if v.is_a?(Array)
+              case v[0]
+              when :lit then v[1].inspect
+              when :var then "__scope__.lookup(#{v[1].inspect})"
+              else v.inspect
+              end
+            else
+              v.inspect
+            end
+          end
+          # Use __cycle_idx__ to avoid conflict with __idx__ in for loops
+          "#{prefix}__cycle_idx__ = __cycle_state__[#{identity.inspect}] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[#{identity.inspect}] = __cycle_idx__ + 1\n"
+        end
 
       when IL::CYCLE_STEP_VAR
         @pc += 1
         var_name = inst[1]
         raw_values = inst[2]
-        # Extract actual values from tuples
-        values_ruby = raw_values.map do |v|
-          if v.is_a?(Array)
-            case v[0]
-            when :lit then v[1].inspect
-            when :var then "__scope__.lookup(#{v[1].inspect})"
-            else v.inspect
-            end
-          else
-            v.inspect
-          end
-        end
         # Skip WRITE_VALUE if it follows (we output directly)
         @pc += 1 if @instructions[@pc]&.[](0) == IL::WRITE_VALUE
-        # Identity is a variable - look it up at runtime
-        "#{prefix}__cycle_key__ = __scope__.lookup(#{var_name.inspect}); __cycle_idx__ = __cycle_state__[__cycle_key__] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[__cycle_key__] = __cycle_idx__ + 1\n"
+        # Handle empty cycle - output nothing
+        if raw_values.empty?
+          ""
+        else
+          # Extract actual values from tuples
+          values_ruby = raw_values.map do |v|
+            if v.is_a?(Array)
+              case v[0]
+              when :lit then v[1].inspect
+              when :var then "__scope__.lookup(#{v[1].inspect})"
+              else v.inspect
+              end
+            else
+              v.inspect
+            end
+          end
+          # Identity is a variable - look it up at runtime
+          "#{prefix}__cycle_key__ = __scope__.lookup(#{var_name.inspect}); __cycle_idx__ = __cycle_state__[__cycle_key__] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[__cycle_key__] = __cycle_idx__ + 1\n"
+        end
 
       when IL::LABEL, IL::POP_INTERRUPT, IL::JUMP_IF_INTERRUPT, IL::POP_FORLOOP,
            IL::FOR_END, IL::FOR_NEXT, IL::JUMP_IF_EMPTY, IL::PUSH_FORLOOP, IL::POP,
@@ -1017,7 +1049,7 @@ module LiquidIL
       when :range
         "LiquidIL::RangeValue.new(#{expr.value[0]}, #{expr.value[1]})"
       when :dynamic_range
-        "LiquidIL::RangeValue.new(#{expr_to_ruby(expr.children[0])}, #{expr_to_ruby(expr.children[1])})"
+        "__new_range__.call(#{expr_to_ruby(expr.children[0])}, #{expr_to_ruby(expr.children[1])})"
       when :lookup
         obj = expr_to_ruby(expr.children[0])
         if expr.value # const key
@@ -1161,7 +1193,7 @@ module LiquidIL
           return false
         end
         i += 1
-        break if i > 20 # Safety limit
+        break if i > 100 # Safety limit (increased to handle long or/and chains)
       end
       false
     end
@@ -1371,7 +1403,10 @@ module LiquidIL
       code << "#{prefix}#{coll_var} = #{coll_var}.reverse if #{reversed.inspect}\n" if reversed
 
       # Calculate starting offset for offset:continue or explicit offset
+      # Track if we need to validate offset/limit and potentially output error
       offset_var = "__start_offset_#{depth}__"
+      has_validation_error = false
+
       if offset_continue
         # offset:continue uses stored offset from previous loop with same name
         code << "#{prefix}#{offset_var} = __scope__.for_offset(#{loop_name.inspect})\n"
@@ -1380,8 +1415,7 @@ module LiquidIL
         # Validate offset is a valid integer (unless collection is nil/false)
         if has_offset
           code << "#{prefix}__offset_val_#{depth}__ = #{offset_ruby}\n"
-          code << "#{prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || __valid_integer__.call(__offset_val_#{depth}__)\n"
-          code << "#{prefix}#{offset_var} = __offset_val_#{depth}__.to_i\n"
+          has_validation_error = true
         else
           code << "#{prefix}#{offset_var} = (#{offset_ruby}).to_i\n"
         end
@@ -1396,18 +1430,49 @@ module LiquidIL
         # Validate limit is a valid integer (unless collection is nil/false)
         if has_limit
           code << "#{prefix}__limit_val_#{depth}__ = #{limit_ruby}\n"
-          code << "#{prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || __valid_integer__.call(__limit_val_#{depth}__)\n"
-          code << "#{prefix}__to_#{depth}__ = #{offset_var} + __limit_val_#{depth}__.to_i\n"
-        else
-          code << "#{prefix}__to_#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
+          has_validation_error = true
         end
-        code << "#{prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, __to_#{depth}__) unless __is_string_#{depth}__\n"
-      else
-        # No limit - just apply offset using slice (from <= index)
-        code << "#{prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
       end
 
-      code << "#{prefix}if !#{coll_var}.empty?\n"
+      # Generate validation and loop structure
+      # If we have validation, use if/elsif/end to handle errors inline
+      if has_validation_error
+        # Build validation condition - check offset and/or limit are valid
+        validations = []
+        if has_offset && offset_expr
+          validations << "__valid_integer__.call(__offset_val_#{depth}__)"
+        end
+        if has_limit && limit_expr
+          validations << "__valid_integer__.call(__limit_val_#{depth}__)"
+        end
+        validation_check = validations.join(" && ")
+
+        # Output error inline if validation fails (unless collection is nil/false which skips validation)
+        code << "#{prefix}if !__is_nil_#{depth}__ && !(#{validation_check})\n"
+        code << "#{prefix}  __output__ << \"Liquid error (\" << (__current_file__ ? \"\#{__current_file__} line 1\" : \"line 1\") << \"): invalid integer\"\n"
+        code << "#{prefix}elsif !#{coll_var}.empty?\n"
+
+        # Set up offset and limit values inside the elsif (after validation passed)
+        inner_prefix = "#{prefix}  "
+        if has_offset && offset_expr
+          code << "#{inner_prefix}#{offset_var} = __offset_val_#{depth}__.to_i\n"
+        end
+        if has_limit && limit_expr
+          code << "#{inner_prefix}__to_#{depth}__ = #{offset_var} + __limit_val_#{depth}__.to_i\n"
+          code << "#{inner_prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, __to_#{depth}__) unless __is_string_#{depth}__\n"
+        else
+          code << "#{inner_prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
+        end
+      else
+        # No validation needed - simpler structure
+        if limit_expr
+          code << "#{prefix}__to_#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
+          code << "#{prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, __to_#{depth}__) unless __is_string_#{depth}__\n"
+        else
+          code << "#{prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
+        end
+        code << "#{prefix}if !#{coll_var}.empty?\n"
+      end
       code << "#{prefix}  __scope__.push_scope\n"
       code << "#{prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
       code << "#{prefix}  #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
