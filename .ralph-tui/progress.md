@@ -88,3 +88,21 @@ after each iteration and included in agent prompts for context.
   - Include has stricter nesting limit (`>= 100` vs `> 100` for render) - line 1360
   - Include with `for` does NOT provide forloop object (line 1391: `forloop_index && isolated`)
 ---
+
+## 2026-01-19 - liquid-il-omv.5
+- **What was implemented**: Verified include tag with/for variants (already implemented)
+- **Files changed**: None - implementation was already complete
+- **Status**: All acceptance criteria tests pass:
+  - `{% include 'x' with val %}` binds `val` to variable named after partial ✅
+  - `{% include 'x' with val as name %}` binds `val` to `name` ✅
+  - `{% include 'x' for items %}` iterates but does NOT provide forloop ✅
+  - All include_with_*, include_for_* tests pass (19 tests) ✅
+  - 4432/4432 tests pass on VM adapter ✅
+  - 4422/4432 tests pass on StructuredCompiler (10 failures are unrelated to include)
+- **Learnings:**
+  - The include tag with/for variants were already implemented
+  - Key difference from render: `include for` does NOT provide forloop object (line 1391: `forloop_index && isolated`)
+  - `include with` on arrays iterates like `for` (lines 1337-1342), but render with arrays uses array as single value
+  - VM's `render_partial` handles `__with__`, `__for__`, `__as__` args (lib/liquid_il/vm.rb:1289-1353)
+  - The `has_item` flag ensures "with" clause values override keyword args with same name (line 1384-1387)
+---
