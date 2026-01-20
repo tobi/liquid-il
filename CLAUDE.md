@@ -29,6 +29,31 @@ bundle exec liquid-spec eval adapter.rb -l "{{ 'hi' | upcase }}"
 bundle exec liquid-spec run adapter.rb --list
 ```
 
+## Profiling
+
+Profiling scripts live in `test/profile/`. Use these to analyze performance:
+
+```bash
+# Profile render performance (compile time excluded)
+bundle exec ruby test/profile/profile_render.rb [benchmark_name] [--backend=vm|statemachine|structured]
+
+# Profile VM interpreter specifically
+bundle exec ruby test/profile/profile_vm_render.rb
+
+# Comprehensive profiling (compile + render + memory)
+bundle exec ruby test/profile/profile_comprehensive.rb
+
+# View generated profiles
+bundle exec stackprof tmp/render_profile.dump --text --limit 30
+bundle exec stackprof tmp/render_profile.dump --d3-flamegraph > tmp/flamegraph.html
+```
+
+Key profiles:
+- `tmp/render_profile.dump` - Wall-clock render time
+- `tmp/render_cpu.dump` - CPU time (excludes I/O waits)
+- `tmp/compile_profile.dump` - Compile-time analysis
+- `tmp/*_memory.txt` - Memory allocation reports
+
 ## Architecture
 
 Pipeline: **Source → Lexer → Parser → IL → Linker → VM**

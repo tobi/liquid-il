@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
 # Profile script focused on render-time performance of optimized+compiled templates
+#
+# Usage:
+#   ruby test/profile/profile_render.rb [benchmark_name] [--backend=vm|statemachine|structured]
+#
+# Examples:
+#   ruby test/profile/profile_render.rb bench_data_table --backend=structured
+#   ruby test/profile/profile_render.rb --backend=vm
 
 require "liquid"
 require_relative "../../lib/liquid_il"
@@ -22,8 +29,25 @@ class BenchFS
   end
 end
 
-# Select benchmark based on argument or default
-benchmark_name = ARGV[0] || "bench_ecommerce_product_page"
+# Parse arguments
+benchmark_name = nil
+backend = "statemachine" # default
+
+ARGV.each do |arg|
+  if arg.start_with?("--backend=")
+    backend = arg.split("=", 2)[1]
+  elsif !arg.start_with?("-")
+    benchmark_name = arg
+  end
+end
+
+benchmark_name ||= "bench_ecommerce_product_page"
+
+unless %w[vm statemachine structured].include?(backend)
+  puts "Unknown backend: #{backend}"
+  puts "Available: vm, statemachine, structured"
+  exit 1
+end
 
 # Try partials.yml first, then check if it's a built-in template
 specs = YAML.load_file("benchmarks/partials.yml")["specs"]
@@ -81,7 +105,7 @@ env = spec["environment"]
 env = env.is_a?(String) ? JSON.parse(env.gsub("=>", ":")) : env
 fs = spec["filesystem"] || {}
 
-puts "Profiling: #{name}"
+puts "Profiling: #{name} (backend: #{backend})"
 puts "=" * 60
 
 # Create optimized context
@@ -90,7 +114,20 @@ optimized_context = LiquidIL::Optimizer.optimize(context)
 
 # Parse and compile (this is compile-time, not measured)
 template = optimized_context.parse(template_source)
-compiled_template = LiquidIL::Compiler::Ruby.compile(template)
+
+compiled_template = case backend
+when "vm"
+  template # VM uses the template directly
+when "statemachine"
+  LiquidIL::Compiler::Ruby.compile(template)
+when "structured"
+  LiquidIL::Compiler::Structured.compile(template)
+end
+
+# Show if structured is falling back to VM
+if backend == "structured" && compiled_template.respond_to?(:uses_vm) && compiled_template.uses_vm
+  puts "NOTE: Structured compiler is falling back to VM for this template"
+end
 
 # Warmup
 puts "Warming up..."
@@ -102,16 +139,18 @@ puts "Profiling #{iterations} render iterations..."
 
 Dir.mkdir("tmp") unless Dir.exist?("tmp")
 
-StackProf.run(mode: :wall, out: "tmp/render_profile.dump", raw: true, interval: 100) do
+profile_file = "tmp/render_#{backend}_profile.dump"
+
+StackProf.run(mode: :wall, out: profile_file, raw: true, interval: 100) do
   iterations.times { compiled_template.render(env) }
 end
 
-puts "Profile saved to tmp/render_profile.dump"
+puts "Profile saved to #{profile_file}"
 puts
 puts "View with:"
-puts "  bundle exec stackprof tmp/render_profile.dump --text"
-puts "  bundle exec stackprof tmp/render_profile.dump --text --limit 30"
-puts "  bundle exec stackprof tmp/render_profile.dump --method 'METHOD_NAME'"
+puts "  bundle exec stackprof #{profile_file} --text"
+puts "  bundle exec stackprof #{profile_file} --text --limit 30"
+puts "  bundle exec stackprof #{profile_file} --method 'METHOD_NAME'"
 puts
 puts "Flamegraph:"
-puts "  bundle exec stackprof tmp/render_profile.dump --d3-flamegraph > tmp/render_flamegraph.html"
+puts "  bundle exec stackprof #{profile_file} --d3-flamegraph > tmp/render_#{backend}_flamegraph.html"
