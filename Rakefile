@@ -17,6 +17,12 @@ TEST_FILES = %w[
 require_relative "lib/liquid_il/passes"
 OPTIMIZATION_PASSES = LiquidIL::Passes::ALL_PASSES
 
+# Adapter definitions
+ADAPTER_INTERPRETER = "spec/liquid_il_interpreter.rb"
+ADAPTER_STATEMACHINE = "spec/liquid_il_compiled_statemachine.rb"
+ADAPTER_STRUCTURED = "spec/liquid_il_structured.rb"
+ADAPTER_SKIP_OPTIMIZE = "spec/liquid_il_skip_optimize_ruby.rb"
+
 desc "Run comprehensive test suite (stops on first failure)"
 task :test do
   # 1. Run unit tests
@@ -34,14 +40,14 @@ task :test do
   puts "=" * 60
   OPTIMIZATION_PASSES.each do |pass|
     puts "\n--- Pass #{pass} ---"
-    system({ "LIQUID_PASSES" => pass.to_s }, "bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
+    system({ "LIQUID_PASSES" => pass.to_s }, "bash -c 'bundle exec liquid-spec run #{ADAPTER_STATEMACHINE} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
   end
 
   # 3. Run liquid-spec matrix with all optimizations (compares all adapters)
   puts "\n#{"=" * 60}"
   puts "Running liquid-spec matrix"
   puts "=" * 60
-  system("bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
+  system("bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_INTERPRETER},#{ADAPTER_STATEMACHINE},#{ADAPTER_STRUCTURED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
 
   puts "\n#{"=" * 60}"
   puts "ALL TESTS PASSED"
@@ -55,26 +61,20 @@ task :unit do
   end
 end
 
-ADAPTER_VM = "spec/liquid_il.rb"
-ADAPTER_OPTIMIZED = "spec/liquid_il_optimized.rb"
-ADAPTER_COMPILED = "spec/liquid_il_compiled.rb"
-ADAPTER_OPTIMIZED_COMPILED = "spec/liquid_il_optimized_compiled.rb"
-ADAPTER_STRUCTURED = "spec/liquid_il_structured.rb"
-
 desc "Run the liquid-spec test suite"
 task :spec do
-  system "bash -c 'bundle exec liquid-spec run #{ADAPTER_VM} 2> >(grep -v \"missing extensions\" >&2)'"
-  system "bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec run #{ADAPTER_INTERPRETER} 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec run #{ADAPTER_STATEMACHINE} 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run spec matrix comparing LiquidIL against reference implementations"
 task :matrix do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_OPTIMIZED},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED},#{ADAPTER_STRUCTURED} 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_INTERPRETER},#{ADAPTER_STATEMACHINE},#{ADAPTER_STRUCTURED} 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run benchmarks comparing LiquidIL against reference implementations"
 task :bench do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_VM},#{ADAPTER_OPTIMIZED},#{ADAPTER_COMPILED},#{ADAPTER_OPTIMIZED_COMPILED},#{ADAPTER_STRUCTURED} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_INTERPRETER},#{ADAPTER_STATEMACHINE},#{ADAPTER_STRUCTURED} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run partials benchmarks (local)"
@@ -93,7 +93,7 @@ desc "Run spec with specific optimization passes"
 task :spec_pass, [:passes] do |_t, args|
   passes = args[:passes] || "*"
   puts "Running spec with LIQUID_PASSES=#{passes.inspect}"
-  system({ "LIQUID_PASSES" => passes }, "bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'")
+  system({ "LIQUID_PASSES" => passes }, "bash -c 'bundle exec liquid-spec run #{ADAPTER_STATEMACHINE} 2> >(grep -v \"missing extensions\" >&2)'")
 end
 
 desc "Run spec with each optimization pass individually"
@@ -102,7 +102,7 @@ task :spec_each_pass do
     puts "\n" + "=" * 60
     puts "Testing with only pass #{pass} enabled"
     puts "=" * 60
-    system({ "LIQUID_PASSES" => pass.to_s }, "bash -c 'bundle exec liquid-spec run #{ADAPTER_OPTIMIZED_COMPILED} 2> >(grep -v \"missing extensions\" >&2)'")
+    system({ "LIQUID_PASSES" => pass.to_s }, "bash -c 'bundle exec liquid-spec run #{ADAPTER_STATEMACHINE} 2> >(grep -v \"missing extensions\" >&2)'")
   end
 end
 
@@ -123,11 +123,11 @@ task :inspect, [:name] do |_t, args|
   puts "=" * 60
   puts "Spec details:"
   puts "=" * 60
-  system "bundle exec liquid-spec inspect #{ADAPTER_VM} -n #{name.shellescape} 2>/dev/null | grep -v 'missing extensions'"
+  system "bundle exec liquid-spec inspect #{ADAPTER_INTERPRETER} -n #{name.shellescape} 2>/dev/null | grep -v 'missing extensions'"
   puts
 
   # Extract template from spec output and run through liquidil eval
-  spec_output = `bundle exec liquid-spec inspect #{ADAPTER_VM} -n #{name.shellescape} 2>/dev/null`
+  spec_output = `bundle exec liquid-spec inspect #{ADAPTER_INTERPRETER} -n #{name.shellescape} 2>/dev/null`
   # Strip ANSI color codes
   spec_output = spec_output.gsub(/\e\[[0-9;]*m/, '')
 
