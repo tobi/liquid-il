@@ -908,6 +908,8 @@ module LiquidIL
 
       if for_expr
         # Render once per item in collection
+        # IMPORTANT: For include (non-isolated), ranges should NOT be iterated over - they're passed directly.
+        # Only arrays are iterated for include. For render (isolated), ranges ARE iterated.
         expr = generate_var_lookup(for_expr)
         code << "#{prefix}__for_coll__ = #{expr}\n"
         code << "#{prefix}if __for_coll__.is_a?(Array)\n"
@@ -919,6 +921,7 @@ module LiquidIL
         code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
         code << "#{prefix}  end\n"
         if isolated
+          # render iterates over ranges
           code << "#{prefix}elsif __for_coll__.is_a?(LiquidIL::RangeValue) || __for_coll__.is_a?(Range)\n"
           code << "#{prefix}  __items__ = __for_coll__.to_a\n"
           code << "#{prefix}  __items__.each_with_index do |__item__, __idx__|\n"
@@ -926,16 +929,15 @@ module LiquidIL
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
           code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
           code << "#{prefix}  end\n"
-        end
-        code << "#{prefix}elsif !__for_coll__.is_a?(Hash) && !__for_coll__.is_a?(String) && __for_coll__.respond_to?(:each) && __for_coll__.respond_to?(:to_a)\n"
-        code << "#{prefix}  __items__ = __for_coll__.to_a\n"
-        code << "#{prefix}  __items__.each_with_index do |__item__, __idx__|\n"
-        code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
-        if isolated
+          # Also handle other enumerables for render
+          code << "#{prefix}elsif !__for_coll__.is_a?(Hash) && !__for_coll__.is_a?(String) && __for_coll__.respond_to?(:each) && __for_coll__.respond_to?(:to_a)\n"
+          code << "#{prefix}  __items__ = __for_coll__.to_a\n"
+          code << "#{prefix}  __items__.each_with_index do |__item__, __idx__|\n"
+          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
+          code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+          code << "#{prefix}  end\n"
         end
-        code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
-        code << "#{prefix}  end\n"
         code << "#{prefix}elsif __for_coll__.nil?\n"
         code << "#{prefix}  #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
         code << "#{prefix}else\n"
