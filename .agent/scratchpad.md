@@ -35,6 +35,6 @@
 ## Epic Progress: liquid-il-co1 (Eliminate VM fallback)
 
 - [x] liquid-il-4k6: Compile partials to lambda calls
+- [x] liquid-il-y68: Handle long boolean chains (tested with 50+ operands, no fallback)
 - [ ] liquid-il-301: Compile tablerow to native Ruby
 - [ ] liquid-il-oua: Compile break/continue
-- [ ] liquid-il-y68: Handle long boolean chains (>50 operands still falls back due to safety limit)
