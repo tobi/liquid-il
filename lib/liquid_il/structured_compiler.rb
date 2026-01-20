@@ -1372,6 +1372,13 @@ module LiquidIL
           end
           return result
         end
+        # Check if followed by CONST_STRING/CONST_INT, LOOKUP_KEY (bracket access like obj["key"])
+        if (next_inst&.[](0) == IL::CONST_STRING || next_inst&.[](0) == IL::CONST_INT) && next_next&.[](0) == IL::LOOKUP_KEY
+          obj_expr = Expr.new(type: :var, value: inst[1])
+          key_expr = Expr.new(type: :literal, value: next_inst[1])
+          @pc += 3  # Consume FIND_VAR, CONST_*, LOOKUP_KEY
+          return Expr.new(type: :bracket_lookup, children: [obj_expr, key_expr])
+        end
         # Simple variable lookup - just consume this one instruction
         # Don't use full build_expression which would consume subsequent FIND_VARs
         @pc += 1
