@@ -56,11 +56,61 @@ $ rake matrix
 
 ## Architecture
 
-LiquidIL compiles templates to an intermediate language (IL) that runs on a stack-based virtual machine. This is different from Shopify's reference implementation which uses an AST interpreter.
+LiquidIL compiles templates to an intermediate language (IL) that can be executed via three different strategies:
 
 ```
-Source → Lexer → Parser → IL → [Optimizer] → Linker → VM
+Source → Lexer → Parser → IL → [Optimizer] → Linker → Execution Strategy
 ```
+
+### Execution Strategies
+
+LiquidIL implements three distinct execution backends, each with different trade-offs:
+
+| Strategy | Compile | Render | Best For |
+|----------|---------|--------|----------|
+| **VM Interpreter** | Fast | Moderate | Development, one-shot renders |
+| **State Machine Compiler** | Slow | Fast | High-traffic cached templates |
+| **Structured Compiler** | Moderate | Moderate | YJIT experimentation |
+
+#### 1. VM Interpreter (`liquid_il_interpreter.rb`)
+
+The IL instructions are executed directly by a stack-based virtual machine. Each instruction is dispatched via a case statement.
+
+```ruby
+template = context.parse(source)  # Parse to IL
+template.render(assigns)          # Execute via VM
+```
+
+**Pros:** Fast compile, simple debugging, full feature support
+**Cons:** Dispatch overhead on every instruction
+
+#### 2. State Machine Compiler (`liquid_il_compiled_statemachine.rb`)
+
+Compiles IL to a Ruby proc containing a state machine that mirrors the VM's dispatch loop. The proc is generated as a string and `eval`'d.
+
+```ruby
+template = context.parse(source)
+compiled = LiquidIL::Compiler::Ruby.compile(template)  # Generate Ruby proc
+compiled.render(assigns)                                # Execute native Ruby
+```
+
+**Pros:** ~1.85x faster render than liquid_ruby, predictable performance
+**Cons:** 7x slower compile (string generation + eval overhead)
+
+#### 3. Structured Compiler (`liquid_il_structured.rb`)
+
+Compiles IL to native Ruby control flow (if/else, each) instead of a state machine. Designed to be more YJIT-friendly.
+
+```ruby
+template = context.parse(source)
+compiled = LiquidIL::Compiler::Structured.compile(template)
+compiled.render(assigns)
+```
+
+**Pros:** Generates idiomatic Ruby code
+**Cons:** Complex IL patterns (deep boolean chains, partials) fall back to VM
+
+### Optimizer
 
 The optimizer is optional and applies compile-time transformations:
 - **Constant folding** - Evaluate constant expressions, comparisons, and pure filters at compile time
@@ -76,6 +126,7 @@ The IL approach was not planned—it emerged from the "vibe coding" process. The
 - **Simple instruction encoding** - Just arrays: `[:WRITE_RAW, "hello"]`
 - **Easy optimization** - Peephole passes on linear instruction streams
 - **Clear execution model** - Stack machine with explicit control flow
+- **Multiple backends** - Same IL can target VM, state machine, or structured Ruby
 
 ### IL Examples
 
@@ -168,7 +219,7 @@ template.render(title: "Home")
 
 ## Running Tests
 
-This project uses [liquid-spec](https://github.com/Shopify/liquid-spec) for testing. You'll need to set up the dependency first:
+This project uses [liquid-spec](https://github.com/Shopify/liquid-spec) for testing.
 
 ```bash
 # Install dependencies
@@ -180,11 +231,18 @@ rake spec
 # Compare against reference implementation
 rake matrix
 
-# Run specific test pattern
-bundle exec liquid-spec run adapter.rb -n "for"
-```
+# Run benchmarks
+rake bench
 
-Note: The Gemfile references a local path for liquid-spec. Update it to point to your checkout of liquid-spec or a published gem location. See [spec/README.md](spec/README.md) for more details on how testing works.
+# Run specific adapter
+bundle exec liquid-spec run spec/liquid_il_interpreter.rb -n "for"
+
+# Available adapters:
+#   spec/liquid_il_interpreter.rb           - VM interpreter (no optimizer)
+#   spec/liquid_il_interpreter_optimized.rb - VM interpreter + optimizer
+#   spec/liquid_il_compiled_statemachine.rb - State machine Ruby compiler
+#   spec/liquid_il_structured.rb            - Structured Ruby compiler
+```
 
 ## What This Proves
 
@@ -198,17 +256,21 @@ This project demonstrates that:
 
 ## Performance
 
-LiquidIL includes an ahead-of-time (AOT) Ruby compiler that compiles IL to native Ruby procs for maximum render performance.
+LiquidIL offers multiple execution strategies with different compile/render trade-offs.
 
-**Benchmark results** (geometric mean vs reference Ruby implementation):
+**Benchmark results** (vs reference liquid_ruby implementation):
 
-| Adapter | Render Speed |
-|---------|--------------|
-| `liquid_il` (VM interpreter) | 0.58x (slower) |
-| `liquid_il_compiled` (AOT) | **1.27x faster** |
-| `liquid_il_optimized_compiled` (AOT + optimizer) | **1.50x faster** |
+| Adapter | Compile | Render | Total |
+|---------|---------|--------|-------|
+| `liquid_ruby` (reference) | 1.0x | 1.0x | baseline |
+| `liquid_il_interpreter` | 3.5x slower | 1.6x slower | slower |
+| `liquid_il_interpreter_optimized` | 3.5x slower | 1.6x slower | slower |
+| `liquid_il_compiled_statemachine` | 7.2x slower | **1.85x faster** | varies |
+| `liquid_il_structured` | 5.0x slower | 1.5x slower | slower |
 
-**Partials-heavy ecommerce workloads** show even larger gains:
+**Key insight:** The state machine compiler wins on render (1.85x faster) but loses on compile (7.2x slower). For templates rendered many times from cache, the state machine compiler pays off after ~4 renders.
+
+**Partials-heavy ecommerce workloads** show larger gains for the compiled backends:
 
 | Benchmark | Speedup |
 |-----------|---------|
@@ -219,8 +281,8 @@ LiquidIL includes an ahead-of-time (AOT) Ruby compiler that compiles IL to nativ
 
 Run benchmarks yourself:
 ```bash
-rake bench              # Core benchmarks
-ruby bench_partials.rb  # Partials/ecommerce benchmarks
+rake bench              # Core benchmarks (all adapters)
+rake bench_partials     # Partials/ecommerce benchmarks
 ```
 
 ## Optimization Passes
@@ -247,7 +309,7 @@ LiquidIL applies extensive optimizations at both IL compile time and Ruby code g
 | **Repeated lookup caching** | Cache repeated variable lookups with `DUP`+`STORE_TEMP` |
 | **Partial inlining** | Pre-compile `{% render %}`/`{% include %}` partials |
 
-### Ruby Codegen (AOT compilation)
+### Ruby Codegen (State Machine Compiler)
 
 | Optimization | Description |
 |--------------|-------------|
