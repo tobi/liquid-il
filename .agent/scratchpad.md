@@ -3,8 +3,8 @@
 ## Current Epic: liquid-il-omv - YJIT-Friendly Structured Compiler
 
 ### Current State
-- `rake test`: 4358 matched, 11 different (improved from 14)
-- Session progress: Fixed 20 tests total (16 previous + 4 this iteration)
+- `rake test`: 4359 matched, 10 different (improved from 15)
+- Session progress: Fixed 21 tests total (16 previous + 5 this iteration)
 
 ### Session Fixes Applied
 1. [x] Include `with` lookup order - lookup with_expr BEFORE keyword args modify scope (6 tests)
@@ -18,8 +18,9 @@
 9. [x] Tablerow cleanup loop-back - consume backward JUMPs in tablerow cleanup (1 test)
 10. [x] Break in capture - complete capture assignment before throw in loop (2 tests)
 11. [x] Break in capture not in loop - discard capture, don't assign (1 test)
+12. [x] Short-circuit AND with LOAD_TEMP - handle temp variables in right operand (1 test)
 
-### 11 Remaining Failures (Categorized)
+### 10 Remaining Failures (Categorized)
 
 **Category A: Error Formatting (7 tests) - liquid-il-omv.11**
 - `render_static_name_only` - error class name (LiquidIL::SyntaxError vs Liquid::SyntaxError)
@@ -29,8 +30,7 @@
 - `for_loop_with_invalid_offset` - "line n" vs "line 1"
 - `includes_will_not_render_inside_nested_sibling_tags` - error message duplicated
 
-**Category B: Known Limitations - Break/Continue (2 tests)**
-- `break_outer_loop_pattern` - break across include boundary
+**Category B: Known Limitations - Break/Continue (1 test)**
 - `break_in_nested_include_blocks` - break across include boundary
 
 **Category C: External (2 tests)**

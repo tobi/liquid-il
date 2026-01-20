@@ -1237,7 +1237,8 @@ module LiquidIL
               when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE,
                    IL::CONST_NIL, IL::CONST_EMPTY, IL::CONST_BLANK, IL::CONST_RANGE, IL::NEW_RANGE,
                    IL::FIND_VAR, IL::FIND_VAR_PATH, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY, IL::LOOKUP_CONST_PATH,
-                   IL::LOOKUP_COMMAND, IL::COMPARE, IL::CONTAINS, IL::BOOL_NOT, IL::IS_TRUTHY, IL::CALL_FILTER
+                   IL::LOOKUP_COMMAND, IL::COMPARE, IL::CONTAINS, IL::BOOL_NOT, IL::IS_TRUTHY, IL::CALL_FILTER,
+                   IL::LOAD_TEMP
                 # Continue building expression for right operand
                 case build_inst[0]
                 when IL::CONST_INT then stack << Expr.new(type: :literal, value: build_inst[1]); @pc += 1
@@ -1250,6 +1251,7 @@ module LiquidIL
                 when IL::CONST_BLANK then stack << Expr.new(type: :blank); @pc += 1
                 when IL::FIND_VAR then stack << Expr.new(type: :var, value: build_inst[1]); @pc += 1
                 when IL::FIND_VAR_PATH then stack << Expr.new(type: :var_path, value: build_inst[1], children: build_inst[2].map { |k| Expr.new(type: :literal, value: k) }); @pc += 1
+                when IL::LOAD_TEMP then stack << Expr.new(type: :temp, value: build_inst[1]); @pc += 1
                 when IL::LOOKUP_CONST_KEY
                   obj = stack.pop || Expr.new(type: :literal, value: nil)
                   stack << Expr.new(type: :lookup, value: build_inst[1], children: [obj])
