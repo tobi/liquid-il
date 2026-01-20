@@ -733,7 +733,12 @@ module LiquidIL
         # Skip WRITE_VALUE if it follows (we output directly)
         @pc += 1 if @instructions[@pc]&.[](0) == IL::WRITE_VALUE
         # Use __cycle_idx__ to avoid conflict with __idx__ in for loops
-        "#{prefix}__cycle_idx__ = __cycle_state__[#{identity.inspect}] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[#{identity.inspect}] = __cycle_idx__ + 1\n"
+        # Handle empty values: cycle with 0 choices outputs nothing (empty string)
+        if raw_values.empty?
+          "#{prefix}__cycle_state__[#{identity.inspect}] = (__cycle_state__[#{identity.inspect}] || 0) + 1\n"
+        else
+          "#{prefix}__cycle_idx__ = __cycle_state__[#{identity.inspect}] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[#{identity.inspect}] = __cycle_idx__ + 1\n"
+        end
 
       when IL::CYCLE_STEP_VAR
         @pc += 1
@@ -754,7 +759,12 @@ module LiquidIL
         # Skip WRITE_VALUE if it follows (we output directly)
         @pc += 1 if @instructions[@pc]&.[](0) == IL::WRITE_VALUE
         # Identity is a variable - look it up at runtime
-        "#{prefix}__cycle_key__ = __scope__.lookup(#{var_name.inspect}); __cycle_idx__ = __cycle_state__[__cycle_key__] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[__cycle_key__] = __cycle_idx__ + 1\n"
+        # Handle empty values: cycle with 0 choices outputs nothing (empty string)
+        if raw_values.empty?
+          "#{prefix}__cycle_key__ = __scope__.lookup(#{var_name.inspect}); __cycle_state__[__cycle_key__] = (__cycle_state__[__cycle_key__] || 0) + 1\n"
+        else
+          "#{prefix}__cycle_key__ = __scope__.lookup(#{var_name.inspect}); __cycle_idx__ = __cycle_state__[__cycle_key__] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[__cycle_key__] = __cycle_idx__ + 1\n"
+        end
 
       when IL::PUSH_INTERRUPT
         # Break/continue: translate to Ruby control flow
