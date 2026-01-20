@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Optimized IL adapter for liquid-spec (VM execution with optimizer)
-# Uses LiquidIL::Optimizer for IL optimization, runs via VM (not AOT-compiled to Ruby)
+# State machine Ruby compiler adapter for liquid-spec
+# Uses LiquidIL::Optimizer + LiquidIL::Compiler::Ruby (generates state machine dispatch loop)
 
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"
@@ -10,11 +10,11 @@ require_relative "../lib/liquid_il"
 LiquidSpec.setup do |ctx|
   require "liquid"
 
-  # Mock Time.now to return 2024 for date filter tests
-  # liquid-spec expects dates to be in 2024
+  # Mock Time.now to return frozen time for date filter tests
+  # liquid-spec expects time frozen to 2024-01-01 00:01:58 UTC
   module TimeMock
     def now
-      Time.new(2024, 1, 1, 0, 0, 0, "+00:00")
+      Time.new(2024, 1, 1, 0, 1, 58, "+00:00")
     end
   end
   Time.singleton_class.prepend(TimeMock)
@@ -26,7 +26,6 @@ LiquidSpec.configure do |config|
 end
 
 LiquidSpec.compile do |ctx, source, compile_options|
-  # Create optimized context for parsing
   context = LiquidIL::Context.new(
     file_system: compile_options[:file_system],
     registers: compile_options[:registers],
@@ -35,10 +34,9 @@ LiquidSpec.compile do |ctx, source, compile_options|
 
   optimized_context = LiquidIL::Optimizer.optimize(context)
 
-  # Parse with optimized context
   template = optimized_context.parse(source)
   ctx[:context] = optimized_context
-  ctx[:template] = template
+  ctx[:template] = LiquidIL::Compiler::Ruby.compile(template)
 end
 
 LiquidSpec.render do |ctx, assigns, render_options|
