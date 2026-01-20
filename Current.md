@@ -151,14 +151,23 @@ So `if scope["show_name"]` does exactly what `{% if show_name %}` does.
 
 **Spec results:** 4422 passed, 10 failed (edge cases)
 
-**Benchmark results (render time):**
+**Benchmark results (render time, 2026-01-20):**
+
+### Without YJIT
 | Adapter | vs liquid_ruby |
 |---------|----------------|
-| `liquid_il_optimized_compiled` | 2.13x faster |
-| `liquid_il_compiled` | 2.13x faster |
-| `liquid_il_structured` | **1.21x slower** |
+| `liquid_il_optimized_compiled` | **1.98x faster** |
+| `liquid_il_compiled` | **1.51x faster** |
+| `liquid_il_structured` | **1.57x slower** |
 
-The structured compiler is still slower than the baseline, but improved from 1.64x to 1.21x slower. The generated code has fewer allocations on render than the state machine compiler (398 vs 435), but the helper lambda creation overhead at proc instantiation time is significant.
+### With YJIT
+| Adapter | vs liquid_ruby |
+|---------|----------------|
+| `liquid_il_optimized_compiled` | **1.16x slower** |
+| `liquid_il_compiled` | **1.30x slower** |
+| `liquid_il_structured` | **1.51x slower** |
+
+**Analysis:** YJIT helps `liquid_ruby` more than our compiled code. Without YJIT, the state machine compiler wins by 1.98x. With YJIT, liquid_ruby wins by 1.16x. The structured compiler doesn't benefit from YJIT - it remains ~1.5x slower in both cases. This suggests YJIT's dispatch loop optimization works better on liquid_ruby's interpreter pattern than on our compiled code patterns.
 
 **Known Issues (10 failing specs):**
 - Dynamic range type validation (float bounds)
@@ -168,6 +177,7 @@ The structured compiler is still slower than the baseline, but improved from 1.6
 - Forloop reset after nested loop
 - gsub escape sequences
 - Integer.size
+- many_conditions (complex or/and chains)
 
 ---
 
