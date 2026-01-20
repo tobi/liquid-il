@@ -36,6 +36,12 @@ module LiquidIL
       @loop_depth = 0 # Track nested loop depth for parentloop support
       @partials = partials || {}
       @partial_names_in_progress = partial_names_in_progress || Set.new
+      @uses_interrupts = detect_uses_interrupts
+    end
+
+    # Check if template uses break/continue
+    def detect_uses_interrupts
+      @instructions.any? { |inst| inst[0] == IL::PUSH_INTERRUPT }
     end
 
     # Calculate line number from PC using spans
@@ -144,6 +150,9 @@ module LiquidIL
 
     # Check if we can compile this template
     def can_compile?
+      has_include = false
+      has_for_loop = false
+
       @instructions.each do |inst|
         case inst[0]
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
@@ -154,11 +163,54 @@ module LiquidIL
           return false if args["__invalid_name__"]
           # If no file system, can't load partials
           return false unless @context&.file_system
-        when IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END
-          return false # Tablerow not yet supported
+          # Track if we have includes (for interrupt propagation check)
+          has_include = true if inst[0] == IL::INCLUDE_PARTIAL
+        when IL::FOR_INIT, IL::TABLEROW_INIT
+          has_for_loop = true
         end
       end
+
+      # If we have both includes and for loops, check if any partial uses interrupts
+      # Break/continue in partials doesn't propagate correctly with throw/catch
+      if has_include && has_for_loop
+        @instructions.each do |inst|
+          if inst[0] == IL::INCLUDE_PARTIAL
+            name = inst[1]
+            args = inst[2] || {}
+            next if args["__dynamic_name__"] || args["__invalid_name__"]
+            if partial_uses_interrupts?(name)
+              return false
+            end
+          end
+        end
+      end
+
       true
+    end
+
+    # Check if a partial uses interrupts (break/continue)
+    def partial_uses_interrupts?(name)
+      fs = @context&.file_system
+      return false unless fs
+
+      source = if fs.respond_to?(:read_template_file)
+                 fs.read_template_file(name) rescue nil
+               elsif fs.respond_to?(:read)
+                 fs.read(name)
+               end
+
+      return false unless source
+
+      # Quick check: if template contains break or continue keywords
+      return false unless source.include?('break') || source.include?('continue')
+
+      # Compile and check for PUSH_INTERRUPT
+      begin
+        result = Compiler.new(source, file_system: fs).compile
+        result[:instructions].any? { |inst| inst[0] == IL::PUSH_INTERRUPT }
+      rescue
+        false
+      end
     end
 
     # Generate Ruby code from IL
@@ -537,7 +589,11 @@ module LiquidIL
 
       when IL::WRITE_RAW
         @pc += 1
-        "#{prefix}__output__ << #{inst[1].inspect}\n"
+        if @uses_interrupts
+          "#{prefix}__output__ << #{inst[1].inspect} unless __scope__.has_interrupt?\n"
+        else
+          "#{prefix}__output__ << #{inst[1].inspect}\n"
+        end
 
       when IL::WRITE_VAR
         @pc += 1
@@ -552,6 +608,8 @@ module LiquidIL
       when IL::FIND_VAR, IL::FIND_VAR_PATH
         if peek_for_loop?
           generate_for_loop(indent)
+        elsif peek_tablerow?
+          generate_tablerow(indent)
         elsif peek_if_statement?
           generate_if_statement(indent)
         else
@@ -562,6 +620,8 @@ module LiquidIL
            IL::CONST_FALSE, IL::CONST_NIL, IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK
         if peek_for_loop?
           generate_for_loop(indent)
+        elsif peek_tablerow?
+          generate_tablerow(indent)
         elsif peek_if_statement?
           generate_if_statement(indent)
         else
@@ -573,6 +633,10 @@ module LiquidIL
 
       when IL::FOR_INIT
         generate_for_loop_body(nil, nil, indent)
+
+      when IL::TABLEROW_INIT
+        # Tablerow at current position means collection already consumed
+        generate_tablerow_body(nil, nil, nil, nil, nil, nil, nil, nil, nil, indent)
 
       when IL::JUMP
         target = inst[1]
@@ -698,16 +762,21 @@ module LiquidIL
         # and Ruby's next for continue (works inside each blocks)
         interrupt_type = inst[1]
         @pc += 1
-        if interrupt_type == :break
-          # Use throw to exit the current loop - depth-1 because we're inside the loop
-          "#{prefix}throw(:loop_break_#{@loop_depth - 1})\n"
+        if @loop_depth > 0
+          if interrupt_type == :break
+            # Use throw to exit the current loop - depth-1 because we're inside the loop
+            "#{prefix}throw(:loop_break_#{@loop_depth - 1})\n"
+          else
+            "#{prefix}next\n"
+          end
         else
-          "#{prefix}next\n"
+          # Break/continue outside of loop - push interrupt to scope to stop further output
+          "#{prefix}__scope__.push_interrupt(#{interrupt_type.inspect})\n"
         end
 
       when IL::LABEL, IL::POP_INTERRUPT, IL::JUMP_IF_INTERRUPT, IL::POP_FORLOOP,
            IL::FOR_END, IL::FOR_NEXT, IL::JUMP_IF_EMPTY, IL::PUSH_FORLOOP, IL::POP,
-           IL::IFCHANGED_CHECK
+           IL::IFCHANGED_CHECK, IL::TABLEROW_NEXT, IL::TABLEROW_END
         @pc += 1
         "" # No-ops in structured code (IFCHANGED_CHECK handled by POP_CAPTURE)
 
@@ -755,7 +824,11 @@ module LiquidIL
       case terminator
       when :write_value
         expr_code = expr_to_ruby(expr)
-        temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
+        if @uses_interrupts
+          temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(String) ? __v__ : __output_string__.call(__v__)) unless __scope__.has_interrupt?\n"
+        else
+          temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
+        end
       when :assign
         var = @instructions[@pc - 1][1]
         temp_code + "#{prefix}__scope__.assign(#{var.inspect}, #{expr_to_ruby(expr)})\n"
@@ -1243,6 +1316,19 @@ module LiquidIL
 
       case inst[0]
       when IL::CONST_INT
+        # Check if this is the start of a range (CONST_INT, CONST_INT|CONST_FLOAT, NEW_RANGE)
+        next_inst = @instructions[@pc + 1]
+        next_next = @instructions[@pc + 2]
+        if (next_inst&.[](0) == IL::CONST_INT || next_inst&.[](0) == IL::CONST_FLOAT) && next_next&.[](0) == IL::NEW_RANGE
+          # This is a range - consume all three instructions
+          start_val = inst[1]
+          end_val = next_inst[1]
+          @pc += 3
+          return Expr.new(type: :dynamic_range, children: [
+            Expr.new(type: :literal, value: start_val),
+            Expr.new(type: :literal, value: end_val)
+          ])
+        end
         @pc += 1
         Expr.new(type: :literal, value: inst[1])
       when IL::CONST_FLOAT
@@ -1251,11 +1337,48 @@ module LiquidIL
       when IL::CONST_STRING
         @pc += 1
         Expr.new(type: :literal, value: inst[1])
+      when IL::CONST_RANGE
+        @pc += 1
+        Expr.new(type: :range, value: [inst[1], inst[2]])
       when IL::FIND_VAR
+        # Check if followed by CONST_INT, NEW_RANGE (dynamic range like x..5)
+        next_inst = @instructions[@pc + 1]
+        next_next = @instructions[@pc + 2]
+        if next_inst&.[](0) == IL::CONST_INT && next_next&.[](0) == IL::NEW_RANGE
+          start_expr = Expr.new(type: :var, value: inst[1])
+          end_val = next_inst[1]
+          @pc += 3
+          return Expr.new(type: :dynamic_range, children: [
+            start_expr,
+            Expr.new(type: :literal, value: end_val)
+          ])
+        end
+        # Check if followed by FIND_VAR, NEW_RANGE (dynamic range like x..y)
+        if next_inst&.[](0) == IL::FIND_VAR && next_next&.[](0) == IL::NEW_RANGE
+          start_expr = Expr.new(type: :var, value: inst[1])
+          end_expr = Expr.new(type: :var, value: next_inst[1])
+          @pc += 3
+          return Expr.new(type: :dynamic_range, children: [start_expr, end_expr])
+        end
+        # Check if followed by LOOKUP_CONST_KEY (property access like obj.prop)
+        if next_inst&.[](0) == IL::LOOKUP_CONST_KEY
+          result = Expr.new(type: :var, value: inst[1])
+          @pc += 1
+          # Consume all LOOKUP_CONST_KEY chain (for paths like a.b.c)
+          while @instructions[@pc]&.[](0) == IL::LOOKUP_CONST_KEY
+            key = @instructions[@pc][1]
+            result = Expr.new(type: :lookup, value: key, children: [result])
+            @pc += 1
+          end
+          return result
+        end
         # Simple variable lookup - just consume this one instruction
         # Don't use full build_expression which would consume subsequent FIND_VARs
         @pc += 1
         Expr.new(type: :var, value: inst[1])
+      when IL::FIND_VAR_PATH
+        @pc += 1
+        Expr.new(type: :var_path, value: inst[1], children: inst[2].map { |k| Expr.new(type: :literal, value: k) })
       when IL::LOAD_TEMP
         @pc += 1
         Expr.new(type: :temp, value: inst[1])
@@ -1538,6 +1661,29 @@ module LiquidIL
              IL::FIND_VAR, IL::FIND_VAR_PATH, IL::NEW_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
              IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::CALL_FILTER, IL::COMPARE, IL::CONTAINS,
              IL::BOOL_NOT, IL::IS_TRUTHY, IL::STORE_TEMP, IL::LOAD_TEMP, IL::CASE_COMPARE
+          i += 1
+        else
+          return false
+        end
+      end
+      false
+    end
+
+    # Check if current position starts a tablerow loop
+    # Tablerow doesn't have JUMP_IF_EMPTY, just: collection -> [limit] -> [offset] -> TABLEROW_INIT
+    def peek_tablerow?
+      i = @pc
+      while i < @instructions.length
+        inst = @instructions[i]
+        break if inst.nil?
+
+        case inst[0]
+        when IL::TABLEROW_INIT
+          return true
+        when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE,
+             IL::CONST_FALSE, IL::CONST_NIL, IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK,
+             IL::FIND_VAR, IL::FIND_VAR_PATH, IL::NEW_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
+             IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::CALL_FILTER
           i += 1
         else
           return false
@@ -1844,6 +1990,268 @@ module LiquidIL
       end
 
       code << "#{prefix}end\n"
+
+      @loop_depth -= 1
+      code
+    end
+
+    # Generate a tablerow loop (called when FIND_VAR starts a tablerow sequence)
+    def generate_tablerow(indent)
+      prefix = "  " * indent
+
+      # Scan forward to find TABLEROW_INIT and determine what params it has
+      tablerow_init_idx = @pc
+      while tablerow_init_idx < @instructions.length && @instructions[tablerow_init_idx][0] != IL::TABLEROW_INIT
+        tablerow_init_idx += 1
+      end
+
+      return nil if tablerow_init_idx >= @instructions.length
+
+      tablerow_init = @instructions[tablerow_init_idx]
+      item_var = tablerow_init[1]
+      loop_name = tablerow_init[2]
+      has_limit = tablerow_init[3]
+      has_offset = tablerow_init[4]
+      cols = tablerow_init[5]  # nil, :dynamic, :explicit_nil, or integer
+
+      # IL stack order: collection, limit (if has_limit), offset (if has_offset), cols (if :dynamic)
+      # We need to read them in that order
+      # Use build_single_value_expression to read ONE value at a time
+
+      # Read collection expression
+      coll_expr = build_single_value_expression
+
+      # Read limit expression if present
+      limit_expr = nil
+      if has_limit && @pc < tablerow_init_idx
+        limit_expr = build_single_value_expression
+      end
+
+      # Read offset expression if present
+      offset_expr = nil
+      if has_offset && @pc < tablerow_init_idx
+        offset_expr = build_single_value_expression
+      end
+
+      # Read cols expression if dynamic
+      cols_expr = nil
+      if cols == :dynamic && @pc < tablerow_init_idx
+        cols_expr = build_single_value_expression
+      end
+
+      # Move to TABLEROW_INIT and consume it
+      @pc = tablerow_init_idx + 1
+
+      generate_tablerow_body(coll_expr, limit_expr, offset_expr, cols_expr, cols, has_limit, has_offset, item_var, loop_name, indent)
+    end
+
+    # Generate tablerow body (called when expressions already built or at TABLEROW_INIT)
+    def generate_tablerow_body(coll_expr, limit_expr, offset_expr, cols_expr, cols, has_limit, has_offset, item_var, loop_name, indent)
+      prefix = "  " * indent
+
+      # If called directly from TABLEROW_INIT, get params from instruction
+      if coll_expr.nil?
+        tablerow_init = @instructions[@pc]
+        return nil unless tablerow_init && tablerow_init[0] == IL::TABLEROW_INIT
+
+        item_var = tablerow_init[1]
+        loop_name = tablerow_init[2]
+        has_limit = tablerow_init[3]
+        has_offset = tablerow_init[4]
+        cols = tablerow_init[5]
+        @pc += 1
+        coll_expr = Expr.new(type: :var, value: "items")
+      end
+
+      # Track loop depth for nested loops
+      depth = @loop_depth
+      @loop_depth += 1
+
+      # Skip structural instructions (PUSH_SCOPE, TABLEROW_NEXT)
+      while @pc < @instructions.length
+        case @instructions[@pc][0]
+        when IL::PUSH_SCOPE, IL::TABLEROW_NEXT, IL::LABEL
+          @pc += 1
+        when IL::ASSIGN_LOCAL
+          if @instructions[@pc][1] == item_var
+            @pc += 1
+          else
+            break
+          end
+        else
+          break
+        end
+      end
+
+      # Parse loop body
+      body_start = @pc
+      body_code = String.new
+
+      while @pc < @instructions.length
+        inst = @instructions[@pc]
+        break if inst.nil?
+
+        case inst[0]
+        when IL::JUMP
+          # Check if jumping back (end of loop)
+          if inst[1] <= body_start || @instructions[@pc + 1]&.[](0) == IL::POP_INTERRUPT
+            @pc += 1
+            break
+          else
+            result = generate_statement(indent + 3)
+            body_code << result if result
+          end
+        when IL::POP_INTERRUPT, IL::POP_SCOPE, IL::TABLEROW_END
+          # These mark end of loop body
+          break
+        when IL::HALT
+          break
+        else
+          result = generate_statement(indent + 3)
+          body_code << result if result
+        end
+      end
+
+      # Consume cleanup instructions
+      while @pc < @instructions.length
+        inst = @instructions[@pc]
+        case inst&.[](0)
+        when IL::POP_INTERRUPT, IL::POP_SCOPE, IL::TABLEROW_END, IL::LABEL, IL::JUMP_IF_INTERRUPT
+          @pc += 1
+        else
+          break
+        end
+      end
+
+      # Generate the tablerow code
+      code = String.new
+      coll_var = "__tablerow_coll_#{depth}__"
+      tablerowloop_var = "__tablerowloop_#{depth}__"
+      item_var_internal = "__tablerow_item_#{depth}__"
+      idx_var = "__tablerow_idx_#{depth}__"
+      cols_var = "__tablerow_cols_#{depth}__"
+      coll_ruby = expr_to_ruby(coll_expr)
+
+      code << "#{prefix}# tablerow #{item_var}\n"
+      code << "#{prefix}__orig_tablerow_coll_#{depth}__ = #{coll_ruby}\n"
+      code << "#{prefix}__is_string_#{depth}__ = __orig_tablerow_coll_#{depth}__.is_a?(String)\n"
+      code << "#{prefix}__is_nil_#{depth}__ = __orig_tablerow_coll_#{depth}__.nil? || __orig_tablerow_coll_#{depth}__ == false\n"
+      code << "#{prefix}#{coll_var} = __to_iterable__.call(__orig_tablerow_coll_#{depth}__)\n"
+
+      # Handle cols parameter
+      case cols
+      when :dynamic
+        if cols_expr
+          code << "#{prefix}__cols_val_#{depth}__ = #{expr_to_ruby(cols_expr)}\n"
+          code << "#{prefix}if __cols_val_#{depth}__.nil?\n"
+          code << "#{prefix}  #{cols_var} = #{coll_var}.length\n"
+          code << "#{prefix}  __cols_explicit_nil_#{depth}__ = true\n"
+          code << "#{prefix}elsif !__is_nil_#{depth}__ && !__valid_integer__.call(__cols_val_#{depth}__)\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1)\n"
+          code << "#{prefix}else\n"
+          code << "#{prefix}  #{cols_var} = __cols_val_#{depth}__.to_i\n"
+          code << "#{prefix}  __cols_explicit_nil_#{depth}__ = false\n"
+          code << "#{prefix}end\n"
+        else
+          code << "#{prefix}#{cols_var} = #{coll_var}.length\n"
+          code << "#{prefix}__cols_explicit_nil_#{depth}__ = false\n"
+        end
+      when :explicit_nil
+        code << "#{prefix}#{cols_var} = #{coll_var}.length\n"
+        code << "#{prefix}__cols_explicit_nil_#{depth}__ = true\n"
+      when nil
+        code << "#{prefix}#{cols_var} = #{coll_var}.length\n"
+        code << "#{prefix}__cols_explicit_nil_#{depth}__ = false\n"
+      else
+        code << "#{prefix}#{cols_var} = #{cols}\n"
+        code << "#{prefix}__cols_explicit_nil_#{depth}__ = false\n"
+      end
+
+      # Handle offset if present (validate and apply) - for strings, offset is ignored
+      # Note: offset must be applied BEFORE limit (VM order)
+      # Skip all processing if collection is nil/false (no output will be generated anyway)
+      if has_offset
+        if offset_expr
+          offset_ruby = expr_to_ruby(offset_expr)
+          code << "#{prefix}__offset_val_#{depth}__ = #{offset_ruby}\n"
+          code << "#{prefix}unless __is_nil_#{depth}__\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __valid_integer__.call(__offset_val_#{depth}__)\n"
+          code << "#{prefix}  __offset_#{depth}__ = __offset_val_#{depth}__.nil? ? 0 : __offset_val_#{depth}__.to_i\n"
+          code << "#{prefix}  __offset_#{depth}__ = [__offset_#{depth}__, 0].max\n"
+          code << "#{prefix}  #{coll_var} = #{coll_var}.drop(__offset_#{depth}__) unless __is_string_#{depth}__\n"
+          code << "#{prefix}end\n"
+        end
+      end
+
+      # Handle limit if present (validate and apply) - for strings, limit is ignored
+      # nil limit means take 0 items for tablerow (different from for loop)
+      # Skip all processing if collection is nil/false (no output will be generated anyway)
+      if has_limit
+        if limit_expr
+          limit_ruby = expr_to_ruby(limit_expr)
+          code << "#{prefix}__limit_val_#{depth}__ = #{limit_ruby}\n"
+          code << "#{prefix}unless __is_nil_#{depth}__\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __valid_integer__.call(__limit_val_#{depth}__)\n"
+          code << "#{prefix}  __limit_#{depth}__ = __limit_val_#{depth}__.nil? ? 0 : __limit_val_#{depth}__.to_i\n"
+          code << "#{prefix}  __limit_#{depth}__ = 0 if __limit_#{depth}__ < 0\n"
+          code << "#{prefix}  #{coll_var} = #{coll_var}.take(__limit_#{depth}__) unless __is_string_#{depth}__\n"
+          code << "#{prefix}end\n"
+        end
+      end
+
+      # Ensure cols is at least 1 to avoid division by zero
+      code << "#{prefix}#{cols_var} = [#{cols_var}, 1].max\n"
+
+      code << "#{prefix}__scope__.push_scope\n"
+      code << "#{prefix}#{tablerowloop_var} = LiquidIL::TablerowloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{cols_var}, nil, __cols_explicit_nil_#{depth}__)\n"
+
+      # Wrap with catch for break support
+      code << "#{prefix}catch(:loop_break_#{depth}) do\n"
+
+      # Output opening row tag for empty collections
+      code << "#{prefix}  if #{coll_var}.empty? && !__is_nil_#{depth}__\n"
+      code << "#{prefix}    __output__ << \"<tr class=\\\"row1\\\">\\n\"\n"
+      code << "#{prefix}    __output__ << \"</tr>\\n\"\n"
+      code << "#{prefix}  end\n"
+
+      code << "#{prefix}  #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
+      code << "#{prefix}    #{tablerowloop_var}.index0 = #{idx_var}\n"
+      code << "#{prefix}    __scope__.assign_local('tablerowloop', #{tablerowloop_var})\n"
+      code << "#{prefix}    __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
+
+      # Output HTML tags before body content
+      code << "#{prefix}    # Close previous cell/row if not first iteration\n"
+      code << "#{prefix}    if #{idx_var} > 0\n"
+      code << "#{prefix}      __output__ << \"</td>\"\n"
+      code << "#{prefix}      if (#{idx_var} % #{cols_var}) == 0\n"
+      code << "#{prefix}        __output__ << \"</tr>\\n\"\n"
+      code << "#{prefix}      end\n"
+      code << "#{prefix}    end\n"
+
+      code << "#{prefix}    # Open new row if at start of row\n"
+      code << "#{prefix}    if (#{idx_var} % #{cols_var}) == 0\n"
+      code << "#{prefix}      __row__ = (#{idx_var} / #{cols_var}) + 1\n"
+      code << "#{prefix}      if __row__ == 1\n"
+      code << "#{prefix}        __output__ << \"<tr class=\\\"row\#{__row__}\\\">\\n\"\n"
+      code << "#{prefix}      else\n"
+      code << "#{prefix}        __output__ << \"<tr class=\\\"row\#{__row__}\\\">\"\n"
+      code << "#{prefix}      end\n"
+      code << "#{prefix}    end\n"
+      code << "#{prefix}    __col__ = (#{idx_var} % #{cols_var}) + 1\n"
+      code << "#{prefix}    __output__ << \"<td class=\\\"col\#{__col__}\\\">\"\n"
+
+      # Body content
+      code << body_code
+
+      code << "#{prefix}  end\n"  # end each_with_index
+      code << "#{prefix}end\n"    # end catch
+
+      # Close final tags
+      code << "#{prefix}if !#{coll_var}.empty?\n"
+      code << "#{prefix}  __output__ << \"</td>\"\n"
+      code << "#{prefix}  __output__ << \"</tr>\\n\"\n"
+      code << "#{prefix}end\n"
+      code << "#{prefix}__scope__.pop_scope\n"
 
       @loop_depth -= 1
       code
