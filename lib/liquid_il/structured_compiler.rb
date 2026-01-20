@@ -28,12 +28,23 @@ module LiquidIL
     # Comparison operator mapping
     COMPARE_OPS = { eq: "==", ne: "!=", lt: "<", le: "<=", gt: ">", ge: ">=" }.freeze
 
-    def initialize(instructions, spans: nil, template_source: nil, context: nil)
+    def initialize(instructions, spans: nil, template_source: nil, context: nil, partials: nil, partial_names_in_progress: nil)
       @instructions = instructions
       @spans = spans || []
       @template_source = template_source
       @context = context
       @loop_depth = 0 # Track nested loop depth for parentloop support
+      @partials = partials || {}
+      @partial_names_in_progress = partial_names_in_progress || Set.new
+    end
+
+    # Calculate line number from PC using spans
+    def line_for_pc(pc)
+      return 1 unless @spans && @template_source
+      span = @spans[pc]
+      return 1 unless span
+      pos = span[0]
+      @template_source[0, pos].count("\n") + 1
     end
 
     def compile
@@ -58,6 +69,77 @@ module LiquidIL
       CompilationResult.new(proc: nil, source: nil, can_compile: false)
     end
 
+    # Compile a partial and store it for later code generation
+    def compile_partial(name)
+      return if @partials[name]
+      # Mutual recursion detected - can't compile this to lambdas
+      if @partial_names_in_progress.include?(name)
+        raise "Mutual recursion detected: #{name}"
+      end
+
+      @partial_names_in_progress.add(name)
+
+      # Load the partial source
+      fs = @context&.file_system
+      source = if fs.respond_to?(:read_template_file)
+                 fs.read_template_file(name) rescue nil
+               elsif fs.respond_to?(:read)
+                 fs.read(name)
+               end
+
+      unless source
+        @partial_names_in_progress.delete(name)
+        raise "Cannot load partial '#{name}'"
+      end
+
+      # Compile the partial to IL
+      begin
+        compiler = LiquidIL::Compiler.new(source, optimize: true)
+        result = compiler.compile
+      rescue LiquidIL::SyntaxError => e
+        @partial_names_in_progress.delete(name)
+        raise "Partial '#{name}' has syntax error: #{e.message}"
+      end
+      instructions = result[:instructions]
+      spans = result[:spans]
+
+      # Recursively compile to structured Ruby (sharing partials cache)
+      structured_compiler = StructuredCompiler.new(
+        instructions,
+        spans: spans,
+        template_source: source,
+        context: @context,
+        partials: @partials,
+        partial_names_in_progress: @partial_names_in_progress
+      )
+
+      # Check if this partial can be compiled
+      unless structured_compiler.send(:can_compile?)
+        @partial_names_in_progress.delete(name)
+        raise "Partial '#{name}' cannot be compiled (unsupported features)"
+      end
+
+      # Scan for nested partials first (this populates @partials with all nested partials)
+      structured_compiler.send(:scan_and_compile_partials)
+
+      # Generate code for this partial's body
+      structured_compiler.instance_variable_set(:@pc, 0)
+      partial_body = structured_compiler.send(:generate_body)
+
+      @partials[name] = {
+        source: source,
+        instructions: instructions,
+        spans: spans,
+        compiled_body: partial_body
+      }
+
+      @partial_names_in_progress.delete(name)
+    end
+
+    def partial_lambda_name(name)
+      "__partial_#{name.gsub(/[^a-zA-Z0-9_]/, '_')}__"
+    end
+
     private
 
     # Check if we can compile this template
@@ -65,7 +147,13 @@ module LiquidIL
       @instructions.each do |inst|
         case inst[0]
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
-          return false # Partials not yet supported
+          args = inst[2] || {}
+          # Dynamic partials cannot be compiled - require runtime resolution
+          return false if args["__dynamic_name__"]
+          # Invalid partial names need VM for proper error handling
+          return false if args["__invalid_name__"]
+          # If no file system, can't load partials
+          return false unless @context&.file_system
         when IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END
           return false # Tablerow not yet supported
         when IL::PUSH_INTERRUPT
@@ -77,10 +165,14 @@ module LiquidIL
 
     # Generate Ruby code from IL
     def generate_ruby
+      # First pass: scan for partials and compile them
+      scan_and_compile_partials
+
       code = String.new
       code << "# frozen_string_literal: true\n"
       code << "proc do |__scope__, __spans__, __template_source__|\n"
       code << generate_helpers
+      code << generate_partial_lambdas
       code << "  __output__ = String.new(capacity: #{OUTPUT_CAPACITY})\n"
       code << "  __current_file__ = nil\n"
       code << "  __cycle_state__ = {}\n"
@@ -90,6 +182,74 @@ module LiquidIL
       code << "\n  __output__\n"
       code << "end\n"
       code
+    end
+
+    # Scan instructions for partials and compile them
+    def scan_and_compile_partials
+      @instructions.each do |inst|
+        case inst[0]
+        when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
+          name = inst[1]
+          args = inst[2] || {}
+          # Skip dynamic/invalid partials (handled by can_compile?)
+          next if args["__dynamic_name__"] || args["__invalid_name__"]
+          next if @partials[name]
+          # compile_partial will raise if mutual recursion detected
+          compile_partial(name)
+        end
+      end
+    end
+
+    # Generate lambda definitions for compiled partials
+    def generate_partial_lambdas
+      return "" if @partials.empty?
+
+      code = String.new
+      code << "\n  # Compiled partial lambdas\n"
+      @partials.each do |name, info|
+        lambda_name = partial_lambda_name(name)
+        code << "  #{lambda_name} = ->(assigns, __output__, __parent_scope__, isolated, caller_line: 1) {\n"
+        code << "    __prev_file__ = __parent_scope__.current_file\n"
+        code << "    __parent_scope__.current_file = #{name.inspect}\n"
+        code << "    __parent_scope__.push_render_depth\n"
+        code << "    begin\n"
+        code << "      if __parent_scope__.render_depth_exceeded?(strict: !isolated)\n"
+        code << "        raise LiquidIL::RuntimeError.new(\"Nesting too deep\", file: #{name.inspect}, line: caller_line)\n"
+        code << "      end\n"
+        code << "      __partial_scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
+        code << "      assigns.each { |k, v| __partial_scope__.assign(k, v) }\n"
+        code << "      __spans__ = #{info[:spans].inspect}\n"
+        code << "      __template_source__ = #{info[:source].inspect}\n"
+        code << "      __current_file__ = #{name.inspect}\n"
+        code << "      __cycle_state__ = {}\n"
+        code << "      __capture_stack__ = []\n"
+        code << "      __ifchanged_state__ = {}\n"
+        code << indent_partial_body(info[:compiled_body], 6)
+        code << "    rescue LiquidIL::RuntimeError => e\n"
+        code << "      raise unless __parent_scope__.render_errors\n"
+        code << "      __output__ << (e.partial_output || \"\")\n"
+        code << "      location = e.file ? \"\#{e.file} line \#{e.line}\" : \"line \#{e.line}\"\n"
+        code << "      __output__ << \"Liquid error (\#{location}): \#{e.message}\"\n"
+        code << "    rescue LiquidIL::FilterRuntimeError => e\n"
+        code << "      raise unless __parent_scope__.render_errors\n"
+        code << "      __output__ << \"Liquid error (#{name} line 1): \#{e.message}\"\n"
+        code << "    rescue StandardError => e\n"
+        code << "      raise unless __parent_scope__.render_errors\n"
+        code << "      __output__ << \"Liquid error (#{name} line 1): \#{LiquidIL.clean_error_message(e.message)}\"\n"
+        code << "    ensure\n"
+        code << "      __parent_scope__.current_file = __prev_file__\n"
+        code << "      __parent_scope__.pop_render_depth\n"
+        code << "    end\n"
+        code << "  }\n\n"
+      end
+      code
+    end
+
+    def indent_partial_body(body, spaces)
+      indent = " " * spaces
+      # Replace __scope__ with __partial_scope__ to avoid closure issues
+      body = body.gsub("__scope__", "__partial_scope__")
+      body.lines.map { |l| l.strip.empty? ? l : "#{indent}#{l}" }.join
     end
 
     # Generate inline helper lambdas
@@ -548,6 +708,12 @@ module LiquidIL
           generate_expression_statement(indent)
         end
 
+      when IL::RENDER_PARTIAL
+        generate_partial_call(inst, @pc, indent, isolated: true)
+
+      when IL::INCLUDE_PARTIAL
+        generate_partial_call(inst, @pc, indent, isolated: false)
+
       else
         generate_expression_statement(indent)
       end
@@ -596,6 +762,155 @@ module LiquidIL
       else
         # Just evaluate expression for side effects (rare)
         temp_code + "#{prefix}#{expr_to_ruby(expr)}\n"
+      end
+    end
+
+    # Generate a partial call (render or include)
+    def generate_partial_call(inst, pc, indent, isolated:)
+      @pc += 1
+      prefix = "  " * indent
+      name = inst[1]
+      args = inst[2] || {}
+      lambda_name = partial_lambda_name(name)
+      tag_type = isolated ? "render" : "include"
+      line_num = line_for_pc(pc)
+
+      code = String.new
+      code << "#{prefix}# #{tag_type} '#{name}'\n"
+
+      # Handle include being disabled inside render context
+      unless isolated
+        code << "#{prefix}if __scope__.disable_include\n"
+        code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"include usage is not allowed in this context\", file: __current_file__, line: #{line_num}, partial_output: __output__.dup)\n"
+        code << "#{prefix}else\n"
+        prefix = "  " * (indent + 1)
+      end
+
+      # Build argument setup code
+      code << "#{prefix}__partial_args__ = {}\n"
+
+      # Handle with/for expressions
+      with_expr = args["__with__"]
+      for_expr = args["__for__"]
+      as_alias = args["__as__"]
+      item_var = as_alias || name
+
+      # Regular named arguments
+      args.each do |k, v|
+        next if k.start_with?("__")
+        if v.is_a?(Hash) && v[:__var__]
+          var_path = v[:__var__]
+          expr = var_path.is_a?(Array) ? generate_var_lookup(var_path[0]) : generate_var_lookup(var_path)
+          code << "#{prefix}__partial_args__[#{k.inspect}] = #{expr}\n"
+          # For include, also assign to current scope
+          unless isolated
+            code << "#{prefix}__scope__.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
+          end
+        else
+          code << "#{prefix}__partial_args__[#{k.inspect}] = #{v.inspect}\n"
+          unless isolated
+            code << "#{prefix}__scope__.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
+          end
+        end
+      end
+
+      if for_expr
+        # Render once per item in collection
+        expr = generate_var_lookup(for_expr)
+        code << "#{prefix}__for_coll__ = #{expr}\n"
+        code << "#{prefix}if __for_coll__.is_a?(Array)\n"
+        code << "#{prefix}  __for_coll__.each_with_index do |__item__, __idx__|\n"
+        code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
+        if isolated
+          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = __idx__ }\n"
+        end
+        code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+        code << "#{prefix}  end\n"
+        if isolated
+          code << "#{prefix}elsif __for_coll__.is_a?(LiquidIL::RangeValue) || __for_coll__.is_a?(Range)\n"
+          code << "#{prefix}  __items__ = __for_coll__.to_a\n"
+          code << "#{prefix}  __items__.each_with_index do |__item__, __idx__|\n"
+          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
+          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
+          code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+          code << "#{prefix}  end\n"
+        end
+        code << "#{prefix}elsif !__for_coll__.is_a?(Hash) && !__for_coll__.is_a?(String) && __for_coll__.respond_to?(:each) && __for_coll__.respond_to?(:to_a)\n"
+        code << "#{prefix}  __items__ = __for_coll__.to_a\n"
+        code << "#{prefix}  __items__.each_with_index do |__item__, __idx__|\n"
+        code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
+        if isolated
+          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
+        end
+        code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+        code << "#{prefix}  end\n"
+        code << "#{prefix}elsif __for_coll__.nil?\n"
+        code << "#{prefix}  #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+        code << "#{prefix}else\n"
+        code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __for_coll__\n"
+        code << "#{prefix}  #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+        code << "#{prefix}end\n"
+      elsif with_expr
+        # Render with a specific value
+        expr = generate_var_lookup(with_expr)
+        code << "#{prefix}__with_val__ = #{expr}\n"
+        if isolated
+          code << "#{prefix}__partial_args__[#{item_var.inspect}] = __with_val__ unless __with_val__.nil?\n"
+          code << "#{prefix}#{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+        else
+          code << "#{prefix}if __with_val__.is_a?(Array)\n"
+          code << "#{prefix}  __with_val__.each do |__item__|\n"
+          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
+          code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+          code << "#{prefix}  end\n"
+          code << "#{prefix}else\n"
+          code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __with_val__\n"
+          code << "#{prefix}  #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+          code << "#{prefix}end\n"
+        end
+      else
+        # Simple render
+        code << "#{prefix}#{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+      end
+
+      # Close the include disable check
+      unless isolated
+        code << "  " * indent << "end\n"
+      end
+
+      code
+    end
+
+    # Generate variable lookup expression
+    def generate_var_lookup(expr)
+      return "nil" unless expr
+      expr_str = expr.to_s
+
+      # Handle string literals
+      if expr_str =~ /\A'(.*)'\z/ || expr_str =~ /\A"(.*)"\z/
+        return Regexp.last_match(1).inspect
+      end
+
+      # Handle range literals
+      if expr_str =~ /\A\((-?\d+)\.\.(-?\d+)\)\z/
+        return "LiquidIL::RangeValue.new(#{Regexp.last_match(1)}, #{Regexp.last_match(2)})"
+      end
+
+      # Parse variable path
+      parts = expr_str.scan(/(\w+)|\[(\d+)\]|\[['"](\w+)['"]\]/)
+      return "nil" if parts.empty?
+
+      if parts.size == 1
+        "__scope__.lookup(#{parts[0][0].inspect})"
+      else
+        first_var = parts[0][0]
+        rest_keys = parts[1..].map do |match|
+          key = match[0] || match[1] || match[2]
+          key.to_s =~ /^\d+$/ ? key.to_i : key.inspect
+        end
+        result = "__scope__.lookup(#{first_var.inspect})"
+        rest_keys.each { |k| result = "__lookup__.call(#{result}, #{k})" }
+        result
       end
     end
 
