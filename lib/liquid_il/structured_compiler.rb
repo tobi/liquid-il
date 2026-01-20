@@ -360,6 +360,11 @@ module LiquidIL
             when "first" then obj[0]
             when "last" then obj[-1]
             end
+          when Integer
+            # Ruby integers have .size method that returns byte count
+            case key.to_s
+            when "size" then obj.size
+            end
           else
             obj.respond_to?(:[]) ? obj[key.to_s] : nil
           end
