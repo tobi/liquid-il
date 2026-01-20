@@ -1980,32 +1980,37 @@ module LiquidIL
       # - for loops inside tablerows (depth > 0 but no __forloop_{depth-1}__ exists)
       parent_forloop = "__scope__.lookup('forloop')"
 
+      # Wrap validation and loop in begin/rescue for inline error handling
+      needs_error_handling = has_offset || has_limit
       code << "#{prefix}# for #{item_var}\n"
+      code << "#{prefix}begin\n" if needs_error_handling
+      inner_prefix = needs_error_handling ? "#{prefix}  " : prefix
+
       # Store original collection to check if it's a string (strings ignore offset/limit)
-      code << "#{prefix}__orig_coll_#{depth}__ = #{coll_ruby}\n"
-      code << "#{prefix}__is_string_#{depth}__ = __orig_coll_#{depth}__.is_a?(String)\n"
+      code << "#{inner_prefix}__orig_coll_#{depth}__ = #{coll_ruby}\n"
+      code << "#{inner_prefix}__is_string_#{depth}__ = __orig_coll_#{depth}__.is_a?(String)\n"
       # Check if collection is nil/false (skip validation for nil/false)
-      code << "#{prefix}__is_nil_#{depth}__ = __orig_coll_#{depth}__.nil? || __orig_coll_#{depth}__ == false\n"
-      code << "#{prefix}#{coll_var} = __to_iterable__.call(__orig_coll_#{depth}__)\n"
-      code << "#{prefix}#{coll_var} = #{coll_var}.reverse if #{reversed.inspect}\n" if reversed
+      code << "#{inner_prefix}__is_nil_#{depth}__ = __orig_coll_#{depth}__.nil? || __orig_coll_#{depth}__ == false\n"
+      code << "#{inner_prefix}#{coll_var} = __to_iterable__.call(__orig_coll_#{depth}__)\n"
+      code << "#{inner_prefix}#{coll_var} = #{coll_var}.reverse if #{reversed.inspect}\n" if reversed
 
       # Calculate starting offset for offset:continue or explicit offset
       offset_var = "__start_offset_#{depth}__"
       if offset_continue
         # offset:continue uses stored offset from previous loop with same name
-        code << "#{prefix}#{offset_var} = __scope__.for_offset(#{loop_name.inspect})\n"
+        code << "#{inner_prefix}#{offset_var} = __scope__.for_offset(#{loop_name.inspect})\n"
       elsif offset_expr
         offset_ruby = expr_to_ruby(offset_expr)
         # Validate offset is a valid integer (unless collection is nil/false)
         if has_offset
-          code << "#{prefix}__offset_val_#{depth}__ = #{offset_ruby}\n"
-          code << "#{prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || __valid_integer__.call(__offset_val_#{depth}__)\n"
-          code << "#{prefix}#{offset_var} = __offset_val_#{depth}__.to_i\n"
+          code << "#{inner_prefix}__offset_val_#{depth}__ = #{offset_ruby}\n"
+          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || __valid_integer__.call(__offset_val_#{depth}__)\n"
+          code << "#{inner_prefix}#{offset_var} = __offset_val_#{depth}__.to_i\n"
         else
-          code << "#{prefix}#{offset_var} = (#{offset_ruby}).to_i\n"
+          code << "#{inner_prefix}#{offset_var} = (#{offset_ruby}).to_i\n"
         end
       else
-        code << "#{prefix}#{offset_var} = 0\n"
+        code << "#{inner_prefix}#{offset_var} = 0\n"
       end
 
       # Slice collection using Liquid's algorithm (to = from + limit)
@@ -2014,43 +2019,60 @@ module LiquidIL
         limit_ruby = expr_to_ruby(limit_expr)
         # Validate limit is a valid integer (unless collection is nil/false)
         if has_limit
-          code << "#{prefix}__limit_val_#{depth}__ = #{limit_ruby}\n"
-          code << "#{prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || __valid_integer__.call(__limit_val_#{depth}__)\n"
-          code << "#{prefix}__to_#{depth}__ = #{offset_var} + __limit_val_#{depth}__.to_i\n"
+          code << "#{inner_prefix}__limit_val_#{depth}__ = #{limit_ruby}\n"
+          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || __valid_integer__.call(__limit_val_#{depth}__)\n"
+          code << "#{inner_prefix}__to_#{depth}__ = #{offset_var} + __limit_val_#{depth}__.to_i\n"
         else
-          code << "#{prefix}__to_#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
+          code << "#{inner_prefix}__to_#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
         end
-        code << "#{prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, __to_#{depth}__) unless __is_string_#{depth}__\n"
+        code << "#{inner_prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, __to_#{depth}__) unless __is_string_#{depth}__\n"
       else
         # No limit - just apply offset using slice (from <= index)
-        code << "#{prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
+        code << "#{inner_prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
       end
 
-      code << "#{prefix}if !#{coll_var}.empty?\n"
-      code << "#{prefix}  __scope__.push_scope\n"
-      code << "#{prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
+      code << "#{inner_prefix}if !#{coll_var}.empty?\n"
+      code << "#{inner_prefix}  __scope__.push_scope\n"
+      code << "#{inner_prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
       # Wrap with catch for break support (throw/catch works across block boundaries)
-      code << "#{prefix}  catch(:loop_break_#{depth}) do\n"
-      code << "#{prefix}    #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
-      code << "#{prefix}      #{forloop_var}.index0 = #{idx_var}\n"
-      code << "#{prefix}      __scope__.assign_local('forloop', #{forloop_var})\n"
-      code << "#{prefix}      __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
+      code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n"
+      code << "#{inner_prefix}    #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
+      code << "#{inner_prefix}      #{forloop_var}.index0 = #{idx_var}\n"
+      code << "#{inner_prefix}      __scope__.assign_local('forloop', #{forloop_var})\n"
+      code << "#{inner_prefix}      __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
+      # Adjust body_code indentation if we have error handling
+      if needs_error_handling
+        body_code = body_code.gsub(/^/, "  ")
+      end
       code << body_code
-      code << "#{prefix}    end\n"
-      code << "#{prefix}  end\n"
-      code << "#{prefix}  # Update forloop.index0 to final count (for escaped references)\n"
-      code << "#{prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
-      code << "#{prefix}  # Update offset:continue position for next loop with same name\n"
-      code << "#{prefix}  __scope__.set_for_offset(#{loop_name.inspect}, #{offset_var} + #{coll_var}.length)\n"
-      code << "#{prefix}  __scope__.pop_scope\n"
+      code << "#{inner_prefix}    end\n"
+      code << "#{inner_prefix}  end\n"
+      code << "#{inner_prefix}  # Update forloop.index0 to final count (for escaped references)\n"
+      code << "#{inner_prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
+      code << "#{inner_prefix}  # Update offset:continue position for next loop with same name\n"
+      code << "#{inner_prefix}  __scope__.set_for_offset(#{loop_name.inspect}, #{offset_var} + #{coll_var}.length)\n"
+      code << "#{inner_prefix}  __scope__.pop_scope\n"
 
       # Add else block if present (for-else pattern)
       if !else_code.empty?
-        code << "#{prefix}else\n"
+        code << "#{inner_prefix}else\n"
+        # Adjust else_code indentation if we have error handling
+        if needs_error_handling
+          else_code = else_code.gsub(/^/, "  ")
+        end
         code << else_code
       end
 
-      code << "#{prefix}end\n"
+      code << "#{inner_prefix}end\n"
+
+      # Close error handling block
+      if needs_error_handling
+        code << "#{prefix}rescue LiquidIL::RuntimeError => __e_#{depth}__\n"
+        code << "#{prefix}  raise unless __scope__.render_errors\n"
+        code << "#{prefix}  __loc_#{depth}__ = __e_#{depth}__.file ? \"\#{__e_#{depth}__.file} line \#{__e_#{depth}__.line}\" : \"line \#{__e_#{depth}__.line}\"\n"
+        code << "#{prefix}  __output__ << \"Liquid error (\#{__loc_#{depth}__}): \#{__e_#{depth}__.message}\"\n"
+        code << "#{prefix}end\n"
+      end
 
       @loop_depth -= 1
       code
