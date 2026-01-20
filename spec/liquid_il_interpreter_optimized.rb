@@ -1,9 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Ruby compiler WITHOUT optimizer for liquid-spec
-# Uses LiquidIL::Compiler::Ruby directly (no IL optimization pass)
-# Useful for benchmarking optimizer impact
+# VM interpreter adapter for liquid-spec
+# Uses LiquidIL::Optimizer for IL optimization, executes via VM interpreter
 
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"
@@ -33,10 +32,11 @@ LiquidSpec.compile do |ctx, source, compile_options|
     strict_errors: compile_options[:strict_errors]
   )
 
-  # No optimizer - compile directly
-  template = context.parse(source)
-  ctx[:context] = context
-  ctx[:template] = LiquidIL::Compiler::Ruby.compile(template)
+  optimized_context = LiquidIL::Optimizer.optimize(context)
+
+  template = optimized_context.parse(source)
+  ctx[:context] = optimized_context
+  ctx[:template] = template
 end
 
 LiquidSpec.render do |ctx, assigns, render_options|

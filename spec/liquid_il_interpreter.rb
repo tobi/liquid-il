@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# VM interpreter adapter for liquid-spec
-# Uses LiquidIL::Optimizer for IL optimization, executes via VM interpreter
+# Basic VM interpreter adapter for liquid-spec
+# Parses to IL and executes via VM interpreter (no optimization, no compilation)
 
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"
@@ -32,10 +32,9 @@ LiquidSpec.compile do |ctx, source, compile_options|
     strict_errors: compile_options[:strict_errors]
   )
 
-  optimized_context = LiquidIL::Optimizer.optimize(context)
-
-  template = optimized_context.parse(source)
-  ctx[:context] = optimized_context
+  # No optimizer - parse and run via VM directly
+  template = context.parse(source)
+  ctx[:context] = context
   ctx[:template] = template
 end
 
