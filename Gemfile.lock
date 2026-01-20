@@ -1,17 +1,17 @@
 GIT
-  remote: /Users/tobi/src/tries/2025-12-31-liquid-4_0-optimizations/liquid-spec
-  revision: 0a6511924d2c3e91e6dca1b296c37f7034220925
-  specs:
-    liquid-spec (0.9.1)
-      super_diff (~> 0.18)
-
-GIT
   remote: https://github.com/Shopify/liquid
   revision: eaa9f215bf90d05ef5113055dfc42e85e991dd3c
   specs:
     liquid (5.11.0)
       bigdecimal
       strscan (>= 3.1.1)
+
+GIT
+  remote: https://github.com/Shopify/liquid-spec
+  revision: d502e46edfef11d53d95fc298aedd419d12815f4
+  specs:
+    liquid-spec (0.9.1)
+      super_diff (~> 0.18)
 
 GEM
   remote: https://rubygems.org/
