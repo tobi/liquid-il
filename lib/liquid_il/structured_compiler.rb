@@ -1177,91 +1177,12 @@ module LiquidIL
               when IL::LABEL
                 @pc += 1
               when IL::FIND_VAR
-                # Check if followed by JUMP_IF_TRUE pointing to CONST_TRUE (another OR operand)
-                # or JUMP_IF_FALSE pointing to CONST_FALSE (nested AND expression)
-                next_inst = @instructions[@pc + 1]
-                if next_inst&.[](0) == IL::JUMP_IF_TRUE
-                  jit_target = next_inst[1]
-                  jit_actual = jit_target
-                  while @instructions[jit_actual]&.[](0) == IL::LABEL
-                    jit_actual += 1
-                  end
-                  if @instructions[jit_actual]&.[](0) == IL::CONST_TRUE
-                    # This is another OR operand
-                    or_operands << Expr.new(type: :var, value: build_inst[1])
-                    @pc += 2 # Skip both FIND_VAR and JUMP_IF_TRUE
-                  else
-                    # JUMP_IF_TRUE but not to CONST_TRUE - treat as final operand
-                    or_operands << Expr.new(type: :var, value: build_inst[1])
-                    @pc += 1
-                    break
-                  end
-                elsif next_inst&.[](0) == IL::JUMP_IF_FALSE
-                  # This could be a nested AND expression (b and c)
-                  jif_target = next_inst[1]
-                  jif_actual = jif_target
-                  while @instructions[jif_actual]&.[](0) == IL::LABEL
-                    jif_actual += 1
-                  end
-                  if @instructions[jif_actual]&.[](0) == IL::CONST_FALSE
-                    # This is nested AND - build the AND expression
-                    and_left = Expr.new(type: :var, value: build_inst[1])
-                    @pc += 2 # Skip FIND_VAR and JUMP_IF_FALSE
-                    # Build AND's right operand(s)
-                    and_operands = [and_left]
-                    while @pc < jif_target
-                      and_inst = @instructions[@pc]
-                      break if and_inst.nil? || and_inst[0] == IL::JUMP
-                      case and_inst[0]
-                      when IL::FIND_VAR
-                        and_operands << Expr.new(type: :var, value: and_inst[1])
-                        @pc += 1
-                        # Check if there's another JUMP_IF_FALSE (chained AND)
-                        if @instructions[@pc]&.[](0) == IL::JUMP_IF_FALSE
-                          @pc += 1
-                        end
-                      when IL::CONST_TRUE
-                        and_operands << Expr.new(type: :literal, value: true)
-                        @pc += 1
-                      when IL::CONST_FALSE
-                        and_operands << Expr.new(type: :literal, value: false)
-                        @pc += 1
-                      when IL::LABEL
-                        @pc += 1
-                      else
-                        @pc += 1
-                      end
-                    end
-                    # Skip JUMP that skips CONST_FALSE
-                    if @instructions[@pc]&.[](0) == IL::JUMP
-                      @pc = @instructions[@pc][1]
-                    end
-                    # Build AND tree
-                    and_result = and_operands.first
-                    and_operands[1..].each do |op|
-                      and_result = Expr.new(type: :and, children: [and_result, op])
-                    end
-                    or_operands << and_result
-                    # Check if there's more OR operands after the AND
-                    # If next is CONST_TRUE or IS_TRUTHY, we're done
-                    if @instructions[@pc]&.[](0) == IL::CONST_TRUE
-                      @pc += 1
-                    end
-                    # Don't break - there might be more OR operands
-                  else
-                    # JUMP_IF_FALSE but not to CONST_FALSE - treat as final operand
-                    or_operands << Expr.new(type: :var, value: build_inst[1])
-                    @pc += 1
-                    break
-                  end
+                # Build full expression for this OR operand
+                # It could be: simple var, var with comparison, or nested AND
+                or_operand = build_or_operand(build_inst[1])
+                if or_operand
+                  or_operands << or_operand
                 else
-                  # FIND_VAR not followed by JUMP_IF_TRUE or JUMP_IF_FALSE - it's the final operand
-                  or_operands << Expr.new(type: :var, value: build_inst[1])
-                  @pc += 1
-                  # Skip trailing JUMP if present
-                  if @instructions[@pc]&.[](0) == IL::JUMP
-                    @pc = @instructions[@pc][1]
-                  end
                   break
                 end
               when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_FALSE, IL::CONST_NIL
@@ -1330,6 +1251,126 @@ module LiquidIL
       else
         # For complex expressions, use full builder
         expr, _ = build_expression
+        expr
+      end
+    end
+
+    # Build a complete OR operand expression starting from a FIND_VAR
+    # Handles: simple var, var with comparison (var == val), or nested AND
+    # Returns the expression or nil if we should stop collecting
+    def build_or_operand(var_name)
+      # Start with the variable
+      expr = Expr.new(type: :var, value: var_name)
+      @pc += 1
+
+      # Look ahead to see what follows
+      next_inst = @instructions[@pc]
+      return nil if next_inst.nil?
+
+      case next_inst[0]
+      when IL::JUMP_IF_TRUE
+        # Check if this is another OR operand (JUMP_IF_TRUE → CONST_TRUE)
+        jit_target = next_inst[1]
+        jit_actual = jit_target
+        while @instructions[jit_actual]&.[](0) == IL::LABEL
+          jit_actual += 1
+        end
+        if @instructions[jit_actual]&.[](0) == IL::CONST_TRUE
+          # Simple variable OR operand
+          @pc += 1 # Skip JUMP_IF_TRUE
+          expr
+        else
+          # Not part of OR chain
+          nil
+        end
+
+      when IL::JUMP_IF_FALSE
+        # This could be a nested AND expression
+        jif_target = next_inst[1]
+        jif_actual = jif_target
+        while @instructions[jif_actual]&.[](0) == IL::LABEL
+          jif_actual += 1
+        end
+        if @instructions[jif_actual]&.[](0) == IL::CONST_FALSE
+          # Nested AND - build it
+          @pc += 1 # Skip JUMP_IF_FALSE
+          and_operands = [expr]
+          while @pc < jif_target
+            and_inst = @instructions[@pc]
+            break if and_inst.nil? || and_inst[0] == IL::JUMP
+            case and_inst[0]
+            when IL::FIND_VAR
+              and_operands << Expr.new(type: :var, value: and_inst[1])
+              @pc += 1
+              if @instructions[@pc]&.[](0) == IL::JUMP_IF_FALSE
+                @pc += 1
+              end
+            when IL::CONST_TRUE
+              and_operands << Expr.new(type: :literal, value: true)
+              @pc += 1
+            when IL::CONST_FALSE
+              and_operands << Expr.new(type: :literal, value: false)
+              @pc += 1
+            when IL::LABEL
+              @pc += 1
+            else
+              @pc += 1
+            end
+          end
+          # Skip JUMP that skips CONST_FALSE
+          if @instructions[@pc]&.[](0) == IL::JUMP
+            @pc = @instructions[@pc][1]
+          end
+          # Build AND tree
+          and_result = and_operands.first
+          and_operands[1..].each do |op|
+            and_result = Expr.new(type: :and, children: [and_result, op])
+          end
+          # Check for trailing CONST_TRUE
+          if @instructions[@pc]&.[](0) == IL::CONST_TRUE
+            @pc += 1
+          end
+          and_result
+        else
+          nil
+        end
+
+      when IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_NIL
+        # Variable followed by constant - likely a comparison (e.g., b == false)
+        # Build the expression: FIND_VAR, CONST_*, COMPARE
+        # We already have the var on expr, now get the constant
+        const_expr = case next_inst[0]
+        when IL::CONST_TRUE then Expr.new(type: :literal, value: true)
+        when IL::CONST_FALSE then Expr.new(type: :literal, value: false)
+        when IL::CONST_INT then Expr.new(type: :literal, value: next_inst[1])
+        when IL::CONST_FLOAT then Expr.new(type: :literal, value: next_inst[1])
+        when IL::CONST_STRING then Expr.new(type: :literal, value: next_inst[1])
+        when IL::CONST_NIL then Expr.new(type: :literal, value: nil)
+        end
+        @pc += 1
+
+        # Check for COMPARE
+        compare_inst = @instructions[@pc]
+        if compare_inst&.[](0) == IL::COMPARE
+          expr = Expr.new(type: :compare, value: compare_inst[1], children: [expr, const_expr])
+          @pc += 1
+        elsif compare_inst&.[](0) == IL::CONTAINS
+          expr = Expr.new(type: :contains, children: [expr, const_expr])
+          @pc += 1
+        end
+        # Skip JUMP that goes to IS_TRUTHY/CONST_TRUE
+        if @instructions[@pc]&.[](0) == IL::JUMP
+          @pc = @instructions[@pc][1]
+        end
+        expr
+
+      when IL::JUMP
+        # Final operand with trailing JUMP
+        @pc = next_inst[1]
+        expr
+
+      else
+        # Just the variable - final operand
         expr
       end
     end

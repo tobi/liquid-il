@@ -1,44 +1,28 @@
 # Structured Compiler Session - 2026-01-20
 
-## Current Issue
+## Completed Tasks
 
-**RESOLVED**: Merged partial compilation feature with AND/OR chain fixes.
+[x] Merged partial compilation feature with AND/OR chain fixes
+[x] Fixed OR expression handling for comparisons ({% if a == true or b == false %})
 
-The working directory now contains 2047 lines with both features intact:
-- Partial compilation (compile `{% render %}` and `{% include %}` to lambdas)
-- Complex AND/OR chain handling (fixes for long boolean chains)
+## Test Results
 
-## Tasks
+- `rake spec`: 4102 passed (Basics: 710, Liquid Ruby: 1543, Shopify Production: 1849)
+- `rake test`: 4345 matched, 24 different (pre-existing edge cases)
 
-[x] Identify the regression (partial support removed)
-[x] Restore partial compilation from ac1c50e
-[x] Apply AND/OR chain fixes on top of partial code
-[x] Verify tests pass: rake test (4344 matched), rake spec (4102 passed)
-[ ] Commit the merged fix
+## Previous Session Summary
 
-## Previous Session Notes
+### Fix 1: Merged partial compilation with AND/OR chain fixes
+- Commit `a36ed7e` restored partial compilation feature that was accidentally reverted in `2bced79`
+- Now compiles `{% render %}` and `{% include %}` to native Ruby lambdas
+- Complex AND/OR chains with 20+ operands compile correctly
 
-### Fixed: Complex AND/OR chain handling in StructuredCompiler
+### Fix 2: OR expression comparison handling
+- Fixed parsing of `{% if a == true or b == false %}` style expressions
+- Added `build_or_operand` method to handle: simple vars, vars with comparisons, nested AND
+- Expression `(a == true) || (b == false)` now parses correctly instead of `((a == true) || b) == false`
 
-The `if_with_many_conditions` test was failing due to three interrelated issues:
-
-1. **Long literal OR chains** - `peek_if_statement?` couldn't find IS_TRUTHY at the end of long optimizer-generated `CONST_TRUE, JUMP +2` chains
-
-2. **Statement boundary crossing** - `build_expression` consumed instructions from multiple statements, causing incorrect expression trees
-
-3. **Operator precedence** - `a or b and c` was being parsed as `(a or b) and c` instead of `a or (b and c)`
-
-### Solution Applied (but lost partial support)
-
-Three fixes applied to `lib/liquid_il/structured_compiler.rb`:
-
-1. **`peek_if_statement?`** - Updated to follow forward JUMP instructions to find IS_TRUTHY
-
-2. **`build_expression`** - Added `seen_is_truthy` flag to recognize when IS_TRUTHY has been passed, so subsequent JUMP_IF_FALSE/TRUE is the condition branch, not short-circuit
-
-3. **OR collection loop** - Added proper handling for nested AND expressions within OR chains
-
-### Remaining Failures (pre-existing edge cases)
+## Known Remaining Failures (24 pre-existing edge cases)
 
 1. Dynamic range float bounds
 2. Filter silent errors
@@ -47,3 +31,10 @@ Three fixes applied to `lib/liquid_il/structured_compiler.rb`:
 5. Forloop reset after nested loop
 6. gsub escape sequences
 7. Integer.size
+
+## Epic Progress: liquid-il-co1 (Eliminate VM fallback)
+
+- [x] liquid-il-4k6: Compile partials to lambda calls
+- [ ] liquid-il-301: Compile tablerow to native Ruby
+- [ ] liquid-il-oua: Compile break/continue
+- [ ] liquid-il-y68: Handle long boolean chains (>50 operands still falls back due to safety limit)
