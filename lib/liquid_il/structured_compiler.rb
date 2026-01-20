@@ -19,8 +19,9 @@ module LiquidIL
 
     # Expression node for reconstructed expressions
     # Using Struct instead of Data.define to avoid Ruby 4.0 segfaults with deep recursion
-    Expr = Struct.new(:type, :value, :children, keyword_init: true) do
-      def initialize(type:, value: nil, children: [])
+    # pc: optional instruction index for error line tracking (used by filters)
+    Expr = Struct.new(:type, :value, :children, :pc, keyword_init: true) do
+      def initialize(type:, value: nil, children: [], pc: nil)
         super
       end
     end
@@ -371,8 +372,15 @@ module LiquidIL
           end
         }
 
-        __call_filter__ = ->(name, input, args, scope) {
+        __call_filter__ = ->(name, input, args, scope, current_file = nil, line = 1) {
           LiquidIL::Filters.apply(name, input, args, scope)
+        rescue LiquidIL::FilterError
+          # Filter error in non-strict mode - return nil so ASSIGN assigns nil
+          nil
+        rescue LiquidIL::FilterRuntimeError => e
+          # Filter runtime error - return ErrorMarker for inline error display
+          location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+          LiquidIL::ErrorMarker.new(e.message, location)
         }
 
         # Compare helper that outputs errors for incomparable types
@@ -861,17 +869,20 @@ module LiquidIL
       case terminator
       when :write_value
         expr_code = expr_to_ruby(expr)
+        # Check for ErrorMarker and convert to string, otherwise use normal output
         if @uses_interrupts
-          temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(String) ? __v__ : __output_string__.call(__v__)) unless __scope__.has_interrupt?\n"
+          temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : __v__.is_a?(String) ? __v__ : __output_string__.call(__v__)) unless __scope__.has_interrupt?\n"
         else
-          temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
+          temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : __v__.is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
         end
       when :assign
         var = @instructions[@pc - 1][1]
-        temp_code + "#{prefix}__scope__.assign(#{var.inspect}, #{expr_to_ruby(expr)})\n"
+        # Skip assignment if value is ErrorMarker (already output the error)
+        temp_code + "#{prefix}__v__ = #{expr_to_ruby(expr)}; __scope__.assign(#{var.inspect}, __v__) unless __v__.is_a?(LiquidIL::ErrorMarker)\n"
       when :assign_local
         var = @instructions[@pc - 1][1]
-        temp_code + "#{prefix}__scope__.assign_local(#{var.inspect}, #{expr_to_ruby(expr)})\n"
+        # Skip assignment if value is ErrorMarker (already output the error)
+        temp_code + "#{prefix}__v__ = #{expr_to_ruby(expr)}; __scope__.assign_local(#{var.inspect}, __v__) unless __v__.is_a?(LiquidIL::ErrorMarker)\n"
       when :store_temp
         slot = @instructions[@pc][1]
         @pc += 1
@@ -1178,10 +1189,11 @@ module LiquidIL
           stack << Expr.new(type: :hash, children: pairs)
           @pc += 1
         when IL::CALL_FILTER
+          filter_pc = @pc  # Capture PC for error line tracking
           argc = inst[2] || 0
           args = argc > 0 ? stack.pop(argc) : []
           input = stack.pop || Expr.new(type: :literal, value: nil)
-          stack << Expr.new(type: :filter, value: inst[1], children: [input] + args)
+          stack << Expr.new(type: :filter, value: inst[1], children: [input] + args, pc: filter_pc)
           @pc += 1
         when IL::JUMP
           # Follow unconditional jumps (optimizer may insert these for constant folding)
@@ -1647,10 +1659,12 @@ module LiquidIL
       when :filter
         input = expr_to_ruby(expr.children[0])
         args = expr.children[1..].map { |a| expr_to_ruby(a) }
+        # Compute line number from filter's PC for error reporting
+        filter_line = expr.pc ? line_for_pc(expr.pc) : 1
         if args.empty?
-          "__call_filter__.call(#{expr.value.inspect}, #{input}, [], __scope__)"
+          "__call_filter__.call(#{expr.value.inspect}, #{input}, [], __scope__, __current_file__, #{filter_line})"
         else
-          "__call_filter__.call(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], __scope__)"
+          "__call_filter__.call(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], __scope__, __current_file__, #{filter_line})"
         end
       when :case_compare
         left = expr_to_ruby(expr.children[0])
