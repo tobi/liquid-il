@@ -97,10 +97,10 @@ compiled.render(assigns)
 **Generated code example:**
 ```ruby
 loop do
-  case __pc__
-  when 0 then __output__ << "Hello "; __pc__ = 1
-  when 1 then __stack__ << __scope__.lookup("name"); __pc__ = 2
-  when 2 then __output__ << __stack__.pop.to_s; __pc__ = 3
+  case pc
+  when 0 then output << "Hello "; pc = 1
+  when 1 then stack << scope.lookup("name"); pc = 2
+  when 2 then output << stack.pop.to_s; pc = 3
   when 3 then break
   end
 end
@@ -121,10 +121,10 @@ compiled.render(assigns)
 
 **Generated code example:**
 ```ruby
-__output__ << "Hello "
-__output__ << __scope__.lookup("name").to_s
-if __scope__.lookup("show_greeting")
-  __output__ << "Welcome!"
+output << "Hello "
+output << scope.lookup("name").to_s
+if scope.lookup("show_greeting")
+  output << "Welcome!"
 end
 ```
 
@@ -336,7 +336,7 @@ LiquidIL applies extensive optimizations at both IL compile time and Ruby code g
 |--------------|-------------|
 | **Interrupt check elision** | Skip `has_interrupt?` guards when no `{% break %}`/`{% continue %}` in template |
 | **ForloopDrop elision** | Skip `ForloopDrop` allocation when `forloop` variable unused |
-| **Local temp variables** | Use Ruby locals (`__t0__`) instead of scope method calls |
+| **Local temp variables** | Use Ruby locals (`t0`) instead of scope method calls |
 | **Direct expression generation** | Fold stack operations into single Ruby expressions |
 | **Write batching** | Combine consecutive raw writes into single `<<` |
 | **Capture mode detection** | Use simpler output code when no `{% capture %}` blocks |
@@ -347,25 +347,25 @@ LiquidIL applies extensive optimizations at both IL compile time and Ruby code g
 
 **Unoptimized (stack-based):**
 ```ruby
-__stack__ << __scope__.lookup("product")
-__stack__ << __stack__.last
-__scope__.store_temp(0, __stack__.pop)
-__stack__ << __lookup_property__(__stack__.pop, "name")
-__v__ = __stack__.pop
-__output__ << __v__.to_s unless __scope__.has_interrupt?
-__output__ << " - $" unless __scope__.has_interrupt?
-__stack__ << __scope__.load_temp(0)
-__stack__ << __lookup_property__(__stack__.pop, "price")
-__v__ = __stack__.pop
-__output__ << __v__.to_s unless __scope__.has_interrupt?
+stack << scope.lookup("product")
+stack << stack.last
+scope.store_temp(0, stack.pop)
+stack << lookup_property(stack.pop, "name")
+v = stack.pop
+output << v.to_s unless scope.has_interrupt?
+output << " - $" unless scope.has_interrupt?
+stack << scope.load_temp(0)
+stack << lookup_property(stack.pop, "price")
+v = stack.pop
+output << v.to_s unless scope.has_interrupt?
 ```
 
 **Optimized (direct expressions):**
 ```ruby
-__t0__ = __scope__.lookup("product")
-__output__ << __lookup_property__(__t0__, "name").to_s
-__output__ << " - $"
-__output__ << __lookup_property__(__t0__, "price").to_s
+t0 = scope.lookup("product")
+output << lookup_property(t0, "name").to_s
+output << " - $"
+output << lookup_property(t0, "price").to_s
 ```
 
 ## Limitations
