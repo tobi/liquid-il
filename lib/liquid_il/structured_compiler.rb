@@ -156,8 +156,6 @@ module LiquidIL
           return false unless @context&.file_system
         when IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END
           return false # Tablerow not yet supported
-        when IL::PUSH_INTERRUPT
-          return false # Break/continue not yet supported
         end
       end
       true
@@ -693,6 +691,19 @@ module LiquidIL
         @pc += 1 if @instructions[@pc]&.[](0) == IL::WRITE_VALUE
         # Identity is a variable - look it up at runtime
         "#{prefix}__cycle_key__ = __scope__.lookup(#{var_name.inspect}); __cycle_idx__ = __cycle_state__[__cycle_key__] ||= 0; __output__ << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[__cycle_key__] = __cycle_idx__ + 1\n"
+
+      when IL::PUSH_INTERRUPT
+        # Break/continue: translate to Ruby control flow
+        # We use throw/catch for break (to avoid LocalJumpError in nested blocks)
+        # and Ruby's next for continue (works inside each blocks)
+        interrupt_type = inst[1]
+        @pc += 1
+        if interrupt_type == :break
+          # Use throw to exit the current loop - depth-1 because we're inside the loop
+          "#{prefix}throw(:loop_break_#{@loop_depth - 1})\n"
+        else
+          "#{prefix}next\n"
+        end
 
       when IL::LABEL, IL::POP_INTERRUPT, IL::JUMP_IF_INTERRUPT, IL::POP_FORLOOP,
            IL::FOR_END, IL::FOR_NEXT, IL::JUMP_IF_EMPTY, IL::PUSH_FORLOOP, IL::POP,
@@ -1704,16 +1715,17 @@ module LiquidIL
             @pc += 1
             break
           else
-            result = generate_statement(indent + 2)
+            result = generate_statement(indent + 3)
             body_code << result if result
           end
-        when IL::JUMP_IF_INTERRUPT, IL::POP_INTERRUPT, IL::POP_FORLOOP, IL::POP_SCOPE, IL::FOR_END
+        when IL::POP_INTERRUPT, IL::POP_FORLOOP, IL::POP_SCOPE, IL::FOR_END
           # These mark end of loop body - don't consume, let cleanup handle them
+          # Note: JUMP_IF_INTERRUPT is NOT included because it appears mid-body after break/continue
           break
         when IL::HALT
           break
         else
-          result = generate_statement(indent + 2)
+          result = generate_statement(indent + 3)
           body_code << result if result
         end
       end
@@ -1810,11 +1822,14 @@ module LiquidIL
       code << "#{prefix}if !#{coll_var}.empty?\n"
       code << "#{prefix}  __scope__.push_scope\n"
       code << "#{prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
-      code << "#{prefix}  #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
-      code << "#{prefix}    #{forloop_var}.index0 = #{idx_var}\n"
-      code << "#{prefix}    __scope__.assign_local('forloop', #{forloop_var})\n"
-      code << "#{prefix}    __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
+      # Wrap with catch for break support (throw/catch works across block boundaries)
+      code << "#{prefix}  catch(:loop_break_#{depth}) do\n"
+      code << "#{prefix}    #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
+      code << "#{prefix}      #{forloop_var}.index0 = #{idx_var}\n"
+      code << "#{prefix}      __scope__.assign_local('forloop', #{forloop_var})\n"
+      code << "#{prefix}      __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
       code << body_code
+      code << "#{prefix}    end\n"
       code << "#{prefix}  end\n"
       code << "#{prefix}  # Update forloop.index0 to final count (for escaped references)\n"
       code << "#{prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
