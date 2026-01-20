@@ -69,8 +69,8 @@ LiquidIL implements three distinct execution backends, each with different trade
 | Strategy | Compile | Render | Best For |
 |----------|---------|--------|----------|
 | **VM Interpreter** | Fast | Moderate | Development, one-shot renders |
-| **State Machine Compiler** | Slow | Fast | High-traffic cached templates |
-| **Structured Compiler** | Moderate | Moderate | YJIT experimentation |
+| **Compile to state machine Ruby** | Slow | Fast | High-traffic cached templates |
+| **Compile to structured Ruby** | Moderate | Moderate | Readable generated code |
 
 #### 1. VM Interpreter (`liquid_il_interpreter.rb`)
 
@@ -84,22 +84,34 @@ template.render(assigns)          # Execute via VM
 **Pros:** Fast compile, simple debugging, full feature support
 **Cons:** Dispatch overhead on every instruction
 
-#### 2. State Machine Compiler (`liquid_il_compiled_statemachine.rb`)
+#### 2. Compile to State Machine Ruby (`liquid_il_compiled_statemachine.rb`)
 
-Compiles IL to a Ruby proc containing a state machine that mirrors the VM's dispatch loop. The proc is generated as a string and `eval`'d.
+Compiles IL to a Ruby proc containing a state machine with a dispatch loop. The generated code mirrors the VM structure but runs as native Ruby.
 
 ```ruby
 template = context.parse(source)
-compiled = LiquidIL::Compiler::Ruby.compile(template)  # Generate Ruby proc
-compiled.render(assigns)                                # Execute native Ruby
+compiled = LiquidIL::Compiler::Ruby.compile(template)
+compiled.render(assigns)
+```
+
+**Generated code example:**
+```ruby
+loop do
+  case __pc__
+  when 0 then __output__ << "Hello "; __pc__ = 1
+  when 1 then __stack__ << __scope__.lookup("name"); __pc__ = 2
+  when 2 then __output__ << __stack__.pop.to_s; __pc__ = 3
+  when 3 then break
+  end
+end
 ```
 
 **Pros:** ~1.85x faster render than liquid_ruby, predictable performance
 **Cons:** 7x slower compile (string generation + eval overhead)
 
-#### 3. Structured Compiler (`liquid_il_structured.rb`)
+#### 3. Compile to Structured Ruby (`liquid_il_structured.rb`)
 
-Compiles IL to native Ruby control flow (if/else, each) instead of a state machine. Designed to be more YJIT-friendly.
+Compiles IL to idiomatic Ruby with native control flow (if/else, each) instead of a state machine. Produces readable, "pretty" Ruby code.
 
 ```ruby
 template = context.parse(source)
@@ -107,7 +119,16 @@ compiled = LiquidIL::Compiler::Structured.compile(template)
 compiled.render(assigns)
 ```
 
-**Pros:** Generates idiomatic Ruby code
+**Generated code example:**
+```ruby
+__output__ << "Hello "
+__output__ << __scope__.lookup("name").to_s
+if __scope__.lookup("show_greeting")
+  __output__ << "Welcome!"
+end
+```
+
+**Pros:** Generates idiomatic Ruby, easier to debug
 **Cons:** Complex IL patterns (deep boolean chains, partials) fall back to VM
 
 ### Optimizer
