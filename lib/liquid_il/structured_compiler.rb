@@ -2150,12 +2150,19 @@ module LiquidIL
         end
       end
 
-      # Consume cleanup instructions
+      # Consume cleanup instructions (including loop-back JUMPs)
       while @pc < @instructions.length
         inst = @instructions[@pc]
         case inst&.[](0)
         when IL::POP_INTERRUPT, IL::POP_SCOPE, IL::TABLEROW_END, IL::LABEL, IL::JUMP_IF_INTERRUPT
           @pc += 1
+        when IL::JUMP
+          # Backward jumps are loop-back instructions, consume them
+          if inst[1] < @pc
+            @pc += 1
+          else
+            break
+          end
         else
           break
         end
