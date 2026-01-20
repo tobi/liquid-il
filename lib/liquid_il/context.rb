@@ -417,6 +417,10 @@ module LiquidIL
     attr_reader :start_val, :end_val
 
     def initialize(start_val, end_val)
+      # Validate range bounds - floats are not allowed (matches Liquid Ruby behavior)
+      if start_val.is_a?(Float) || end_val.is_a?(Float)
+        raise LiquidIL::RuntimeError.new("invalid integer", line: 1)
+      end
       @start_val = start_val.to_i
       @end_val = end_val.to_i
     end
