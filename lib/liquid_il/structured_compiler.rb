@@ -879,6 +879,14 @@ module LiquidIL
       as_alias = args["__as__"]
       item_var = as_alias || name
 
+      # IMPORTANT: Lookup with_expr value BEFORE processing keyword args!
+      # Keyword args can modify the scope (e.g., "include 'font' with multiplier: 1.5"
+      # where 'multiplier' exists in outer scope). We need the original value.
+      if with_expr && !isolated
+        expr = generate_var_lookup(with_expr)
+        code << "#{prefix}__with_val__ = #{expr}\n"
+      end
+
       # Regular named arguments
       args.each do |k, v|
         next if k.start_with?("__")
@@ -936,12 +944,14 @@ module LiquidIL
         code << "#{prefix}end\n"
       elsif with_expr
         # Render with a specific value
-        expr = generate_var_lookup(with_expr)
-        code << "#{prefix}__with_val__ = #{expr}\n"
+        # For isolated (render), we lookup here. For include, we already looked up above.
         if isolated
+          expr = generate_var_lookup(with_expr)
+          code << "#{prefix}__with_val__ = #{expr}\n"
           code << "#{prefix}__partial_args__[#{item_var.inspect}] = __with_val__ unless __with_val__.nil?\n"
           code << "#{prefix}#{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
         else
+          # For include, __with_val__ was already looked up BEFORE keyword args modified scope
           code << "#{prefix}if __with_val__.is_a?(Array)\n"
           code << "#{prefix}  __with_val__.each do |__item__|\n"
           code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
