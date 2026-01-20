@@ -258,7 +258,7 @@ module LiquidIL
       code << "\n  # Compiled partial lambdas\n"
       @partials.each do |name, info|
         lambda_name = partial_lambda_name(name)
-        code << "  #{lambda_name} = ->(assigns, __output__, __parent_scope__, isolated, caller_line: 1) {\n"
+        code << "  #{lambda_name} = ->(assigns, __output__, __parent_scope__, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
         code << "    __prev_file__ = __parent_scope__.current_file\n"
         code << "    __parent_scope__.current_file = #{name.inspect}\n"
         code << "    __parent_scope__.push_render_depth\n"
@@ -271,7 +271,8 @@ module LiquidIL
         code << "      __spans__ = #{info[:spans].inspect}\n"
         code << "      __template_source__ = #{info[:source].inspect}\n"
         code << "      __current_file__ = #{name.inspect}\n"
-        code << "      __cycle_state__ = {}\n"
+        # Share cycle state for includes (non-isolated), fresh for renders
+        code << "      __cycle_state__ = isolated ? {} : (parent_cycle_state || {})\n"
         code << "      __capture_stack__ = []\n"
         code << "      __ifchanged_state__ = {}\n"
         code << indent_partial_body(info[:compiled_body], 6)
@@ -933,7 +934,7 @@ module LiquidIL
         if isolated
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = __idx__ }\n"
         end
-        code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+        code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
         code << "#{prefix}  end\n"
         if isolated
           # render iterates over ranges
@@ -942,7 +943,7 @@ module LiquidIL
           code << "#{prefix}  __items__.each_with_index do |__item__, __idx__|\n"
           code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
-          code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+          code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
           code << "#{prefix}  end\n"
           # Also handle other enumerables for render
           code << "#{prefix}elsif !__for_coll__.is_a?(Hash) && !__for_coll__.is_a?(String) && __for_coll__.respond_to?(:each) && __for_coll__.respond_to?(:to_a)\n"
@@ -950,14 +951,14 @@ module LiquidIL
           code << "#{prefix}  __items__.each_with_index do |__item__, __idx__|\n"
           code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
-          code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+          code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
           code << "#{prefix}  end\n"
         end
         code << "#{prefix}elsif __for_coll__.nil?\n"
-        code << "#{prefix}  #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+        code << "#{prefix}  #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
         code << "#{prefix}else\n"
         code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __for_coll__\n"
-        code << "#{prefix}  #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+        code << "#{prefix}  #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
         code << "#{prefix}end\n"
       elsif with_expr
         # Render with a specific value
@@ -966,22 +967,22 @@ module LiquidIL
           expr = generate_var_lookup(with_expr)
           code << "#{prefix}__with_val__ = #{expr}\n"
           code << "#{prefix}__partial_args__[#{item_var.inspect}] = __with_val__ unless __with_val__.nil?\n"
-          code << "#{prefix}#{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+          code << "#{prefix}#{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
         else
           # For include, __with_val__ was already looked up BEFORE keyword args modified scope
           code << "#{prefix}if __with_val__.is_a?(Array)\n"
           code << "#{prefix}  __with_val__.each do |__item__|\n"
           code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
-          code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+          code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
           code << "#{prefix}  end\n"
           code << "#{prefix}else\n"
           code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __with_val__\n"
-          code << "#{prefix}  #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+          code << "#{prefix}  #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
           code << "#{prefix}end\n"
         end
       else
         # Simple render
-        code << "#{prefix}#{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num})\n"
+        code << "#{prefix}#{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
       end
 
       # Close the include disable check
