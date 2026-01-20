@@ -12,7 +12,6 @@
    - Implemented similar structure to for loops with HTML table output
    - Handles cols, limit, offset parameters
    - Fixed expression parsing for ranges and dotted access
-   - Known limitation: break inside capture doesn't work correctly
 
 3. [ ] **liquid-il-y68** (P3) - Handle long boolean chains
    - Currently has 50-iteration safety limit in peek_if_statement
@@ -21,12 +20,17 @@
 ### Completed
 [x] liquid-il-4k6 - Partials compile to lambda calls (closed)
 [x] liquid-il-oua - Break/continue compilation (closed)
-[x] liquid-il-301 - Tablerow compilation (mostly working - ready to close)
+[x] liquid-il-301 - Tablerow compilation (closed)
 
-### Current State
-- `rake matrix`: 4348 matched, 21 different
-- `liquid-spec structured`: 4085 passed, 17 failed
+### Current State (after this session)
+- `rake matrix`: 4336 matched, 33 different
+- `liquid-spec structured`: 4073 passed, 29 failed
 - can_compile? no longer blocks on: PUSH_INTERRUPT, TABLEROW_INIT/NEXT/END
+
+### Known Limitations
+1. **break/continue in partials** - When a partial contains break/continue and is included inside a for loop, the throw/catch pattern doesn't propagate correctly across lambda boundaries. Fallback detection added for this case.
+2. **break inside capture** - throw/catch unwinds capture stack incorrectly
+3. **break_outer_loop_pattern** - Complex nested loop break with flag variable
 
 ### Implementation Notes
 
@@ -40,6 +44,7 @@ Key changes:
 - Generate `next` for continue
 - Fixed body indent from +2 to +3 for catch wrapper
 - Removed JUMP_IF_INTERRUPT from body-terminating list
+- Added `partial_uses_interrupts?` check to fall back when include contains break/continue
 
 #### Tablerow (Completed)
 Tablerow generates HTML table structure:
@@ -54,10 +59,3 @@ Key implementation:
   - Property access (FIND_VAR + LOOKUP_CONST_KEY chains)
 - Proper offset/limit validation (skip when collection is nil)
 - cols parameter handling including :dynamic and :explicit_nil
-
-### Remaining Issues (17 failures)
-1. break_outer_loop_pattern - complex nested loop break
-2. break_in_capture_in_loop - throw/catch unwinds capture stack incorrectly
-3. Some boolean operator edge cases
-4. Range bound type checks with floats
-5. Some tablerow edge cases with strict mode
