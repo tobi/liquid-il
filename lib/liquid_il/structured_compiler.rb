@@ -778,17 +778,38 @@ module LiquidIL
         # and Ruby's next for continue (works inside each blocks)
         interrupt_type = inst[1]
         @pc += 1
+
+        code = String.new
+
+        # If break/continue is followed by POP_CAPTURE + ASSIGN, we need to handle
+        # capture cleanup. When inside a loop, complete the assignment BEFORE throwing.
+        # When outside a loop, just restore output without assigning (discard capture).
+        if @instructions[@pc]&.[](0) == IL::POP_CAPTURE &&
+           @instructions[@pc + 1]&.[](0) == IL::ASSIGN
+          var = @instructions[@pc + 1][1]
+          @pc += 2 # Consume POP_CAPTURE and ASSIGN
+          if @loop_depth > 0
+            # Inside loop: complete the capture assignment before breaking
+            code << "#{prefix}__captured__ = __output__; __output__ = __capture_stack__.pop; __scope__.assign(#{var.inspect}, __captured__)\n"
+          else
+            # Outside loop: just restore output, discard captured content
+            code << "#{prefix}__output__ = __capture_stack__.pop\n"
+          end
+        end
+
         if @loop_depth > 0
           if interrupt_type == :break
             # Use throw to exit the current loop - depth-1 because we're inside the loop
-            "#{prefix}throw(:loop_break_#{@loop_depth - 1})\n"
+            code << "#{prefix}throw(:loop_break_#{@loop_depth - 1})\n"
           else
-            "#{prefix}next\n"
+            code << "#{prefix}next\n"
           end
         else
           # Break/continue outside of loop - push interrupt to scope to stop further output
-          "#{prefix}__scope__.push_interrupt(#{interrupt_type.inspect})\n"
+          code << "#{prefix}__scope__.push_interrupt(#{interrupt_type.inspect})\n"
         end
+
+        code
 
       when IL::LABEL, IL::POP_INTERRUPT, IL::JUMP_IF_INTERRUPT, IL::POP_FORLOOP,
            IL::FOR_END, IL::FOR_NEXT, IL::JUMP_IF_EMPTY, IL::PUSH_FORLOOP, IL::POP,
