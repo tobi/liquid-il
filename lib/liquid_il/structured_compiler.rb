@@ -1952,8 +1952,10 @@ module LiquidIL
       idx_var = "__idx_#{depth}__"
 
       # Get parent forloop reference (if nested)
-      # At depth 0, check scope for existing forloop (supports parentloop access in includes)
-      parent_forloop = depth > 0 ? "__forloop_#{depth - 1}__" : "__scope__.lookup('forloop')"
+      # Always check scope for existing forloop - this handles:
+      # - parentloop access in includes (depth 0 with outer loop in scope)
+      # - for loops inside tablerows (depth > 0 but no __forloop_{depth-1}__ exists)
+      parent_forloop = "__scope__.lookup('forloop')"
 
       code << "#{prefix}# for #{item_var}\n"
       # Store original collection to check if it's a string (strings ignore offset/limit)
