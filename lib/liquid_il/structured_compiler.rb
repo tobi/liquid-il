@@ -183,7 +183,10 @@ module LiquidIL
     end
 
     # Check if a partial uses interrupts (break/continue)
-    def partial_uses_interrupts?(name)
+    def partial_uses_interrupts?(name, visited = Set.new)
+      return false if visited.include?(name)
+      visited.add(name)
+
       fs = @context&.file_system
       return false unless fs
 
@@ -195,13 +198,24 @@ module LiquidIL
 
       return false unless source
 
-      # Quick check: if template contains break or continue keywords
-      return false unless source.include?('break') || source.include?('continue')
-
-      # Compile and check for PUSH_INTERRUPT
       begin
         result = Compiler.new(source, file_system: fs).compile
-        result[:instructions].any? { |inst| inst[0] == IL::PUSH_INTERRUPT }
+        instructions = result[:instructions]
+
+        # Direct interrupt in this partial
+        return true if instructions.any? { |inst| inst[0] == IL::PUSH_INTERRUPT }
+
+        # Transitively check included partials
+        instructions.each do |inst|
+          if inst[0] == IL::INCLUDE_PARTIAL
+            child_name = inst[1]
+            args = inst[2] || {}
+            next if args["__dynamic_name__"] || args["__invalid_name__"]
+            return true if partial_uses_interrupts?(child_name, visited)
+          end
+        end
+
+        false
       rescue
         false
       end
@@ -1748,7 +1762,8 @@ module LiquidIL
         when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE,
              IL::CONST_FALSE, IL::CONST_NIL, IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK,
              IL::FIND_VAR, IL::FIND_VAR_PATH, IL::NEW_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
-             IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::CALL_FILTER
+             IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::CALL_FILTER,
+             IL::STORE_TEMP, IL::LOAD_TEMP, IL::DUP
           i += 1
         else
           return false
@@ -2002,7 +2017,6 @@ module LiquidIL
       # Check if collection is nil/false (skip validation for nil/false)
       code << "#{inner_prefix}__is_nil_#{depth}__ = __orig_coll_#{depth}__.nil? || __orig_coll_#{depth}__ == false\n"
       code << "#{inner_prefix}#{coll_var} = __to_iterable__.call(__orig_coll_#{depth}__)\n"
-      code << "#{inner_prefix}#{coll_var} = #{coll_var}.reverse if #{reversed.inspect}\n" if reversed
 
       # Calculate starting offset for offset:continue or explicit offset
       offset_var = "__start_offset_#{depth}__"
@@ -2041,6 +2055,7 @@ module LiquidIL
         code << "#{inner_prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
       end
 
+      code << "#{inner_prefix}#{coll_var} = #{coll_var}.reverse\n" if reversed
       code << "#{inner_prefix}if !#{coll_var}.empty?\n"
       code << "#{inner_prefix}  __scope__.push_scope\n"
       code << "#{inner_prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
@@ -2132,10 +2147,34 @@ module LiquidIL
         cols_expr = build_single_value_expression
       end
 
+      # Handle any hoisted FIND_VAR + STORE_TEMP patterns before TABLEROW_INIT
+      pre_loop_code = String.new
+      while @pc < tablerow_init_idx
+        inst = @instructions[@pc]
+        case inst[0]
+        when IL::FIND_VAR
+          next_inst = @instructions[@pc + 1]
+          if next_inst && next_inst[0] == IL::STORE_TEMP
+            var_name = inst[1]
+            slot = next_inst[1]
+            @pc += 2
+            pre_loop_code << "#{"  " * indent}__temp_#{slot}__ = __scope__.lookup(#{var_name.inspect})\n"
+          else
+            break
+          end
+        when IL::STORE_TEMP
+          @pc += 1
+        else
+          break
+        end
+      end
+
       # Move to TABLEROW_INIT and consume it
       @pc = tablerow_init_idx + 1
 
-      generate_tablerow_body(coll_expr, limit_expr, offset_expr, cols_expr, cols, has_limit, has_offset, item_var, loop_name, indent)
+      code = pre_loop_code
+      code << generate_tablerow_body(coll_expr, limit_expr, offset_expr, cols_expr, cols, has_limit, has_offset, item_var, loop_name, indent).to_s
+      code
     end
 
     # Generate tablerow body (called when expressions already built or at TABLEROW_INIT)
