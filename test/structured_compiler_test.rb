@@ -12,7 +12,6 @@ class StructuredCompilerTest < Minitest::Test
     template = LiquidIL::Compiler::Structured.compile("{% for i in items %}{{ i }}{% endfor %}")
     source = template.compiled_source
 
-    refute template.uses_vm, "Simple for loop should compile to structured Ruby"
     assert source, "Structured compiler should emit Ruby source"
     assert_match(/\.each_with_index do \|__item_0__, __idx_0__\|/, source)
   end

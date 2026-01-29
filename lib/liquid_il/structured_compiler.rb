@@ -55,25 +55,17 @@ module LiquidIL
     end
 
     def compile
-      return fallback_result unless can_compile?
+      raise "Structured compilation not supported for this template: #{compilation_blockers.join(', ')}" unless can_compile?
 
       code = generate_ruby
       compiled_proc = eval_ruby(code)
-      return fallback_result unless compiled_proc
+      raise "Failed to eval generated Ruby code" unless compiled_proc
 
       CompilationResult.new(
         proc: compiled_proc,
         source: code,
         can_compile: true
       )
-    rescue StandardError => e
-      # puts "Compilation error: #{e.message}"
-      # puts e.backtrace.first(5).join("\n")
-      fallback_result
-    end
-
-    def fallback_result
-      CompilationResult.new(proc: nil, source: nil, can_compile: false)
     end
 
     # Compile a partial and store it for later code generation
@@ -151,6 +143,11 @@ module LiquidIL
 
     # Check if we can compile this template
     def can_compile?
+      compilation_blockers.empty?
+    end
+
+    def compilation_blockers
+      blockers = []
       has_include = false
       has_for_loop = false
 
@@ -158,13 +155,9 @@ module LiquidIL
         case inst[0]
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
           args = inst[2] || {}
-          # Dynamic partials cannot be compiled - require runtime resolution
-          return false if args["__dynamic_name__"]
-          # Invalid partial names need VM for proper error handling
-          return false if args["__invalid_name__"]
-          # If no file system, can't load partials
-          return false unless @context&.file_system
-          # Track if we have includes (for interrupt propagation check)
+          blockers << "dynamic partial name" if args["__dynamic_name__"]
+          blockers << "invalid partial name" if args["__invalid_name__"]
+          blockers << "no file system for partials" unless @context&.file_system
           has_include = true if inst[0] == IL::INCLUDE_PARTIAL
         when IL::FOR_INIT, IL::TABLEROW_INIT
           has_for_loop = true
@@ -180,13 +173,13 @@ module LiquidIL
             args = inst[2] || {}
             next if args["__dynamic_name__"] || args["__invalid_name__"]
             if partial_uses_interrupts?(name)
-              return false
+              blockers << "partial '#{name}' uses interrupts inside for loop"
             end
           end
         end
       end
 
-      true
+      blockers
     end
 
     # Check if a partial uses interrupts (break/continue)
@@ -372,16 +365,16 @@ module LiquidIL
           end
         }
 
-        __call_filter__ = ->(name, input, args, scope, current_file = nil, line = 1) {
+        __call_filter__ = ->(name, input, args, scope, current_file = nil, line = 1) do
           LiquidIL::Filters.apply(name, input, args, scope)
         rescue LiquidIL::FilterError
           # Filter error in non-strict mode - return nil so ASSIGN assigns nil
           nil
         rescue LiquidIL::FilterRuntimeError => e
           # Filter runtime error - return ErrorMarker for inline error display
-          location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+          location = current_file ? "\#{current_file} line \#{line}" : "line \#{line}"
           LiquidIL::ErrorMarker.new(e.message, location)
-        }
+        end
 
         # Compare helper that outputs errors for incomparable types
         # Takes output and current_file parameters for error reporting
@@ -858,7 +851,7 @@ module LiquidIL
       return nil if expr.nil?
 
       # Collect any temp assignments that were generated during expression building
-      temp_code = ""
+      temp_code = String.new
       if @temp_assignments
         @temp_assignments.each do |slot, temp_expr|
           temp_code << "#{prefix}__temp_#{slot}__ = #{expr_to_ruby(temp_expr)}\n"
@@ -1934,7 +1927,8 @@ module LiquidIL
             break
           else
             result = generate_statement(indent + 3)
-            body_code << result if result
+            break if result.nil?
+            body_code << result
           end
         when IL::POP_INTERRUPT, IL::POP_FORLOOP, IL::POP_SCOPE, IL::FOR_END
           # These mark end of loop body - don't consume, let cleanup handle them
@@ -1944,7 +1938,8 @@ module LiquidIL
           break
         else
           result = generate_statement(indent + 3)
-          body_code << result if result
+          break if result.nil?
+          body_code << result
         end
       end
 
@@ -1973,7 +1968,8 @@ module LiquidIL
           inst = @instructions[@pc]
           break if inst.nil? || inst[0] == IL::HALT
           result = generate_statement(indent + 1)
-          else_code << result if result
+          break if result.nil?
+          else_code << result
         end
       end
 
@@ -2196,7 +2192,8 @@ module LiquidIL
             break
           else
             result = generate_statement(indent + 3)
-            body_code << result if result
+            break if result.nil?
+            body_code << result
           end
         when IL::POP_INTERRUPT, IL::POP_SCOPE, IL::TABLEROW_END
           # These mark end of loop body
@@ -2205,7 +2202,8 @@ module LiquidIL
           break
         else
           result = generate_statement(indent + 3)
-          body_code << result if result
+          break if result.nil?
+          body_code << result
         end
       end
 
@@ -2400,7 +2398,8 @@ module LiquidIL
           break
         else
           result = generate_statement(indent + 1)
-          then_code << result if result
+          break if result.nil?
+          then_code << result
         end
       end
 
@@ -2425,7 +2424,8 @@ module LiquidIL
             @pc += 1
           else
             result = generate_statement(indent + 1)
-            else_code << result if result
+            break if result.nil?
+            else_code << result
           end
         end
       end
@@ -2526,7 +2526,8 @@ module LiquidIL
           break
         else
           result = generate_statement(indent + 1)
-          code << result if result
+          break if result.nil?
+          code << result
         end
       end
 
@@ -2545,9 +2546,9 @@ module LiquidIL
     end
   end
 
-  # StructuredCompiledTemplate wraps a compiled proc with VM fallback
+  # StructuredCompiledTemplate wraps a compiled proc for execution
   class StructuredCompiledTemplate
-    attr_reader :source, :instructions, :spans, :compiled_source, :uses_vm
+    attr_reader :source, :instructions, :spans, :compiled_source
 
     def initialize(source, instructions, spans, context, compiled_result)
       @source = source
@@ -2556,7 +2557,6 @@ module LiquidIL
       @context = context
       @compiled_proc = compiled_result.proc
       @compiled_source = compiled_result.source
-      @uses_vm = !compiled_result.can_compile
     end
 
     def render(assigns = {}, render_errors: true, **extra_assigns)
@@ -2565,11 +2565,7 @@ module LiquidIL
       scope.file_system = @context&.file_system
       scope.render_errors = render_errors
 
-      if @uses_vm
-        VM.execute(@instructions, scope, spans: @spans, source: @source)
-      else
-        @compiled_proc.call(scope, @spans, @source)
-      end
+      @compiled_proc.call(scope, @spans, @source)
     rescue LiquidIL::RuntimeError => e
       raise unless render_errors
       output = e.partial_output || ""

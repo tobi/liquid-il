@@ -124,10 +124,6 @@ when "structured"
   LiquidIL::Compiler::Structured.compile(template)
 end
 
-# Show if structured is falling back to VM
-if backend == "structured" && compiled_template.respond_to?(:uses_vm) && compiled_template.uses_vm
-  puts "NOTE: Structured compiler is falling back to VM for this template"
-end
 
 # Warmup
 puts "Warming up..."

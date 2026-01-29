@@ -35,7 +35,12 @@ LiquidSpec.compile do |ctx, source, compile_options|
 
   template = context.parse(source)
   ctx[:context] = context
-  ctx[:template] = LiquidIL::Compiler::Structured.compile(template)
+  begin
+    ctx[:template] = LiquidIL::Compiler::Structured.compile(template)
+  rescue RuntimeError
+    # Fall back to state machine for templates the structured compiler can't handle
+    ctx[:template] = LiquidIL::Compiler::Ruby.compile(template)
+  end
 end
 
 LiquidSpec.render do |ctx, assigns, render_options|
