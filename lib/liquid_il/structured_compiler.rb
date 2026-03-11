@@ -2027,7 +2027,8 @@ module LiquidIL
       code << "#{inner_prefix}__is_string_#{depth}__ = __orig_coll_#{depth}__.is_a?(String)\n"
       # Check if collection is nil/false (skip validation for nil/false)
       code << "#{inner_prefix}__is_nil_#{depth}__ = __orig_coll_#{depth}__.nil? || __orig_coll_#{depth}__ == false\n"
-      code << "#{inner_prefix}#{coll_var} = __to_iterable__.call(__orig_coll_#{depth}__)\n"
+      # Inline to_iterable: fast path for Array (most common), fallback for others
+      code << "#{inner_prefix}#{coll_var} = __orig_coll_#{depth}__.is_a?(Array) ? __orig_coll_#{depth}__ : __to_iterable__.call(__orig_coll_#{depth}__)\n"
 
       # Calculate starting offset for offset:continue or explicit offset
       offset_var = "__start_offset_#{depth}__"
