@@ -141,6 +141,7 @@ module LiquidIL
       @file_system = nil
       @disable_include = false  # Set to true inside render tag to disallow include
       @assigned_vars = {}  # Track explicitly assigned variables (take precedence over counters)
+      @has_counters = false  # Fast flag: set true when increment/decrement used
       @render_depth = 0  # Track render/include nesting depth
       @current_file = nil  # Track current file for error reporting
 
@@ -198,17 +199,19 @@ module LiquidIL
       # Fast path: check top scope first (most common for loop vars, assigns)
       top = @top_scope
       if top.key?(key)
+        # Ultra-fast path: no counters active (most common case)
+        return top[key] unless @has_counters
         # But assigned vars take precedence over counters, check that
         return top[key] if @assigned_vars[key] || !@counters.key?(key)
       end
       # Check if this was explicitly assigned - assigned vars take precedence over counters
-      if @assigned_vars[key]
+      if @has_counters && @assigned_vars[key]
         @scopes.each do |scope|
           return scope[key] if scope.key?(key)
         end
       end
       # Check counters - they shadow environment variables (but not assigned ones)
-      return @counters[key] if @counters.key?(key)
+      return @counters[key] if @has_counters && @counters.key?(key)
       # Check remaining scopes
       @scopes.each_with_index do |scope, i|
         next if i == 0 # already checked
@@ -286,6 +289,7 @@ module LiquidIL
     # --- Counter management ---
 
     def increment(name)
+      @has_counters = true
       @counters[name] ||= 0
       result = @counters[name]
       @counters[name] += 1
@@ -293,6 +297,7 @@ module LiquidIL
     end
 
     def decrement(name)
+      @has_counters = true
       @counters[name] ||= 0
       @counters[name] -= 1
       @counters[name]
