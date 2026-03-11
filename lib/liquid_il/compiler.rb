@@ -68,77 +68,167 @@ module LiquidIL
       # Lazy-initialized max temp index, cached across passes
       @cached_max_temp_index = nil
 
-      # Optimization pass 0: Inline simple partials (enables cross-template optimizations)
+      # Phase 1: Inline partials (modifies instruction count significantly)
       inline_simple_partials(instructions, spans) if enabled.include?(0)
 
-      # Optimization pass 1: Fold constant operations
+      # Phase 2: Constant folding (order matters: ops before filters before writes)
       fold_const_ops(instructions, spans) if enabled.include?(1)
-
-      # Optimization pass 2: Fold constant filters
       fold_const_filters(instructions, spans) if enabled.include?(2)
 
-      # Optimization pass 3: Fold constant output writes
-      fold_const_writes(instructions, spans) if enabled.include?(3)
+      # Phase 3: Fused peephole pass — combines passes 3-9, 13, 20 in one scan
+      # Each was a separate linear scan; now one pass handles:
+      #   - Fold const writes (CONST + WRITE_VALUE → WRITE_RAW)        [pass 3]
+      #   - Collapse const paths (LOOKUP_CONST_KEY chains)              [pass 4]
+      #   - Collapse find_var paths (FIND_VAR + LOOKUP_CONST_PATH)      [pass 5]
+      #   - Remove redundant IS_TRUTHY after boolean ops                [pass 6]
+      #   - Remove NOOPs                                                [pass 7]
+      #   - Remove jump-to-next-label                                   [pass 8]
+      #   - Merge consecutive WRITE_RAW                                 [pass 9]
+      #   - Remove empty WRITE_RAW                                      [pass 13]
+      #   - Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR                    [pass 20]
+      fused_peephole(instructions, spans, enabled)
 
-      # Optimization pass 4: Collapse chained constant lookups
-      collapse_const_paths(instructions, spans) if enabled.include?(4)
-
-      # Optimization pass 5: Collapse FIND_VAR + LOOKUP_CONST_PATH
-      collapse_find_var_paths(instructions, spans) if enabled.include?(5)
-
-      # Optimization pass 6: Remove redundant IS_TRUTHY on boolean ops
-      remove_redundant_is_truthy(instructions, spans) if enabled.include?(6)
-
-      # Optimization pass 7: Remove no-ops
-      remove_noops(instructions, spans) if enabled.include?(7)
-
-      # Optimization pass 8: Remove jumps to the immediately following label
-      remove_jump_to_next_label(instructions, spans) if enabled.include?(8)
-
-      # Optimization pass 9: Merge consecutive WRITE_RAW
-      merge_raw_writes(instructions, spans) if enabled.include?(9)
-
-      # Optimization pass 10: Remove unreachable code after unconditional jumps
+      # Phase 4: Structural passes (need global analysis, can't easily fuse)
       remove_unreachable(instructions, spans) if enabled.include?(10)
 
-      # Optimization pass 11: Re-merge WRITE_RAW after other removals
-      merge_raw_writes(instructions, spans) if enabled.include?(11)
+      # Phase 5: Post-cleanup fused peephole (re-merge after removals = old pass 11)
+      fused_peephole(instructions, spans, enabled) if enabled.include?(11)
 
-      # Optimization pass 12: Fold constant capture blocks into direct assigns
+      # Phase 6: Constant captures
       fold_const_captures(instructions, spans) if enabled.include?(12)
 
-      # Optimization pass 13: Remove empty WRITE_RAW (no observable output)
-      remove_empty_raw_writes(instructions, spans) if enabled.include?(13)
-
-      # Optimization pass 14: Constant propagation - replace FIND_VAR with known constants
+      # Phase 7: Constant propagation + re-fold
       propagate_constants(instructions, spans) if enabled.include?(14)
-
-      # Optimization pass 15: Re-run constant folding after propagation
       if enabled.include?(15)
         fold_const_filters(instructions, spans)
-        fold_const_writes(instructions, spans)
-        merge_raw_writes(instructions, spans)
+        fused_peephole(instructions, spans, enabled)
       end
 
-      # Optimization pass 16: Loop invariant code motion - hoist invariant lookups outside loops
+      # Phase 8: Loop & block-level optimizations
       hoist_loop_invariants(instructions, spans) if enabled.include?(16)
-
-      # Optimization pass 17: Cache repeated base object lookups in straight-line code
       cache_repeated_lookups(instructions, spans) if enabled.include?(17)
-
-      # Optimization pass 18: Local value numbering - eliminate redundant computations
       value_numbering(instructions, spans) if enabled.include?(18)
 
-      # Optimization pass 19: Temp register allocation - reuse dead temp slots
+      # Phase 9: Register allocation
       RegisterAllocator.optimize(instructions) if enabled.include?(19)
 
-      # Optimization pass 20: Fuse FIND_VAR + WRITE_VALUE -> WRITE_VAR (VM speedup)
-      fuse_write_var(instructions, spans) if enabled.include?(20)
-
-      # Optimization pass 22: Remove interrupt checks when no break/continue exists
+      # Phase 10: Final cleanup
       remove_interrupt_checks(instructions, spans) if enabled.include?(22)
 
       instructions
+    end
+
+    # Fused peephole optimizer — one forward scan handles multiple transforms.
+    # Avoids N separate array walks by combining all simple peephole patterns.
+    def fused_peephole(instructions, spans, enabled)
+      i = 0
+      while i < instructions.length
+        inst = instructions[i]
+        opcode = inst[0]
+
+        # Pass 7: Remove NOOPs
+        if opcode == IL::NOOP && enabled.include?(7)
+          instructions.delete_at(i)
+          spans.delete_at(i)
+          next
+        end
+
+        # Pass 13: Remove empty WRITE_RAW
+        if opcode == IL::WRITE_RAW && inst[1].empty? && enabled.include?(13)
+          instructions.delete_at(i)
+          spans.delete_at(i)
+          next
+        end
+
+        # Peephole patterns that look at i and i+1
+        if i + 1 < instructions.length
+          next_inst = instructions[i + 1]
+          next_opcode = next_inst[0]
+
+          # Pass 3: Fold const writes (CONST + WRITE_VALUE → WRITE_RAW)
+          if enabled.include?(3) && next_opcode == IL::WRITE_VALUE
+            cv = const_value(inst)
+            if cv
+              instructions[i] = [IL::WRITE_RAW, Utils.output_string(cv[1])]
+              spans[i] = spans[i + 1]
+              instructions.delete_at(i + 1)
+              spans.delete_at(i + 1)
+              next  # re-check at i (might merge with prev WRITE_RAW)
+            end
+          end
+
+          # Pass 5: Collapse FIND_VAR + LOOKUP_CONST_PATH
+          if enabled.include?(5) && opcode == IL::FIND_VAR && next_opcode == IL::LOOKUP_CONST_PATH
+            instructions[i] = [IL::FIND_VAR_PATH, inst[1], next_inst[1]]
+            spans[i] = spans[i + 1]
+            instructions.delete_at(i + 1)
+            spans.delete_at(i + 1)
+            next
+          end
+
+          # Pass 6: Remove redundant IS_TRUTHY after boolean ops
+          if enabled.include?(6) && next_opcode == IL::IS_TRUTHY
+            if opcode == IL::COMPARE || opcode == IL::CASE_COMPARE || opcode == IL::CONTAINS || opcode == IL::BOOL_NOT
+              instructions.delete_at(i + 1)
+              spans.delete_at(i + 1)
+              i += 1
+              next
+            end
+          end
+
+          # Pass 8: Remove jump-to-next-label
+          if enabled.include?(8) && opcode == IL::JUMP && next_opcode == IL::LABEL && inst[1] == next_inst[1]
+            instructions.delete_at(i)
+            spans.delete_at(i)
+            next
+          end
+
+          # Pass 9: Merge consecutive WRITE_RAW
+          if enabled.include?(9) && opcode == IL::WRITE_RAW && next_opcode == IL::WRITE_RAW
+            instructions[i] = [IL::WRITE_RAW, inst[1] + next_inst[1]]
+            instructions.delete_at(i + 1)
+            spans.delete_at(i + 1)
+            next  # keep merging if more follow
+          end
+
+          # Pass 20: Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR
+          if enabled.include?(20) && opcode == IL::FIND_VAR && next_opcode == IL::WRITE_VALUE
+            instructions[i] = [IL::WRITE_VAR, inst[1]]
+            spans[i] = spans[i + 1]
+            instructions.delete_at(i + 1)
+            spans.delete_at(i + 1)
+            i += 1
+            next
+          end
+
+          # Pass 20: Fuse FIND_VAR_PATH + WRITE_VALUE → WRITE_VAR_PATH
+          if enabled.include?(20) && opcode == IL::FIND_VAR_PATH && next_opcode == IL::WRITE_VALUE
+            instructions[i] = [IL::WRITE_VAR_PATH, inst[1], inst[2]]
+            spans[i] = spans[i + 1]
+            instructions.delete_at(i + 1)
+            spans.delete_at(i + 1)
+            i += 1
+            next
+          end
+        end
+
+        # Pass 4: Collapse LOOKUP_CONST_KEY chains (looks ahead multiple)
+        if enabled.include?(4) && opcode == IL::LOOKUP_CONST_KEY
+          j = i + 1
+          while j < instructions.length && instructions[j][0] == IL::LOOKUP_CONST_KEY
+            j += 1
+          end
+          if j > i + 1
+            path = (i...j).map { |k| instructions[k][1] }
+            instructions[i] = [IL::LOOKUP_CONST_PATH, path]
+            delete_count = j - i - 1
+            instructions.slice!(i + 1, delete_count)
+            spans.slice!(i + 1, delete_count)
+          end
+        end
+
+        i += 1
+      end
     end
 
     def fold_const_ops(instructions, spans)
