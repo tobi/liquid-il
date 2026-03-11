@@ -95,7 +95,7 @@ module LiquidIL
 
       # Compile the partial to IL
       begin
-        compiler = LiquidIL::Compiler.new(source, optimize: true)
+        compiler = LiquidIL::Compiler.new(source, optimize: true, skip_passes: [16, 17, 18, 19])
         result = compiler.compile
       rescue LiquidIL::SyntaxError => e
         @partial_names_in_progress.delete(name)
@@ -2452,8 +2452,6 @@ module LiquidIL
     def eval_ruby(source)
       eval(source, TOPLEVEL_BINDING, "(liquid_il_structured)")
     rescue SyntaxError => e
-      # puts "Syntax error: #{e.message}"
-      # puts source.lines.each_with_index.map { |l, i| "#{i+1}: #{l}" }.join
       nil
     end
   end
@@ -2502,8 +2500,11 @@ module LiquidIL
           source = template_or_source
         end
 
-        # Always recompile with optimization for cleanest IL
-        compiler = Compiler.new(source, **options.merge(optimize: true))
+        # Compile with optimization, but skip analysis passes that the structured
+        # compiler handles itself (loop invariant hoisting, caching, value numbering,
+        # register allocation). These generate STORE_TEMP/LOAD_TEMP that are redundant
+        # when we generate direct Ruby variable access.
+        compiler = Compiler.new(source, **options.merge(optimize: true, skip_passes: [16, 17, 18, 19]))
         result = compiler.compile
         instructions = result[:instructions]
         spans = result[:spans]

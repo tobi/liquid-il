@@ -43,7 +43,7 @@ module LiquidIL
 
       # Optional optimization passes
       if @options[:optimize]
-        optimize(instructions, spans)
+        optimize(instructions, spans, skip_passes: @options[:skip_passes])
       end
 
       IL.link(instructions)
@@ -62,8 +62,9 @@ module LiquidIL
     # Run enabled optimization passes
     # Pass enablement is determined at boot time via LIQUID_PASSES env var
     # See LiquidIL::Passes for configuration options
-    def optimize(instructions, spans)
+    def optimize(instructions, spans, skip_passes: nil)
       enabled = Passes.enabled
+      enabled = enabled - skip_passes if skip_passes
 
       # Lazy-initialized max temp index, cached across passes
       @cached_max_temp_index = nil
