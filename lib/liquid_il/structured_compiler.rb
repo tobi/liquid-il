@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "structured_helpers"
+
 module LiquidIL
   # Compiles IL to Ruby with native control flow (if/else, each blocks)
   # and direct expressions (no stack). This generates YJIT-friendly code.
@@ -226,10 +228,23 @@ module LiquidIL
       # First pass: scan for partials and compile them
       scan_and_compile_partials
 
+      # Ensure shared helpers are initialized (once, at first use)
+      StructuredHelpers.init
+
       code = String.new
       code << "# frozen_string_literal: true\n"
       code << "proc do |__scope__, __spans__, __template_source__|\n"
-      code << generate_helpers
+      # Reference shared helpers from module constants (not re-created per template)
+      code << "  __output_string__ = LiquidIL::StructuredHelpers::OUTPUT_STRING\n"
+      code << "  __is_truthy__ = LiquidIL::StructuredHelpers::IS_TRUTHY\n"
+      code << "  __lookup__ = LiquidIL::StructuredHelpers::LOOKUP\n"
+      code << "  __call_filter__ = LiquidIL::StructuredHelpers::CALL_FILTER\n"
+      code << "  __compare__ = LiquidIL::StructuredHelpers::COMPARE\n"
+      code << "  __contains__ = LiquidIL::StructuredHelpers::CONTAINS\n"
+      code << "  __to_iterable__ = LiquidIL::StructuredHelpers::TO_ITERABLE\n"
+      code << "  __slice_collection__ = LiquidIL::StructuredHelpers::SLICE_COLLECTION\n"
+      code << "  __valid_integer__ = LiquidIL::StructuredHelpers::VALID_INTEGER\n"
+      code << "  __bracket_lookup__ = LiquidIL::StructuredHelpers::BRACKET_LOOKUP\n"
       code << generate_partial_lambdas
       code << "  __output__ = String.new(capacity: #{OUTPUT_CAPACITY})\n"
       code << "  __current_file__ = nil\n"
