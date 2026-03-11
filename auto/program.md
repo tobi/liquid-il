@@ -1,10 +1,10 @@
-# Autoresearch: LiquidIL Structured Compiler Render Speed
+# Autoresearch: LiquidIL Structured Compiler Total Speed (Compile + Render)
 
 ## Goal
-Reduce the render time of the LiquidIL structured compiler across the benchmark suite.
+Reduce the combined compile + render time of the LiquidIL structured compiler. The main lever is fusing optimization passes — currently 23 separate passes each walk the instruction array. Fuse them into fewer iterations.
 
 ## Metric
-**Total render time in microseconds (µs)** — **lower is better**. Summed across all 9 benchmark specs. Extracted from the `render_mean` field in the JSONL results.
+**Total compile + render time in microseconds (µs)** — **lower is better**. Summed across all 9 benchmark specs.
 
 ## Command
 ```bash

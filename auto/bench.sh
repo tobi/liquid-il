@@ -98,9 +98,10 @@ ruby -rjson -e '
     exit 1
   end
 
-  # Primary metric = render time (what we optimize for)
+  # Primary metric = compile + render combined (total template cost)
+  combined = compile_total + render_total
   puts "BENCH_RENDER=#{render_total.round(1)}"
   puts "BENCH_COMPILE=#{compile_total.round(1)}"
   puts "BENCH_FAILED=0"
-  puts "BENCH_METRIC=#{render_total.round(1)}"
+  puts "BENCH_METRIC=#{combined.round(1)}"
 ' < "$RESULTS_FILE"

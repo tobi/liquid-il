@@ -9,18 +9,17 @@ module LiquidIL
 
     def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true)
       @static_environments = static_environments
-      @locals = {}
+      @locals = {}  # Always needed (assigns happen immediately)
       @file_system = file_system
       @depth = depth
       @strict_errors = strict_errors
       @render_errors = render_errors
-      @current_file = nil  # Track current file for error reporting
-      # Eagerly initialize hot-path arrays as direct ivars
-      @interrupts = []
-      @capture_stack = []
-      @for_stack = []
-      @temps = []
-      # Lazy-init hashes (less frequently accessed)
+      @current_file = nil
+      # Lazy-init everything else
+      @interrupts = nil
+      @capture_stack = nil
+      @for_stack = nil
+      @temps = nil
       @for_offsets = nil
       @counters = nil
       @cycles = nil
@@ -65,26 +64,26 @@ module LiquidIL
     def registers
       @registers ||= {
         "for" => (@for_offsets ||= {}),
-        "for_stack" => @for_stack,
+        "for_stack" => (@for_stack ||= []),
         "counters" => (@counters ||= {}),
         "cycles" => (@cycles ||= {}),
-        "temps" => @temps,
-        "capture_stack" => @capture_stack
+        "temps" => (@temps ||= []),
+        "capture_stack" => (@capture_stack ||= [])
       }
     end
 
-    # Interrupt handling - direct ivar access (hot path)
-    def push_interrupt(type) = @interrupts.push(type)
-    def pop_interrupt = @interrupts.pop
-    def has_interrupt? = !@interrupts.empty?
-    def peek_interrupt = @interrupts.last
+    # Interrupt handling - lazy init
+    def push_interrupt(type) = (@interrupts ||= []).push(type)
+    def pop_interrupt = @interrupts&.pop
+    def has_interrupt? = @interrupts ? !@interrupts.empty? : false
+    def peek_interrupt = @interrupts&.last
 
-    # Forloop - direct ivar access (hot path)
-    def for_stack = @for_stack
-    def push_forloop(f) = @for_stack.push(f)
-    def pop_forloop = @for_stack.pop
-    def current_forloop = @for_stack.last
-    def parent_forloop = @for_stack.length < 2 ? nil : @for_stack[-2]
+    # Forloop - lazy init
+    def for_stack = (@for_stack ||= [])
+    def push_forloop(f) = (@for_stack ||= []).push(f)
+    def pop_forloop = @for_stack&.pop
+    def current_forloop = @for_stack&.last
+    def parent_forloop = (@for_stack && @for_stack.length >= 2) ? @for_stack[-2] : nil
 
     # Counters - lazy hash init
     def increment(n)
@@ -109,16 +108,15 @@ module LiquidIL
     def for_offset(n) = (@for_offsets ||= {})[n] || 0
     def set_for_offset(n, o) = (@for_offsets ||= {})[n] = o
 
-    # Temps - direct ivar access
-    def store_temp(i, v) = @temps[i] = v
-    def load_temp(i) = @temps[i]
+    # Temps - lazy init
+    def store_temp(i, v) = (@temps ||= [])[i] = v
+    def load_temp(i) = @temps ? @temps[i] : nil
 
-    # Capture - direct ivar access (hot path)
-    # Pre-allocate with small capacity to reduce reallocations
-    def push_capture = @capture_stack.push(String.new(capacity: 128))
-    def pop_capture = @capture_stack.pop || ""
-    def current_capture = @capture_stack.last
-    def capturing? = !@capture_stack.empty?
+    # Capture - lazy init
+    def push_capture = (@capture_stack ||= []).push(String.new(capacity: 128))
+    def pop_capture = @capture_stack ? (@capture_stack.pop || "") : ""
+    def current_capture = @capture_stack&.last
+    def capturing? = @capture_stack ? !@capture_stack.empty? : false
   end
 
   # Internal execution state with scope stack and registers
