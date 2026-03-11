@@ -1669,7 +1669,11 @@ module LiquidIL
         args = expr.children[1..].map { |a| expr_to_ruby(a) }
         # Compute line number from filter's PC for error reporting
         filter_line = expr.pc ? line_for_pc(expr.pc) : 1
-        if args.empty?
+        # Try to inline simple filters to avoid Filters.apply dispatch overhead
+        inlined = inline_filter(expr.value, input, args)
+        if inlined
+          inlined
+        elsif args.empty?
           "__call_filter__.call(#{expr.value.inspect}, #{input}, [], __scope__, __current_file__, #{filter_line})"
         else
           "__call_filter__.call(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], __scope__, __current_file__, #{filter_line})"
@@ -2590,6 +2594,74 @@ module LiquidIL
 
       code << "#{prefix}end\n"
       code
+    end
+
+    # Inline simple filters to avoid Filters.apply dispatch (respond_to? + send)
+    # Returns nil if the filter can't be inlined.
+    def inline_filter(name, input, args)
+      case name
+      when "upcase"
+        return nil unless args.empty?
+        "LiquidIL::Utils.to_s(#{input}).upcase"
+      when "downcase"
+        return nil unless args.empty?
+        "LiquidIL::Utils.to_s(#{input}).downcase"
+      when "capitalize"
+        return nil unless args.empty?
+        "LiquidIL::Utils.to_s(#{input}).capitalize"
+      when "strip"
+        return nil unless args.empty?
+        "LiquidIL::Utils.to_s(#{input}).strip"
+      when "lstrip"
+        return nil unless args.empty?
+        "LiquidIL::Utils.to_s(#{input}).lstrip"
+      when "rstrip"
+        return nil unless args.empty?
+        "LiquidIL::Utils.to_s(#{input}).rstrip"
+      when "escape"
+        return nil unless args.empty?
+        "((__fi__ = #{input}); __fi__.nil? ? nil : CGI.escapeHTML(LiquidIL::Utils.to_s(__fi__)))"
+      when "size"
+        return nil unless args.empty?
+        "((__fi__ = #{input}); __fi__.respond_to?(:size) ? __fi__.size : 0)"
+      when "append"
+        return nil unless args.length == 1
+        "(LiquidIL::Utils.to_s(#{input}) + LiquidIL::Utils.to_s(#{args[0]}))"
+      when "prepend"
+        return nil unless args.length == 1
+        "(LiquidIL::Utils.to_s(#{args[0]}) + LiquidIL::Utils.to_s(#{input}))"
+      when "default"
+        # default filter has complex semantics (allow_false option, empty arrays/hashes)
+        # Too many edge cases to inline safely
+        nil
+      when "plus"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:plus, #{input}, #{args[0]})"
+      when "minus"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:minus, #{input}, #{args[0]})"
+      when "times"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:times, #{input}, #{args[0]})"
+      when "divided_by"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:divided_by, #{input}, #{args[0]})"
+      when "round"
+        return nil unless args.length <= 1
+        if args.empty?
+          "LiquidIL::Filters.send(:round, #{input})"
+        else
+          "LiquidIL::Filters.send(:round, #{input}, #{args[0]})"
+        end
+      when "ceil"
+        return nil unless args.empty?
+        "LiquidIL::Filters.send(:ceil, #{input})"
+      when "floor"
+        return nil unless args.empty?
+        "LiquidIL::Filters.send(:floor, #{input})"
+      else
+        nil
+      end
     end
 
     # Generate inline property lookup for const string keys (avoids __lookup__ lambda call)
