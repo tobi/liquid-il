@@ -2445,17 +2445,11 @@ module LiquidIL
     # Generate inline output conversion (avoids __output_string__ lambda call)
     # Returns code that appends the expression value to __output__
     def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
-      suffix = guard_interrupt ? " unless __scope__.has_interrupt?" : ""
-      # Use a case statement directly instead of lambda dispatch
-      "#{prefix}case (__v__ = #{expr_ruby})\n" \
-      "#{prefix}when String then __output__ << __v__#{suffix}\n" \
-      "#{prefix}when Integer, Float then __output__ << __v__.to_s#{suffix}\n" \
-      "#{prefix}when nil then nil\n" \
-      "#{prefix}when true then __output__ << \"true\"#{suffix}\n" \
-      "#{prefix}when false then __output__ << \"false\"#{suffix}\n" \
-      "#{prefix}when LiquidIL::ErrorMarker then __output__ << __v__.to_s#{suffix}\n" \
-      "#{prefix}else __output__ << LiquidIL::Utils.output_string(__v__)#{suffix}\n" \
-      "#{prefix}end\n"
+      if guard_interrupt
+        "#{prefix}LiquidIL::StructuredHelpers.output_append(__output__, #{expr_ruby}) unless __scope__.has_interrupt?\n"
+      else
+        "#{prefix}LiquidIL::StructuredHelpers.output_append(__output__, #{expr_ruby})\n"
+      end
     end
 
     # Generate an inline truthy check expression (avoids lambda call overhead)

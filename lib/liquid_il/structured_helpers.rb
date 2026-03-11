@@ -11,7 +11,20 @@ module LiquidIL
     def self.init
       return if @initialized
       @initialized = true
-      # All lambdas are defined below as constants — nothing to do at runtime
+    end
+
+    # Inline output append — replaces 7-line case statement in generated code with 1 method call.
+    # Hot path: String is most common, then Integer/Float.
+    def self.output_append(output, value)
+      case value
+      when String then output << value
+      when Integer, Float then output << value.to_s
+      when nil then nil
+      when true then output << "true"
+      when false then output << "false"
+      when LiquidIL::ErrorMarker then output << value.to_s
+      else output << LiquidIL::Utils.output_string(value)
+      end
     end
 
     OUTPUT_STRING = ->(value) {
