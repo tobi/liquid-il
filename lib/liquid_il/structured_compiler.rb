@@ -833,8 +833,12 @@ module LiquidIL
         "" # No-ops in structured code (IFCHANGED_CHECK handled by POP_CAPTURE)
 
       when IL::LOAD_TEMP
-        # Load from temp generates expression - peek ahead to see if it's part of an if
-        if peek_if_statement?
+        # Load from temp generates expression - peek ahead to see what follows
+        if peek_for_loop?
+          generate_for_loop(indent)
+        elsif peek_tablerow?
+          generate_tablerow(indent)
+        elsif peek_if_statement?
           generate_if_statement(indent)
         else
           generate_expression_statement(indent)
@@ -1651,7 +1655,8 @@ module LiquidIL
         right = expr_to_ruby(expr.children[1])
         "__contains__.call(#{left}, #{right})"
       when :not
-        "!__is_truthy__.call(#{expr_to_ruby(expr.children[0])})"
+        child = expr_to_ruby(expr.children[0])
+        "((__tt__ = #{child}); __tt__.nil? || __tt__ == false)"
       when :hash
         # Build hash from pairs: children = [key1, val1, key2, val2, ...]
         pairs = []
@@ -1682,11 +1687,11 @@ module LiquidIL
       when :and
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "(__is_truthy__.call(#{left}) && __is_truthy__.call(#{right}))"
+        "((#{inline_truthy(left)}) && (#{inline_truthy(right)}))"
       when :or
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "(__is_truthy__.call(#{left}) || __is_truthy__.call(#{right}))"
+        "((#{inline_truthy(left)}) || (#{inline_truthy(right)}))"
       when :dynamic_var
         # Indirect variable lookup: {{ [name_var] }} looks up variable by name in name_var
         name_code = expr_to_ruby(expr.children[0])
@@ -1783,9 +1788,15 @@ module LiquidIL
           return following&.[](0) == IL::JUMP_IF_FALSE || following&.[](0) == IL::JUMP_IF_TRUE
         when IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE
           return true
-        when IL::FOR_INIT, IL::HALT, IL::WRITE_VALUE, IL::ASSIGN, IL::ASSIGN_LOCAL, IL::STORE_TEMP
+        when IL::FOR_INIT, IL::HALT, IL::WRITE_VALUE, IL::ASSIGN, IL::ASSIGN_LOCAL
           # These terminate the expression without being an if condition
           return false
+        when IL::STORE_TEMP
+          # STORE_TEMP after DUP is mid-expression caching (continue scanning)
+          # Standalone STORE_TEMP terminates the expression
+          prev = pos > 0 ? @instructions[pos - 1] : nil
+          return false unless prev && prev[0] == IL::DUP
+          pos += 1
         when IL::JUMP
           # Follow forward jumps to find IS_TRUTHY/JUMP_IF_FALSE (optimizer chains JUMPs)
           target = next_inst[1]
@@ -2403,7 +2414,18 @@ module LiquidIL
       prefix = "  " * indent
 
       # Build condition expression
+      @temp_assignments = nil
       cond_expr, _ = build_expression
+
+      # Emit any temp assignments generated during condition expression building
+      # (e.g., DUP + STORE_TEMP caching a variable for reuse in both condition and body)
+      temp_code = String.new
+      if @temp_assignments
+        @temp_assignments.each do |slot, temp_expr|
+          temp_code << "#{prefix}__temp_#{slot}__ = #{expr_to_ruby(temp_expr)}\n"
+        end
+        @temp_assignments = nil
+      end
 
       # Should now be at JUMP_IF_FALSE or JUMP_IF_TRUE
       inst = @instructions[@pc]
@@ -2470,13 +2492,13 @@ module LiquidIL
       end
 
       # Generate code
-      code = String.new
+      code = temp_code
       cond_ruby = cond_expr ? expr_to_ruby(cond_expr) : "nil"
 
       if jump_type == IL::JUMP_IF_FALSE
-        code << "#{prefix}if __is_truthy__.call(#{cond_ruby})\n"
+        code << "#{prefix}if #{inline_truthy(cond_ruby)}\n"
       else
-        code << "#{prefix}unless __is_truthy__.call(#{cond_ruby})\n"
+        code << "#{prefix}unless #{inline_truthy(cond_ruby)}\n"
       end
 
       code << then_code
@@ -2544,7 +2566,7 @@ module LiquidIL
 
       # Generate the combined OR condition
       cond_parts = conditions.map { |c| expr_to_ruby(c) }
-      combined_cond = cond_parts.map { |c| "__is_truthy__.call(#{c})" }.join(" || ")
+      combined_cond = cond_parts.map { |c| "(#{inline_truthy(c)})" }.join(" || ")
 
       code = String.new
       code << "#{prefix}if #{combined_cond}\n"
@@ -2572,6 +2594,18 @@ module LiquidIL
 
       code << "#{prefix}end\n"
       code
+    end
+
+    # Generate an inline truthy check expression (avoids lambda call overhead)
+    # Simple expressions get fully inlined; complex ones use a temp variable
+    def inline_truthy(expr_ruby)
+      # For simple variable/literal references, inline directly
+      if expr_ruby =~ /\A[a-zA-Z_][a-zA-Z0-9_.]*\z/ || expr_ruby =~ /\A__\w+__\z/
+        "!(#{expr_ruby}).nil? && #{expr_ruby} != false"
+      else
+        # Complex expression - use __tt__ temp to avoid double evaluation
+        "((__tt__ = #{expr_ruby}); !__tt__.nil? && __tt__ != false)"
+      end
     end
 
     # Evaluate generated Ruby code

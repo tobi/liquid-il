@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Clear stale results
+rm -f /tmp/liquid-spec/liquid_il_structured.jsonl
+
 # Run benchmarks, capture output
 OUTPUT=$(bundle exec liquid-spec run spec/liquid_il_structured.rb -b -s benchmarks 2>&1)
 EXIT_CODE=$?
