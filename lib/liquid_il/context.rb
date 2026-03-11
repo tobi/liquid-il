@@ -215,7 +215,7 @@ module LiquidIL
     alias [] lookup
 
     def assign(key, value)
-      key = key.to_s
+      key = key.to_s unless key.is_a?(String)
       # Track that this was explicitly assigned (takes precedence over counters)
       @assigned_vars[key] = true
       # Liquid assigns to the root/environment scope, not the current scope
@@ -224,8 +224,7 @@ module LiquidIL
 
     # Assign to current (top) scope - used for loop variables that should be local
     def assign_local(key, value)
-      key = key.to_s
-      @scopes.first[key] = value
+      @scopes.first[key.is_a?(String) ? key : key.to_s] = value
     end
 
     def [](key)
