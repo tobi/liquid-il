@@ -235,11 +235,7 @@ module LiquidIL
       return true if value.is_a?(String) && value.match?(/\A-?\d/)
       false
     }
-  end
-end
-# Re-open to add BRACKET_LOOKUP
-module LiquidIL
-  module StructuredHelpers
+
     BRACKET_LOOKUP = ->(obj, key) {
       return nil if obj.nil?
       return nil if key.is_a?(LiquidIL::RangeValue) || key.is_a?(Range)
