@@ -3,6 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+export RUBYOPT="--yjit"
+
 # Quick correctness check: run full test suite first
 FULL_OUTPUT=$(bundle exec liquid-spec run spec/liquid_il_structured.rb 2>&1)
 FULL_EXIT=$?
