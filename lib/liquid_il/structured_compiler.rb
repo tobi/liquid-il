@@ -619,12 +619,12 @@ module LiquidIL
       when IL::WRITE_VAR
         @pc += 1
         var_expr = "__scope__.lookup(#{inst[1].inspect})"
-        "#{prefix}__output__ << ((__v__ = #{var_expr}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
+        inline_output_append(var_expr, prefix)
 
       when IL::WRITE_VAR_PATH
         @pc += 1
         var_expr = generate_var_path_expr(inst[1], inst[2])
-        "#{prefix}__output__ << ((__v__ = #{var_expr}).is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
+        inline_output_append(var_expr, prefix)
 
       when IL::FIND_VAR, IL::FIND_VAR_PATH
         if peek_for_loop?
@@ -880,12 +880,8 @@ module LiquidIL
       case terminator
       when :write_value
         expr_code = expr_to_ruby(expr)
-        # Check for ErrorMarker and convert to string, otherwise use normal output
-        if @uses_interrupts
-          temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : __v__.is_a?(String) ? __v__ : __output_string__.call(__v__)) unless __scope__.has_interrupt?\n"
-        else
-          temp_code + "#{prefix}__output__ << ((__v__ = #{expr_code}).is_a?(LiquidIL::ErrorMarker) ? __v__.to_s : __v__.is_a?(String) ? __v__ : __output_string__.call(__v__))\n"
-        end
+        # Inline output conversion with ErrorMarker support
+        temp_code + inline_output_append(expr_code, prefix, guard_interrupt: @uses_interrupts)
       when :assign
         var = @instructions[@pc - 1][1]
         # Skip assignment if value is ErrorMarker (already output the error)
@@ -2594,6 +2590,22 @@ module LiquidIL
 
       code << "#{prefix}end\n"
       code
+    end
+
+    # Generate inline output conversion (avoids __output_string__ lambda call)
+    # Returns code that appends the expression value to __output__
+    def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
+      suffix = guard_interrupt ? " unless __scope__.has_interrupt?" : ""
+      # Use a case statement directly instead of lambda dispatch
+      "#{prefix}case (__v__ = #{expr_ruby})\n" \
+      "#{prefix}when String then __output__ << __v__#{suffix}\n" \
+      "#{prefix}when Integer, Float then __output__ << __v__.to_s#{suffix}\n" \
+      "#{prefix}when nil then nil\n" \
+      "#{prefix}when true then __output__ << \"true\"#{suffix}\n" \
+      "#{prefix}when false then __output__ << \"false\"#{suffix}\n" \
+      "#{prefix}when LiquidIL::ErrorMarker then __output__ << __v__.to_s#{suffix}\n" \
+      "#{prefix}else __output__ << LiquidIL::Utils.output_string(__v__)#{suffix}\n" \
+      "#{prefix}end\n"
     end
 
     # Generate an inline truthy check expression (avoids lambda call overhead)
