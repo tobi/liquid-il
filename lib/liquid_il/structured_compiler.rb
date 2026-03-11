@@ -2432,14 +2432,8 @@ module LiquidIL
 
     def inline_lookup(obj_ruby, key)
       key_s = key.to_s
-      if HASH_SPECIAL_KEYS.include?(key_s)
-        # These keys have special semantics on Hash (size→length, first→pair)
-        # Fall back to full __lookup__ to handle correctly
-        "__lookup__.call(#{obj_ruby}, #{key_s.inspect})"
-      else
-        # Normal property: try string key first (most common), symbol fallback for compatibility
-        "((__lo__ = #{obj_ruby}); if __lo__.is_a?(Hash); __lo__.fetch(#{key_s.inspect}) { __lo__[#{key_s.to_sym.inspect}] }; else; __lookup__.call(__lo__, #{key_s.inspect}); end)"
-      end
+      # Use shared helper method for all property lookups
+      "LiquidIL::StructuredHelpers.lookup_prop(#{obj_ruby}, #{key_s.inspect})"
     end
 
     # Generate inline output conversion (avoids __output_string__ lambda call)

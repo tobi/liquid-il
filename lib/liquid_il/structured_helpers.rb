@@ -8,9 +8,26 @@ module LiquidIL
   module StructuredHelpers
     @initialized = false
 
+    # Hash keys with special semantics (size→length, first→pair)
+    SPECIAL_KEYS = { "size" => true, "length" => true, "first" => true, "last" => true }.freeze
+
     def self.init
       return if @initialized
       @initialized = true
+    end
+
+    # Property lookup — replaces inline_lookup generated code.
+    # Hot path: Hash string key (most common in Liquid templates).
+    def self.lookup_prop(obj, key)
+      if obj.is_a?(Hash)
+        if SPECIAL_KEYS[key]
+          LOOKUP.call(obj, key)
+        else
+          obj.fetch(key) { obj[key.to_sym] }
+        end
+      else
+        LOOKUP.call(obj, key)
+      end
     end
 
     # Inline output append — replaces 7-line case statement in generated code with 1 method call.
