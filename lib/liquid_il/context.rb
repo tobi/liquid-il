@@ -132,7 +132,7 @@ module LiquidIL
     def initialize(assigns = {}, registers: {}, strict_errors: false, static_environments: nil)
       @static_environments = stringify_keys(static_environments || assigns)
       @scopes = [stringify_keys(assigns)]
-      @registers = registers.dup
+      @registers = registers.empty? ? {} : registers.dup
       @interrupts = []
       @strict_errors = strict_errors
       @render_errors = true  # When true, catch errors and render inline; when false, raise
