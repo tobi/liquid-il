@@ -1621,7 +1621,7 @@ module LiquidIL
       when :lookup
         obj = expr_to_ruby(expr.children[0])
         if expr.value # const key
-          "__lookup__.call(#{obj}, #{expr.value.inspect})"
+          inline_lookup(obj, expr.value)
         else # dynamic key
           "__lookup__.call(#{obj}, #{expr_to_ruby(expr.children[1])})"
         end
@@ -2590,6 +2590,22 @@ module LiquidIL
 
       code << "#{prefix}end\n"
       code
+    end
+
+    # Generate inline property lookup for const string keys (avoids __lookup__ lambda call)
+    # Hot path: Hash string key lookup. Falls back to __lookup__ for other types.
+    HASH_SPECIAL_KEYS = %w[size length first last].freeze
+
+    def inline_lookup(obj_ruby, key)
+      key_s = key.to_s
+      if HASH_SPECIAL_KEYS.include?(key_s)
+        # These keys have special semantics on Hash (size→length, first→pair)
+        # Fall back to full __lookup__ to handle correctly
+        "__lookup__.call(#{obj_ruby}, #{key_s.inspect})"
+      else
+        # Normal property: Hash string key with symbol fallback, other types via __lookup__
+        "((__lo__ = #{obj_ruby}); __lo__.is_a?(Hash) ? (__lo__[#{key_s.inspect}] || __lo__[#{key_s.to_sym.inspect}]) : __lookup__.call(__lo__, #{key_s.inspect}))"
+      end
     end
 
     # Generate inline output conversion (avoids __output_string__ lambda call)
