@@ -153,6 +153,7 @@ module LiquidIL
       # Cache hot-path references for performance
       @capture_stack = @registers["capture_stack"]
       @for_stack_ref = @registers["for_stack"]
+      @counters = @registers["counters"]
     end
 
     # --- Render depth tracking ---
@@ -191,7 +192,7 @@ module LiquidIL
       top = @scopes.first
       if top.key?(key)
         # But assigned vars take precedence over counters, check that
-        return top[key] if @assigned_vars[key] || !@registers["counters"]&.key?(key)
+        return top[key] if @assigned_vars[key] || !@counters.key?(key)
       end
       # Check if this was explicitly assigned - assigned vars take precedence over counters
       if @assigned_vars[key]
@@ -200,8 +201,7 @@ module LiquidIL
         end
       end
       # Check counters - they shadow environment variables (but not assigned ones)
-      counters = @registers["counters"]
-      return counters[key] if counters&.key?(key)
+      return @counters[key] if @counters.key?(key)
       # Check remaining scopes
       @scopes.each_with_index do |scope, i|
         next if i == 0 # already checked
@@ -280,18 +280,16 @@ module LiquidIL
     # --- Counter management ---
 
     def increment(name)
-      counters = @registers["counters"]
-      counters[name] ||= 0
-      result = counters[name]
-      counters[name] += 1
+      @counters[name] ||= 0
+      result = @counters[name]
+      @counters[name] += 1
       result
     end
 
     def decrement(name)
-      counters = @registers["counters"]
-      counters[name] ||= 0
-      counters[name] -= 1
-      counters[name]
+      @counters[name] ||= 0
+      @counters[name] -= 1
+      @counters[name]
     end
 
     # --- Cycle management ---
