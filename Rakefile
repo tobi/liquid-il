@@ -47,7 +47,7 @@ task :test do
   puts "\n#{"=" * 60}"
   puts "Running liquid-spec matrix"
   puts "=" * 60
-  system("bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_INTERPRETER},#{ADAPTER_INTERPRETER_OPTIMIZED},#{ADAPTER_STATEMACHINE},#{ADAPTER_STRUCTURED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
+  system("bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby --adapter=#{ADAPTER_INTERPRETER} --adapter=#{ADAPTER_INTERPRETER_OPTIMIZED} --adapter=#{ADAPTER_STATEMACHINE} --adapter=#{ADAPTER_STRUCTURED} 2> >(grep -v \"missing extensions\" >&2)'") || exit(1)
 
   puts "\n#{"=" * 60}"
   puts "ALL TESTS PASSED"
@@ -69,12 +69,12 @@ end
 
 desc "Run spec matrix comparing LiquidIL against reference implementations"
 task :matrix do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_INTERPRETER},#{ADAPTER_INTERPRETER_OPTIMIZED},#{ADAPTER_STATEMACHINE},#{ADAPTER_STRUCTURED} 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby --adapter=#{ADAPTER_INTERPRETER} --adapter=#{ADAPTER_INTERPRETER_OPTIMIZED} --adapter=#{ADAPTER_STATEMACHINE} --adapter=#{ADAPTER_STRUCTURED} 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run benchmarks comparing LiquidIL against reference implementations"
 task :bench do
-  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby,#{ADAPTER_INTERPRETER},#{ADAPTER_INTERPRETER_OPTIMIZED},#{ADAPTER_STATEMACHINE},#{ADAPTER_STRUCTURED} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
+  system "bash -c 'bundle exec liquid-spec matrix --adapters=liquid_ruby --adapter=#{ADAPTER_INTERPRETER} --adapter=#{ADAPTER_INTERPRETER_OPTIMIZED} --adapter=#{ADAPTER_STATEMACHINE} --adapter=#{ADAPTER_STRUCTURED} -s benchmarks --bench 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 desc "Run partials benchmarks (local)"

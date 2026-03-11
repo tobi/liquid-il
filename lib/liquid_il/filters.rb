@@ -30,11 +30,26 @@ module LiquidIL
       # Private methods that shouldn't be callable as filters
       INTERNAL_METHODS = %w[to_number to_integer to_safe_integer clamp_i64 strftime_filter apply].freeze
 
+      # Cache of valid filter method names for O(1) dispatch
+      # Built lazily on first call, avoids respond_to?/method/owner checks per call
+      def valid_filter_methods
+        @valid_filter_methods ||= begin
+          methods = private_instance_methods(false) | public_instance_methods(false)
+          # Get methods defined directly on our singleton class
+          own_methods = singleton_class.instance_methods(false) | singleton_class.private_instance_methods(false)
+          set = {}
+          own_methods.each do |m|
+            name = m.to_s
+            set[name] = true unless INTERNAL_METHODS.include?(name)
+          end
+          set
+        end
+      end
+
       def apply(name, input, args, context)
         @context = context
         method_name = name.to_s.downcase
-        # Only allow methods defined in this module, not inherited from Object/Kernel
-        if respond_to?(method_name, true) && method(method_name).owner == singleton_class && !INTERNAL_METHODS.include?(method_name)
+        if valid_filter_methods[method_name]
           send(method_name, input, *args)
         else
           input  # Unknown filter, return input unchanged
