@@ -178,8 +178,8 @@ module LiquidIL
 
     # --- Scope management ---
 
-    def push_scope(scope = {})
-      @scopes.unshift(stringify_keys(scope))
+    def push_scope(scope = nil)
+      @scopes.unshift(scope ? stringify_keys(scope) : {})
     end
 
     def pop_scope

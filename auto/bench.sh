@@ -5,71 +5,102 @@ cd "$(dirname "$0")/.."
 
 export RUBYOPT="--yjit"
 
-# Quick correctness check: run full test suite first
+# Run full test suite (correctness gate)
 FULL_OUTPUT=$(bundle exec liquid-spec run spec/liquid_il_structured.rb 2>&1)
 FULL_EXIT=$?
-if [ $FULL_EXIT -ne 0 ]; then
-  echo "$FULL_OUTPUT"
-  echo "CORRECTNESS GATE FAILED"
+
+# Extract pass/fail counts
+PASSED=$(echo "$FULL_OUTPUT" | ruby -e '
+  STDIN.each_line do |l|
+    if l =~ /Total:\s*(\d+)\s*passed(?:,\s*(\d+)\s*failed)?/
+      puts $1
+      exit
+    end
+  end
+  puts "0"
+')
+FAILED=$(echo "$FULL_OUTPUT" | ruby -e '
+  STDIN.each_line do |l|
+    if l =~ /Total:\s*\d+\s*passed,\s*(\d+)\s*failed/
+      puts $1
+      exit
+    end
+  end
+  puts "0"
+')
+
+echo "Tests: ${PASSED} passed, ${FAILED} failed"
+
+if [ "$FULL_EXIT" -ne 0 ] || [ "$FAILED" -gt 0 ]; then
+  echo "$FULL_OUTPUT" | tail -30
+  echo "BENCH_RENDER=0"
+  echo "BENCH_COMPILE=0"
+  echo "BENCH_FAILED=${FAILED}"
   echo "BENCH_METRIC=0"
   exit 1
 fi
-# Show pass count
-echo "$FULL_OUTPUT" | grep 'passed'
 
 # Clear stale results
 rm -f /tmp/liquid-spec/liquid_il_structured.jsonl
 
-# Run benchmarks, capture output
+# Run benchmarks
 OUTPUT=$(bundle exec liquid-spec run spec/liquid_il_structured.rb -b -s benchmarks 2>&1)
-EXIT_CODE=$?
+BENCH_EXIT=$?
 
-# Print full output for debugging
 echo "$OUTPUT"
 
-# Check for failures
-if [ $EXIT_CODE -ne 0 ]; then
+if [ $BENCH_EXIT -ne 0 ]; then
+  echo "BENCH_RENDER=0"
+  echo "BENCH_COMPILE=0"
+  echo "BENCH_FAILED=${FAILED}"
   echo "BENCH_METRIC=0"
   exit 1
 fi
 
-# Extract total render time in µs from the JSONL results
 RESULTS_FILE="/tmp/liquid-spec/liquid_il_structured.jsonl"
 if [ ! -f "$RESULTS_FILE" ]; then
   echo "ERROR: Results file not found"
+  echo "BENCH_RENDER=0"
+  echo "BENCH_COMPILE=0"
+  echo "BENCH_FAILED=${FAILED}"
   echo "BENCH_METRIC=0"
   exit 1
 fi
 
-# Sum render_mean across all result entries (in µs), print as metric
-# Also count passed/failed specs
-METRIC=$(ruby -rjson -e '
-  total = 0.0
+# Extract all metrics from JSONL
+ruby -rjson -e '
+  render_total = 0.0
+  compile_total = 0.0
   count = 0
-  passed = 0
-  failed = 0
+  bench_passed = 0
+  bench_failed = 0
+
   STDIN.each_line do |line|
     d = JSON.parse(line)
     next unless d["type"] == "result"
-    total += d["render_mean"] * 1_000_000  # seconds to µs
     count += 1
+    render_total += d["render_mean"] * 1_000_000   # to µs
+    compile_total += d["parse_mean"] * 1_000_000    # to µs (parse = compile in this adapter)
+
     if d["status"] == "success"
-      passed += 1
+      bench_passed += 1
     else
-      failed += 1
+      bench_failed += 1
     end
   end
-  if count == 0
-    puts "0"
-    exit 1
-  end
-  $stderr.puts "Specs: #{passed} passed, #{failed} failed out of #{count}"
-  if failed > 0
-    $stderr.puts "ERROR: #{failed} specs failed"
-    puts "0"
-    exit 1
-  end
-  puts total.round(1)
-' < "$RESULTS_FILE")
 
-echo "BENCH_METRIC=$METRIC"
+  if count == 0 || bench_failed > 0
+    $stderr.puts "Benchmark failure: #{bench_failed}/#{count} specs failed"
+    puts "BENCH_RENDER=0"
+    puts "BENCH_COMPILE=0"
+    puts "BENCH_FAILED=#{bench_failed}"
+    puts "BENCH_METRIC=0"
+    exit 1
+  end
+
+  # Primary metric = render time (what we optimize for)
+  puts "BENCH_RENDER=#{render_total.round(1)}"
+  puts "BENCH_COMPILE=#{compile_total.round(1)}"
+  puts "BENCH_FAILED=0"
+  puts "BENCH_METRIC=#{render_total.round(1)}"
+' < "$RESULTS_FILE"

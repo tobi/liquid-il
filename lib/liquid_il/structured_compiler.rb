@@ -557,14 +557,33 @@ module LiquidIL
         # from = offset, to = from + limit
         # Includes items where from <= index, breaks when to <= index
         __slice_collection__ = ->(collection, from, to) {
-          segments = []
-          index = 0
-          collection.each do |item|
-            break if to && to <= index
-            segments << item if from <= index
-            index += 1
+          if collection.is_a?(Array)
+            # Fast path for Array: use native slice operations (no iteration)
+            # Clamp from to 0 (negative offsets mean "start from beginning" in Liquid)
+            from = 0 if from < 0
+            sz = collection.length
+            # Clamp to array bounds to avoid bignum overflow in Array#[]
+            from = sz if from > sz
+            if to
+              to = 0 if to < 0
+              to = sz if to > sz
+              len = to - from
+              len > 0 ? collection[from, len] : []
+            elsif from > 0
+              collection[from..] || []
+            else
+              collection
+            end
+          else
+            segments = []
+            index = 0
+            collection.each do |item|
+              break if to && to <= index
+              segments << item if from <= index
+              index += 1
+            end
+            segments
           end
-          segments
         }
 
         # Validate integer for limit/offset (mimics VM's valid_integer?)
@@ -2023,12 +2042,20 @@ module LiquidIL
       inner_prefix = needs_error_handling ? "#{prefix}  " : prefix
 
       # Store original collection to check if it's a string (strings ignore offset/limit)
-      code << "#{inner_prefix}__orig_coll_#{depth}__ = #{coll_ruby}\n"
-      code << "#{inner_prefix}__is_string_#{depth}__ = __orig_coll_#{depth}__.is_a?(String)\n"
-      # Check if collection is nil/false (skip validation for nil/false)
-      code << "#{inner_prefix}__is_nil_#{depth}__ = __orig_coll_#{depth}__.nil? || __orig_coll_#{depth}__ == false\n"
-      # Inline to_iterable: fast path for Array (most common), fallback for others
-      code << "#{inner_prefix}#{coll_var} = __orig_coll_#{depth}__.is_a?(Array) ? __orig_coll_#{depth}__ : __to_iterable__.call(__orig_coll_#{depth}__)\n"
+      # Only needed when we have offset/limit/offset_continue
+      needs_slicing = limit_expr || offset_expr || offset_continue
+      if needs_slicing || has_offset || has_limit
+        code << "#{inner_prefix}__orig_coll_#{depth}__ = #{coll_ruby}\n"
+        code << "#{inner_prefix}__is_string_#{depth}__ = __orig_coll_#{depth}__.is_a?(String)\n"
+        # Check if collection is nil/false (skip validation for nil/false)
+        code << "#{inner_prefix}__is_nil_#{depth}__ = __orig_coll_#{depth}__.nil? || __orig_coll_#{depth}__ == false\n"
+        # Inline to_iterable: fast path for Array (most common), fallback for others
+        code << "#{inner_prefix}#{coll_var} = __orig_coll_#{depth}__.is_a?(Array) ? __orig_coll_#{depth}__ : __to_iterable__.call(__orig_coll_#{depth}__)\n"
+      else
+        # No offset/limit: skip string/nil checks, directly convert to iterable
+        code << "#{inner_prefix}#{coll_var} = #{coll_ruby}\n"
+        code << "#{inner_prefix}#{coll_var} = __to_iterable__.call(#{coll_var}) unless #{coll_var}.is_a?(Array)\n"
+      end
 
       # Calculate starting offset for offset:continue or explicit offset
       offset_var = "__start_offset_#{depth}__"
@@ -2051,6 +2078,8 @@ module LiquidIL
 
       # Slice collection using Liquid's algorithm (to = from + limit)
       # Strings ignore offset and limit
+      # Skip slicing entirely when no offset/limit needed (avoids array copy)
+      needs_slicing = limit_expr || offset_expr || offset_continue
       if limit_expr
         limit_ruby = expr_to_ruby(limit_expr)
         # Validate limit is a valid integer (unless collection is nil/false)
@@ -2062,10 +2091,11 @@ module LiquidIL
           code << "#{inner_prefix}__to_#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
         end
         code << "#{inner_prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, __to_#{depth}__) unless __is_string_#{depth}__\n"
-      else
-        # No limit - just apply offset using slice (from <= index)
+      elsif needs_slicing
+        # Has offset but no limit - apply offset using slice
         code << "#{inner_prefix}#{coll_var} = __slice_collection__.call(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
       end
+      # else: no offset, no limit, no offset:continue — skip slicing entirely
 
       code << "#{inner_prefix}#{coll_var} = #{coll_var}.reverse\n" if reversed
       code << "#{inner_prefix}if !#{coll_var}.empty?\n"
