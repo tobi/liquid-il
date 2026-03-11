@@ -2099,8 +2099,10 @@ module LiquidIL
 
       code << "#{inner_prefix}#{coll_var} = #{coll_var}.reverse\n" if reversed
       code << "#{inner_prefix}if !#{coll_var}.empty?\n"
-      code << "#{inner_prefix}  __scope__.push_scope\n"
       code << "#{inner_prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
+      # Save previous values for scope cleanup after loop
+      code << "#{inner_prefix}  __prev_forloop_#{depth}__ = __scope__.lookup('forloop')\n"
+      code << "#{inner_prefix}  __prev_item_#{depth}__ = __scope__.lookup(#{item_var.inspect})\n"
       # Wrap with catch for break support (throw/catch works across block boundaries)
       code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n"
       code << "#{inner_prefix}    #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
@@ -2118,7 +2120,9 @@ module LiquidIL
       code << "#{inner_prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
       code << "#{inner_prefix}  # Update offset:continue position for next loop with same name\n"
       code << "#{inner_prefix}  __scope__.set_for_offset(#{loop_name.inspect}, #{offset_var} + #{coll_var}.length)\n"
-      code << "#{inner_prefix}  __scope__.pop_scope\n"
+      code << "#{inner_prefix}  # Restore previous scope values (avoid push_scope/pop_scope overhead)\n"
+      code << "#{inner_prefix}  __scope__.assign_local('forloop', __prev_forloop_#{depth}__)\n"
+      code << "#{inner_prefix}  __scope__.assign_local(#{item_var.inspect}, __prev_item_#{depth}__)\n"
 
       # Add else block if present (for-else pattern)
       if !else_code.empty?
