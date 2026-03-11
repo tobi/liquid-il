@@ -131,7 +131,9 @@ module LiquidIL
 
     def initialize(assigns = {}, registers: {}, strict_errors: false, static_environments: nil)
       @static_environments = stringify_keys(static_environments || assigns)
-      @scopes = [stringify_keys(assigns)]
+      root_scope = stringify_keys(assigns)
+      @scopes = [root_scope]
+      @top_scope = root_scope  # Cache for hot-path assign_local
       @registers = registers.empty? ? {} : registers.dup
       @interrupts = []
       @strict_errors = strict_errors
@@ -179,17 +181,22 @@ module LiquidIL
     # --- Scope management ---
 
     def push_scope(scope = nil)
-      @scopes.unshift(scope ? stringify_keys(scope) : {})
+      new_scope = scope ? stringify_keys(scope) : {}
+      @scopes.unshift(new_scope)
+      @top_scope = new_scope
     end
 
     def pop_scope
-      @scopes.shift if @scopes.length > 1
+      if @scopes.length > 1
+        @scopes.shift
+        @top_scope = @scopes.first
+      end
     end
 
     def lookup(key)
       key = key.to_s unless key.is_a?(String)
       # Fast path: check top scope first (most common for loop vars, assigns)
-      top = @scopes.first
+      top = @top_scope
       if top.key?(key)
         # But assigned vars take precedence over counters, check that
         return top[key] if @assigned_vars[key] || !@counters.key?(key)
@@ -224,7 +231,7 @@ module LiquidIL
 
     # Assign to current (top) scope - used for loop variables that should be local
     def assign_local(key, value)
-      @scopes.first[key.is_a?(String) ? key : key.to_s] = value
+      @top_scope[key.is_a?(String) ? key : key.to_s] = value
     end
 
     def [](key)
