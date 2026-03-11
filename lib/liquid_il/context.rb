@@ -187,6 +187,12 @@ module LiquidIL
 
     def lookup(key)
       key = key.to_s unless key.is_a?(String)
+      # Fast path: check top scope first (most common for loop vars, assigns)
+      top = @scopes.first
+      if top.key?(key)
+        # But assigned vars take precedence over counters, check that
+        return top[key] if @assigned_vars[key] || !@registers["counters"]&.key?(key)
+      end
       # Check if this was explicitly assigned - assigned vars take precedence over counters
       if @assigned_vars[key]
         @scopes.each do |scope|
@@ -196,8 +202,9 @@ module LiquidIL
       # Check counters - they shadow environment variables (but not assigned ones)
       counters = @registers["counters"]
       return counters[key] if counters&.key?(key)
-      # Check scope chain for environment variables
-      @scopes.each do |scope|
+      # Check remaining scopes
+      @scopes.each_with_index do |scope, i|
+        next if i == 0 # already checked
         return scope[key] if scope.key?(key)
       end
       # Check static_environments (shared with render)
