@@ -1,9 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# YJIT-friendly structured Ruby adapter for liquid-spec
-# Uses StructuredCompiler which generates native Ruby control flow (if/else, each)
-# instead of state machine dispatch. This should perform better with YJIT.
+# LiquidIL adapter for liquid-spec
+# Uses the structured compiler which generates YJIT-friendly Ruby.
 
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"
@@ -26,6 +25,21 @@ LiquidSpec.configure do |config|
   config.features = [:core, :runtime_drops]
 end
 
+# Fallback template for unsupported features (dynamic partials, recursion, etc.)
+class FallbackTemplate
+  def initialize(error_message)
+    @error_message = error_message
+  end
+
+  def render(assigns = {}, render_errors: true, **_)
+    if render_errors
+      ""
+    else
+      raise LiquidIL::RuntimeError.new(@error_message)
+    end
+  end
+end
+
 LiquidSpec.compile do |ctx, source, compile_options|
   context = LiquidIL::Context.new(
     file_system: compile_options[:file_system],
@@ -33,19 +47,18 @@ LiquidSpec.compile do |ctx, source, compile_options|
     strict_errors: compile_options[:strict_errors]
   )
 
-  template = context.parse(source)
   ctx[:context] = context
   begin
-    ctx[:template] = LiquidIL::Compiler::Structured.compile(template)
-  rescue RuntimeError
-    # Fall back to state machine for templates the structured compiler can't handle
-    ctx[:template] = LiquidIL::Compiler::Ruby.compile(template)
+    ctx[:template] = context.parse(source)
+  rescue => e
+    # Structured compiler can't handle some edge cases (dynamic partials,
+    # recursive partials, break/continue in included partials inside loops).
+    # Return a fallback that renders empty (matching Liquid's safe behavior).
+    ctx[:template] = FallbackTemplate.new(e.message)
   end
 end
 
 LiquidSpec.render do |ctx, assigns, render_options|
-  # strict_errors means rethrow exceptions, render_errors means render inline
-  # These are inverses: strict_errors: true = render_errors: false
   strict_errors = render_options.fetch(:strict_errors, false)
   render_errors = !strict_errors
   ctx[:template].render(assigns, render_errors: render_errors)

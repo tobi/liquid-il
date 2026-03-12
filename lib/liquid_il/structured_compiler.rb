@@ -343,6 +343,15 @@ module LiquidIL
         @pc += 1
         nil
 
+      when IL::SET_CONTEXT
+        @pc += 1
+        file_name = inst[1]
+        if file_name
+          "#{prefix}__current_file__ = #{file_name.inspect}\n"
+        else
+          "#{prefix}__current_file__ = nil\n"
+        end
+
       when IL::WRITE_RAW
         @pc += 1
         if @uses_interrupts
@@ -2456,55 +2465,14 @@ module LiquidIL
     end
   end
 
-  # StructuredCompiledTemplate wraps a compiled proc for execution
-  class StructuredCompiledTemplate
-    attr_reader :source, :instructions, :spans, :compiled_source
-
-    def initialize(source, instructions, spans, context, compiled_result)
-      @source = source
-      @instructions = instructions
-      @spans = spans
-      @context = context
-      @compiled_proc = compiled_result.proc
-      @compiled_source = compiled_result.source
-    end
-
-    def render(assigns = {}, render_errors: true, **extra_assigns)
-      assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
-      scope = Scope.new(assigns, registers: @context&.registers&.dup || {}, strict_errors: @context&.strict_errors || false)
-      scope.file_system = @context&.file_system
-      scope.render_errors = render_errors
-
-      @compiled_proc.call(scope, @spans, @source)
-    rescue LiquidIL::RuntimeError => e
-      raise unless render_errors
-      output = e.partial_output || ""
-      location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
-      output + "Liquid error (#{location}): #{e.message}"
-    rescue StandardError => e
-      raise unless render_errors
-      location = scope&.current_file ? "#{scope.current_file} line 1" : "line 1"
-      "Liquid error (#{location}): #{LiquidIL.clean_error_message(e.message)}"
-    end
-  end
-
   class Compiler
-    # Structured Ruby compiler entry point (YJIT-friendly)
+    # Structured Ruby compiler — the default (and only) compilation path.
+    # Generates YJIT-friendly Ruby with native control flow.
     module Structured
-      def self.compile(template_or_source, context: nil, **options)
-        if template_or_source.is_a?(LiquidIL::Template)
-          template = template_or_source
-          source = template.source
-          context ||= template.instance_variable_get(:@context)
-        else
-          source = template_or_source
-        end
-
-        # Compile with optimization, but skip analysis passes that the structured
-        # compiler handles itself (loop invariant hoisting, caching, value numbering,
-        # register allocation). These generate STORE_TEMP/LOAD_TEMP that are redundant
-        # when we generate direct Ruby variable access.
-        compiler = Compiler.new(source, **options.merge(optimize: true, skip_passes: [16, 17, 18, 19]))
+      def self.compile(source, context: nil, **options)
+        # Default to optimized; skip passes 16-19 (redundant with structured codegen)
+        opts = { optimize: true, skip_passes: [16, 17, 18, 19] }.merge(options)
+        compiler = Compiler.new(source, **opts)
         result = compiler.compile
         instructions = result[:instructions]
         spans = result[:spans]
@@ -2517,7 +2485,7 @@ module LiquidIL
         )
         compiled_result = structured_compiler.compile
 
-        StructuredCompiledTemplate.new(source, instructions, spans, context, compiled_result)
+        Template.new(source, instructions, spans, context, compiled_result)
       end
     end
   end

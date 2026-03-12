@@ -1434,23 +1434,22 @@ module LiquidIL
     class ConstEvaluator
       def initialize
         @context = Scope.new({})
-        @vm = VM.new([], @context)
       end
 
       def truthy?(value)
-        @vm.send(:is_truthy, value)
+        StructuredHelpers::IS_TRUTHY.call(value)
       end
 
       def compare(left, right, op)
-        @vm.send(:compare, left, right, op)
+        StructuredHelpers::COMPARE.call(left, right, op)
       end
 
       def case_compare(left, right)
-        @vm.send(:case_compare, left, right)
+        left == right
       end
 
       def contains(left, right)
-        @vm.send(:contains, left, right)
+        StructuredHelpers::CONTAINS.call(left, right)
       end
 
       def filter(name, input, args)

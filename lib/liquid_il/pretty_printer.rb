@@ -333,14 +333,5 @@ module LiquidIL
     end
   end
 
-  class Template
-    # Pretty print the IL instructions
-    def pretty_print(color: true)
-      PrettyPrinter.new(@instructions, color: color, source: @source, spans: @spans).to_s
-    end
-
-    def dump_il(io = $stdout, color: true)
-      io.puts pretty_print(color: color)
-    end
-  end
+  # dump_il and il_to_s are defined on Template in liquid_il.rb
 end

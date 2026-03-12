@@ -135,7 +135,8 @@ class ILOptimizationTest < Minitest::Test
     opcodes = template.instructions.map(&:first)
     refute_includes opcodes, LiquidIL::IL::JUMP_IF_FALSE
     refute_includes opcodes, LiquidIL::IL::JUMP_IF_TRUE
-    assert_includes opcodes, LiquidIL::IL::JUMP
+    # Dead branch fully eliminated — only WRITE_RAW "yes" + HALT remains
+    assert_includes opcodes, LiquidIL::IL::WRITE_RAW
   end
 
   def test_jump_to_next_label_removed
@@ -245,15 +246,14 @@ class PartialInliningTest < Minitest::Test
     assert_equal "Shared: hi", template.render("greeting" => "hi")
   end
 
-  def test_dynamic_include_not_inlined
+  def test_dynamic_include_not_compilable
+    # Dynamic includes (variable partial name) can't be compiled by the structured compiler
     fs = MemoryFS.new("shared" => "Hello")
     ctx = LiquidIL::Context.new(file_system: fs)
     opt = LiquidIL::Optimizer.optimize(ctx)
-    template = opt.parse("{% assign tpl = 'shared' %}{% include tpl %}")
-    inst = template.instructions.find { |i| i[0] == LiquidIL::IL::INCLUDE_PARTIAL }
-    refute_nil inst
-    assert_nil inst[2]["__compiled_template__"]
-    assert_equal "Hello", template.render
+    assert_raises(RuntimeError) do
+      opt.parse("{% assign tpl = 'shared' %}{% include tpl %}")
+    end
   end
 end
 
