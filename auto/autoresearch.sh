@@ -18,19 +18,27 @@ if echo "$RESULTS" | grep -q "0 passed"; then
   exit 1
 fi
 
-# Extract totals (in ms) and convert to µs
-PARSE_MS=$(echo "$RESULTS" | sed 's/\x1b\[[0-9;]*m//g' | grep "Parse:" | grep -oE '[0-9]+\.[0-9]+ ms total' | grep -oE '[0-9]+\.[0-9]+')
-RENDER_MS=$(echo "$RESULTS" | sed 's/\x1b\[[0-9;]*m//g' | grep "Render:" | grep -oE '[0-9]+\.[0-9]+ [mµ]s total' | head -1)
+# Strip ANSI codes once
+CLEAN=$(echo "$RESULTS" | sed 's/\x1b\[[0-9;]*m//g')
 
-# Handle µs vs ms
-if echo "$RENDER_MS" | grep -q "µs"; then
-  RENDER_US=$(echo "$RENDER_MS" | grep -oE '[0-9]+\.[0-9]+')
-else
-  RENDER_VAL=$(echo "$RENDER_MS" | grep -oE '[0-9]+\.[0-9]+')
-  RENDER_US=$(ruby -e "puts (${RENDER_VAL} * 1000).round")
-fi
+# Extract parse (always in ms) and render (ms or µs) values using ruby for reliable parsing
+eval "$(ruby -e '
+lines = STDIN.read
+parse_line = lines[/Parse:.*total/]
+render_line = lines[/Render:.*total/]
 
-PARSE_US=$(ruby -e "puts (${PARSE_MS} * 1000).round")
+parse_val = parse_line[/([0-9.]+)\s*ms\s*total/, 1].to_f
+# Render could be µs or ms
+if render_line =~ /([0-9.]+)\s*ms\s*total/
+  render_us = ($1.to_f * 1000).round
+elsif render_line =~ /([0-9.]+)\s*.s\s*total/
+  render_us = $1.to_f.round
+end
+parse_us = (parse_val * 1000).round
+
+puts "PARSE_US=#{parse_us}"
+puts "RENDER_US=#{render_us}"
+' <<< "$CLEAN")"
 
 # Extract alloc counts
 ALLOCS=$(echo "$RESULTS" | sed 's/\x1b\[[0-9;]*m//g' | grep "Allocs:")
