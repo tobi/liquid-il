@@ -34,7 +34,9 @@ module LiquidIL
     # Skips SPECIAL_KEYS check — caller guarantees key isn't size/length/first/last
     def self.lookup_prop_fast(obj, key)
       if obj.is_a?(Hash)
-        obj.fetch(key) { obj[key.to_sym] }
+        # Avoid fetch block allocation: try string key first, sym fallback only if absent
+        v = obj[key]
+        v.nil? && !obj.key?(key) ? obj[key.to_sym] : v
       else
         lookup(obj, key)
       end
