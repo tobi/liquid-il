@@ -165,20 +165,8 @@ module LiquidIL
         return false if left.is_a?(Array) || left.is_a?(Hash) || right.is_a?(Array) || right.is_a?(Hash)
         return false if left.is_a?(LiquidIL::RangeValue) || right.is_a?(LiquidIL::RangeValue)
 
-        to_num = ->(v) {
-          case v
-          when Integer, Float then v
-          when String
-            if v =~ /\A-?\d+\z/ then v.to_i
-            elsif v =~ /\A-?\d+\.\d+\z/ then v.to_f
-            else nil
-            end
-          else nil
-          end
-        }
-
-        left_num = to_num.call(left)
-        right_num = to_num.call(right)
+        left_num = TO_NUM.call(left)
+        right_num = TO_NUM.call(right)
 
         if left_num.nil? || right_num.nil?
           if output
@@ -196,6 +184,18 @@ module LiquidIL
         when :ge then left_num >= right_num
         end
       else false
+      end
+    }
+
+    TO_NUM = ->(v) {
+      case v
+      when Integer, Float then v
+      when String
+        if v =~ /\A-?\d+\z/ then v.to_i
+        elsif v =~ /\A-?\d+\.\d+\z/ then v.to_f
+        else nil
+        end
+      else nil
       end
     }
 

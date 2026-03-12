@@ -8,9 +8,11 @@ module LiquidIL
     HASH_INSPECT_METHOD = Hash.instance_method(:inspect)
 
     def self.to_s(obj, seen = {})
+      return obj if obj.is_a?(String)
       case obj
-      when BigDecimal
-        obj.to_s("F")
+      when Integer, Float then obj.to_s
+      when nil then ""
+      when BigDecimal then obj.to_s("F")
       when Hash
         if obj.class.instance_method(:to_s) == HASH_TO_S_METHOD
           hash_inspect(obj, seen)
