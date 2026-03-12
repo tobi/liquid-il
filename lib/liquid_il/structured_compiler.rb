@@ -99,7 +99,7 @@ module LiquidIL
 
       # Compile the partial to IL
       begin
-        compiler = LiquidIL::Compiler.new(source, optimize: true, skip_passes: [12, 14, 15, 16, 17, 18, 19])
+        compiler = LiquidIL::Compiler.new(source, optimize: true, skip_passes: [0, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
         result = compiler.compile
       rescue LiquidIL::SyntaxError => e
         @partial_names_in_progress.delete(name)
@@ -2660,7 +2660,7 @@ module LiquidIL
     module Structured
       def self.compile(source, context: nil, **options)
         # Default to optimized; skip passes 16-19 (redundant with structured codegen)
-        opts = { optimize: true, skip_passes: [12, 14, 15, 16, 17, 18, 19] }.merge(options)
+        opts = { optimize: true, skip_passes: [0, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19] }.merge(options)
         compiler = Compiler.new(source, **opts)
         result = compiler.compile
         instructions = result[:instructions]
