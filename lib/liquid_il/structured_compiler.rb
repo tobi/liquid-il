@@ -235,6 +235,19 @@ module LiquidIL
       # First pass: scan for partials and compile them
       scan_and_compile_partials
 
+      # Pre-scan: detect which preamble variables are needed
+      @uses_cycles = false
+      @uses_captures = false
+      @uses_ifchanged = false
+      @instructions.each do |i|
+        case i[0]
+        when IL::CYCLE_STEP, IL::CYCLE_STEP_VAR then @uses_cycles = true
+        when IL::PUSH_CAPTURE then @uses_captures = true
+        when IL::IFCHANGED_CHECK then @uses_ifchanged = true
+        when IL::INCLUDE_PARTIAL, IL::RENDER_PARTIAL, IL::CONST_INCLUDE, IL::CONST_RENDER then @uses_cycles = true
+        end
+      end
+
       # Ensure shared helpers are initialized (once, at first use)
       StructuredHelpers.init
 
@@ -244,9 +257,10 @@ module LiquidIL
       code << generate_partial_lambdas
       code << "  __output__ = String.new(capacity: #{OUTPUT_CAPACITY})\n"
       code << "  __current_file__ = nil\n"
-      code << "  __cycle_state__ = {}\n"
-      code << "  __capture_stack__ = []\n"
-      code << "  __ifchanged_state__ = {}\n\n"
+      code << "  __cycle_state__ = {}\n" if @uses_cycles
+      code << "  __capture_stack__ = []\n" if @uses_captures || @uses_ifchanged
+      code << "  __ifchanged_state__ = {}\n" if @uses_ifchanged
+      code << "\n"
       code << generate_body
       code << "\n  __output__\n"
       code << "end\n"
@@ -1543,7 +1557,7 @@ module LiquidIL
         if inlined
           inlined
         elsif args.empty?
-          "LiquidIL::StructuredHelpers.call_filter(#{expr.value.inspect}, #{input}, [], __scope__, __current_file__, #{filter_line})"
+          "LiquidIL::StructuredHelpers.call_filter(#{expr.value.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, __scope__, __current_file__, #{filter_line})"
         else
           "LiquidIL::StructuredHelpers.call_filter(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], __scope__, __current_file__, #{filter_line})"
         end

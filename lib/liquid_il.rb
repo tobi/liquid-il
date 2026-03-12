@@ -13,6 +13,8 @@ require_relative "liquid_il/pretty_printer"
 require_relative "liquid_il/structured_compiler"
 
 module LiquidIL
+  EMPTY_ARRAY = [].freeze
+
   class Error < StandardError; end
 
   class ErrorMarker
