@@ -1990,10 +1990,21 @@ module LiquidIL
       code << "#{inner_prefix}  __prev_item_#{depth}__ = __scope__.lookup(#{item_var.inspect})\n"
       # Wrap with catch for break support (throw/catch works across block boundaries)
       code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n"
+      # Check if loop body needs scope sync:
+      # - Partials that read parent scope
+      # - Nested for loops (need parentloop from scope)
+      # - Any scope.lookup('forloop') or scope.lookup(item_var) calls
+      needs_scope_sync = body_code.include?("__partial_") ||
+                         body_code.include?("execute_dynamic_partial") ||
+                         body_code.include?("ForloopDrop.new") ||
+                         body_code.include?("__scope__.lookup('forloop')") ||
+                         body_code.include?("__scope__.lookup(#{item_var.inspect})")
       code << "#{inner_prefix}    #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
       code << "#{inner_prefix}      #{forloop_var}.index0 = #{idx_var}\n"
-      code << "#{inner_prefix}      __scope__.assign_local('forloop', #{forloop_var})\n"
-      code << "#{inner_prefix}      __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
+      if needs_scope_sync
+        code << "#{inner_prefix}      __scope__.assign_local('forloop', #{forloop_var})\n"
+        code << "#{inner_prefix}      __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
+      end
       # Adjust body_code indentation if we have error handling
       if needs_error_handling
         body_code = body_code.gsub(/^/, "  ")
