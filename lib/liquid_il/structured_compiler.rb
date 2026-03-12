@@ -2001,8 +2001,9 @@ module LiquidIL
         code << "#{inner_prefix}  __prev_forloop_#{depth}__ = __scope__.lookup('forloop')\n"
       end
       code << "#{inner_prefix}  __prev_item_#{depth}__ = __scope__.lookup(#{item_var.inspect})\n" if needs_scope_sync
-      # Wrap with catch for break support (throw/catch works across block boundaries)
-      code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n"
+      # Only wrap with catch if body uses break/continue (throw/catch has overhead)
+      needs_catch = body_code.include?(":loop_break_#{depth}") || body_code.include?("throw(:loop_break")
+      code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n" if needs_catch
       if needs_forloop
         code << "#{inner_prefix}    #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
         code << "#{inner_prefix}      #{forloop_var}.index0 = #{idx_var}\n"
@@ -2020,7 +2021,7 @@ module LiquidIL
       end
       code << body_code
       code << "#{inner_prefix}    end\n"
-      code << "#{inner_prefix}  end\n"
+      code << "#{inner_prefix}  end\n" if needs_catch
       if needs_forloop
         code << "#{inner_prefix}  # Update forloop.index0 to final count (for escaped references)\n"
         code << "#{inner_prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
