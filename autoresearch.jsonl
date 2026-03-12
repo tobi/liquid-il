@@ -1,1 +1,2 @@
 {"type":"config","name":"LiquidIL benchmark speed (render + parse)","metricName":"render_µs","metricUnit":"µs","bestDirection":"lower"}
+{"run":1,"commit":"5d3f772","metric":433,"metrics":{"parse_µs":7833,"render_allocs":2457,"parse_allocs":27400},"status":"keep","description":"Baseline after fixing autoresearch.sh µs parsing (locale issue). render=433µs, parse=7833µs","timestamp":1773340816921,"segment":0}

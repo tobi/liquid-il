@@ -40,6 +40,9 @@ module LiquidIL
       @partials = partials || {}
       @partial_names_in_progress = partial_names_in_progress || Set.new
       @uses_interrupts = detect_uses_interrupts
+      # Maps Liquid variable names to Ruby local variable names inside for loops
+      # e.g. "i" => "__item_0__", "forloop" => "__forloop_0__"
+      @loop_var_aliases = {}
     end
 
     # Check if template uses break/continue
@@ -375,7 +378,11 @@ module LiquidIL
 
       when IL::WRITE_VAR
         @pc += 1
-        var_expr = "__scope__.lookup(#{inst[1].inspect})"
+        var_expr = if (alias_var = @loop_var_aliases[inst[1]])
+                     alias_var
+                   else
+                     "__scope__.lookup(#{inst[1].inspect})"
+                   end
         inline_output_append(var_expr, prefix)
 
       when IL::WRITE_VAR_PATH
@@ -1465,7 +1472,11 @@ module LiquidIL
           expr.value.inspect
         end
       when :var
-        "__scope__.lookup(#{expr.value.inspect})"
+        if (alias_var = @loop_var_aliases[expr.value])
+          alias_var
+        else
+          "__scope__.lookup(#{expr.value.inspect})"
+        end
       when :var_path
         generate_var_path_expr(expr.value, expr.children.map { |c| c.value })
       when :empty
@@ -1561,7 +1572,11 @@ module LiquidIL
 
     # Generate variable path access (a.b.c)
     def generate_var_path_expr(var, path)
-      result = "__scope__.lookup(#{var.inspect})"
+      if (alias_var = @loop_var_aliases[var])
+        result = alias_var
+      else
+        result = "__scope__.lookup(#{var.inspect})"
+      end
       path.each do |key|
         result = "LiquidIL::StructuredHelpers::LOOKUP.call(#{result}, #{key.inspect})"
       end
@@ -1795,7 +1810,15 @@ module LiquidIL
         end
       end
 
-      # Parse loop body
+      # Parse loop body — set up aliases so expr_to_ruby can resolve loop vars
+      # to Ruby locals instead of __scope__.lookup() calls
+      saved_aliases = {}
+      alias_names = { item_var => "__item_#{depth}__", "forloop" => "__forloop_#{depth}__" }
+      alias_names.each do |liq_var, ruby_var|
+        saved_aliases[liq_var] = @loop_var_aliases[liq_var]
+        @loop_var_aliases[liq_var] = ruby_var
+      end
+
       body_start = @pc
       body_code = String.new
 
@@ -1824,6 +1847,15 @@ module LiquidIL
           result = generate_statement(indent + 3)
           break if result.nil?
           body_code << result
+        end
+      end
+
+      # Restore previous aliases (handles nested loops correctly)
+      saved_aliases.each do |liq_var, prev|
+        if prev
+          @loop_var_aliases[liq_var] = prev
+        else
+          @loop_var_aliases.delete(liq_var)
         end
       end
 
