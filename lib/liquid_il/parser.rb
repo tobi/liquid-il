@@ -661,9 +661,7 @@ module LiquidIL
       branch_blanks = []
       branch_raws = []
 
-      content = current_template_content
-      parts = content.split(/\s+/, 2)
-      condition_str = parts[1] || ''
+      condition_str = extract_tag_args
 
       expr_lexer = ExpressionLexer.new(condition_str)
       expr_lexer.advance
@@ -750,9 +748,7 @@ module LiquidIL
       branch_blanks = []
       branch_raws = []
 
-      content = current_template_content
-      parts = content.split(/\s+/, 2)
-      condition_str = parts[1] || ''
+      condition_str = extract_tag_args
 
       expr_lexer = ExpressionLexer.new(condition_str)
       expr_lexer.advance
@@ -851,9 +847,7 @@ module LiquidIL
     end
 
     def parse_when_clause_with_flag(case_value_temp, case_flag_temp)
-      content = current_template_content
-      parts = content.split(/\s+/, 2)
-      when_values_str = parts[1] || ''
+      when_values_str = extract_tag_args
 
       # Parse comma-separated values
       label_body = @builder.new_label
