@@ -30,6 +30,16 @@ module LiquidIL
       end
     end
 
+    # Fast path for hash property access with non-special keys
+    # Skips SPECIAL_KEYS check — caller guarantees key isn't size/length/first/last
+    def self.lookup_prop_fast(obj, key)
+      if obj.is_a?(Hash)
+        obj.fetch(key) { obj[key.to_sym] }
+      else
+        lookup(obj, key)
+      end
+    end
+
     # Inline output append — replaces 7-line case statement in generated code with 1 method call.
     # Hot path: String is most common, then Integer/Float.
     def self.output_append(output, value)

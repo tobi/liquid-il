@@ -2026,7 +2026,6 @@ module LiquidIL
         code << "#{inner_prefix}  # Update forloop.index0 to final count (for escaped references)\n"
         code << "#{inner_prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
       end
-      code << "#{inner_prefix}  # Update offset:continue position for next loop with same name\n"
       code << "#{inner_prefix}  __scope__.set_for_offset(#{loop_name.inspect}, #{offset_var} + #{coll_var}.length)\n"
       if needs_scope_sync
         code << "#{inner_prefix}  # Restore previous scope values (avoid push_scope/pop_scope overhead)\n"
@@ -2615,7 +2614,11 @@ module LiquidIL
 
     def inline_lookup(obj_ruby, key)
       key_s = key.to_s
-      "LiquidIL::StructuredHelpers.lookup_prop(#{obj_ruby}, #{key_s.inspect})"
+      if StructuredHelpers::SPECIAL_KEYS[key_s]
+        "LiquidIL::StructuredHelpers.lookup_prop(#{obj_ruby}, #{key_s.inspect})"
+      else
+        "LiquidIL::StructuredHelpers.lookup_prop_fast(#{obj_ruby}, #{key_s.inspect})"
+      end
     end
 
     # Generate inline output conversion (avoids __output_string__ lambda call)
