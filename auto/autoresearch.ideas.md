@@ -1,19 +1,17 @@
 # Autoresearch: Optimization Ideas
 
-## Current numbers (after 18 experiments)
-- **Render**: 330µs (target was 384µs liquid-vm — **beaten by 14%**)
-- **Parse**: 6,682µs (target 1,490µs — still 4.5x slower)
-- **Render allocs**: 1,832 (target 741 — 2.5x more)
-- **Parse allocs**: 22,053
+## Current numbers (end of session)
+- **Render**: 324-328µs (started 433µs, **-24%**, target 384µs liquid-vm — **beaten by 15%**)
+- **Parse**: 6,187µs (started 7,833µs, **-21%**, target 1,490µs — still 4.2x slower)
+- **Render allocs**: 1,350-1,356 (started 2,457, **-45%**, target 741 — 1.8x more)
+- **Parse allocs**: 21,550 (started 27,400, **-21%**)
 
-## Render-time ideas
-
-### Done ✅
-- [x] Loop variable aliasing: use Ruby locals instead of scope.lookup()
-- [x] Convert lambdas → module methods (LOOKUP, CALL_FILTER, COMPARE, etc.)
+## Render-time — Done ✅
+- [x] Loop variable aliasing: Ruby locals instead of scope.lookup()
+- [x] Convert lambdas → module methods (LOOKUP, CALL_FILTER, etc.)
 - [x] Conditional preamble: skip unused cycle_state/capture_stack/ifchanged_state
 - [x] Frozen EMPTY_ARRAY for no-arg filter calls
-- [x] Skip to_s.downcase in Filters.apply (names already lowercase)
+- [x] Skip to_s.downcase in Filters.apply
 - [x] Lazy seen={} in Utils.to_s and inspect (-314 allocs, -6% render!)
 - [x] Skip assign_local in loops without partials/nested loops
 - [x] Scope#stringify_keys: dup when all keys already strings
@@ -21,48 +19,42 @@
 - [x] Skip catch(:loop_break) when body has no break/continue
 - [x] lookup_prop_fast: skip SPECIAL_KEYS check for non-special keys
 - [x] Avoid fetch block alloc in lookup_prop_fast
+- [x] Alias LiquidIL::StructuredHelpers→_H, Utils→_U in generated code (-26% render allocs!)
 
-### Discarded ❌
-- [x] Inline output_append String ternary — larger generated code hurts parse
-- [x] Inline Hash fast-path in generated code — same issue
-- [x] Reduced OUTPUT_CAPACITY — resizing overhead for larger templates
-- [x] dig2/dig3 for multi-level paths — ~same, block alloc overhead cancels out
-
-### To explore (render)
-- **Inline more filters via filter_send**: need better error handling wrapper that preserves line numbers. Tried but had 2 regressions from error handling differences
-- **Skip assign_local cleanup at end of loop**: the restore of prev forloop/item is only needed if the loop variable name is used after the loop
-- **ForloopDrop: avoid allocation for simple loops**: if forloop isn't accessed in body, skip creating it entirely
-- **Reduce Hash allocations in Scope.new**: currently `stringify_keys` is called twice (static_environments + root_scope). Could share when no isolation needed
-- **String#<< vs String#+**: check if output building could be faster with different strategy
-- **Frozen string output for static templates**: if a template has no variables, return a frozen string constant
-
-## Parse-time ideas
-
-### Done ✅
-- [x] Zero-alloc TemplateLexer: cursor-based, returns symbol, offsets as ivars
-- [x] Perfect hash keywords in ExpressionLexer: byte-level dispatch, no .downcase
+## Parse-time — Done ✅
+- [x] Zero-alloc TemplateLexer (cursor-based, byte scanning)
+- [x] Perfect hash keywords in ExpressionLexer
 - [x] Inline whitespace skip in ExpressionLexer
-- [x] Lazy tag_name extraction: frozen common-tag lookup, skip split+downcase
+- [x] Lazy tag_name extraction with frozen common-tag lookup
+- [x] Skip 15 of 23 optimizer passes (only 1,2,3,4,5,7,9,20 needed)
+- [x] Alias long module names in generated code (smaller eval source)
 
-### To explore (parse — big gap: 7.2ms vs 1.49ms target)
-- **Profile IL optimizer passes**: which passes take the most time? Could skip more
-- **Reduce IL instruction allocations**: each instruction is an Array — could use a more compact format
-- **Faster StructuredCompiler codegen**: string building with << instead of interpolation
-- **Faster eval**: try `RubyVM::InstructionSequence.compile_option=` tweaks
-- **Smaller generated Ruby**: shorter variable names, fewer comments → faster eval
-- **Deferred content extraction**: parser calls token_content (byteslice+strip) even for tag names it already extracted via tag_name
-- **Cache compiled partials globally**: partial compilation is expensive and repeated across templates
+## Discarded ❌
+- Inline output_append String ternary — larger generated code hurts parse
+- Inline Hash fast-path in generated code — same issue
+- Reduced OUTPUT_CAPACITY — resizing overhead for larger templates
+- dig2/dig3 for multi-level paths — block alloc overhead cancels out
+- Scope#lookup fetch with sentinel — YJIT already optimizes key?+[]
+- Shared @buf for codegen — marginal, sub-methods still create strings
+- String.new(capacity:) for sub-method buffers — overhead exceeds benefit
+- Cache token_content — only requested once per token
 
-## Links & Inspiration
-- [tenderlove: Fast Tokenizers with StringScanner](https://tenderlovemaking.com/2023/09/02/fast-tokenizers-with-stringscanner/) — zero-alloc lexer patterns
-- Ruby YJIT: method calls cheaper than lambda.call; case/when well-optimized
-- `getbyte` + `byteslice` are fastest string access (no encoding overhead)
-- `| 32` trick for case-insensitive ASCII byte comparison
-- Default argument `= {}` allocates on every call even when not used — use `= nil` and `|| {}` lazily
+## Still worth exploring (high to low impact)
 
-## Key insight from this session
-**The biggest wins came from:**
-1. **Eliminating sneaky default-argument allocations** — `seen = {}` in Utils.to_s was -314 allocs, -6% render. Always audit `= {}`, `= []` defaults on hot paths.
-2. **Skipping unused work at codegen time** — ForloopDrop, assign_local, catch/throw all skipped when body doesn't need them. Each saved ~2-6% render.
-3. **Method dispatch over lambda.call** — converting lambdas to module methods saved ~2% render.
-4. **Zero-alloc lexer patterns** — from tenderlove's article: byte tables, skip not scan, deferred extraction.
+### Parse (big gap remains: 6.2ms vs 1.49ms target)
+- **ExpressionLexer on source bytes**: instead of extracting content string then creating ExpressionLexer(content), have ExpressionLexer work on source[content_start..content_end] range directly. Saves byteslice+strip per TAG/VAR token.
+- **Reduce IL instruction allocations**: each instruction is `[:FIND_VAR, "products"]` — Array allocation. Could use Struct or encode as integers.
+- **Profile eval()**: at ~90µs per template, eval is 25%+ of parse time. Could investigate `RubyVM::InstructionSequence` options or proc caching.
+- **Merge lex+parse into single pass**: currently TemplateLexer extracts tokens, then Parser processes them. A single-pass parser that scans bytes directly could be faster.
+
+### Render (diminishing returns, but allocs gap remains: 1,350 vs 741)
+- **Inline filter dispatch for safe filters** (join, sort, replace, etc.) via filter_send — needs correct error handling wrapper preserving line numbers
+- **Skip set_for_offset when no offset:continue** — needs global analysis of all loops
+- **Profile per-benchmark**: identify which of the 9 benchmarks contributes most to the total and optimize specifically for that
+
+## Key insights
+1. **Default `= {}` arguments are silent killers** — Utils.to_s's `seen = {}` was -314 allocs, -6% render
+2. **Skipping unused work at codegen time** is the highest-leverage pattern — ForloopDrop, assign_local, catch/throw each saved 2-6%
+3. **Local variable > constant chain** — aliasing `LiquidIL::StructuredHelpers` to `_H` saved 26% allocs because YJIT resolves locals faster
+4. **Most IL optimizer passes are redundant** with the structured compiler — we cut from 23 to 8 passes
+5. **Zero-alloc lexer patterns** from tenderlove work: byte tables, skip not scan, deferred extraction
