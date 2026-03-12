@@ -2576,8 +2576,13 @@ module LiquidIL
 
     def inline_lookup(obj_ruby, key)
       key_s = key.to_s
-      # Use shared helper method for all property lookups
-      "LiquidIL::StructuredHelpers.lookup_prop(#{obj_ruby}, #{key_s.inspect})"
+      # Inline Hash fast path for non-special keys (most common in Liquid templates)
+      if !StructuredHelpers::SPECIAL_KEYS[key_s]
+        # Inline: Hash string key → fetch with symbol fallback, else full LOOKUP
+        "((__lk__ = #{obj_ruby}).is_a?(Hash) ? __lk__.fetch(#{key_s.inspect}) { __lk__[#{key_s.to_sym.inspect}] } : LiquidIL::StructuredHelpers::LOOKUP.call(__lk__, #{key_s.inspect}))"
+      else
+        "LiquidIL::StructuredHelpers.lookup_prop(#{obj_ruby}, #{key_s.inspect})"
+      end
     end
 
     # Generate inline output conversion (avoids __output_string__ lambda call)
