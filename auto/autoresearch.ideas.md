@@ -1,45 +1,58 @@
 # Autoresearch: Optimization Ideas
 
+## Current numbers (after 12 experiments)
+- **Render**: 362µs (target was 384µs liquid-vm — **beaten by 5.7%**)
+- **Parse**: 7,216µs (target 1,490µs — still 4.8x slower)
+- **Render allocs**: 1,951 (target 741 — 2.6x more)
+- **Parse allocs**: 22,844
+
 ## Render-time ideas
 
-### Done / In progress
-- [x] Loop variable aliasing: use Ruby locals instead of scope.lookup() for loop item + forloop
+### Done ✅
+- [x] Loop variable aliasing: use Ruby locals instead of scope.lookup()
 - [x] Convert lambdas → module methods (LOOKUP, CALL_FILTER, COMPARE, etc.)
 - [x] Conditional preamble: skip unused cycle_state/capture_stack/ifchanged_state
 - [x] Frozen EMPTY_ARRAY for no-arg filter calls
-- [ ] Inline output_append: case String/Integer/nil directly in generated code (tested, needs benchmarking)
+- [x] Skip to_s.downcase in Filters.apply (names already lowercase)
+- [x] Lazy seen={} in Utils.to_s and inspect
+- [x] Skip assign_local in loops without partials/nested loops
+- [x] Scope#stringify_keys: dup when all keys already strings
 
-### To explore
-- **Skip assign_local in loops when no partials**: if loop body has no include/render, skip `assign_local('forloop', ...)` and `assign_local(item_var, ...)` since we use Ruby locals already
-- **Inline filter fast paths**: common filters like `escape`, `upcase`, `downcase`, `size` could be inlined as direct Ruby method calls instead of going through Filters.apply dispatch
-- **ForloopDrop optimization**: make ForloopDrop a Struct or use ivars directly — benchmark `index0=` setter cost
-- **Hash#fetch → Hash#[]**: in lookup_prop, `obj.fetch(key) { obj[key.to_sym] }` allocates a block. Could use `obj[key] || obj[key.to_sym]` (but nil/false values differ)
-- **Scope#lookup inlining**: for simple variable lookups in non-loop context, could inline `@scopes[0][key]` directly
-- **String capacity tuning**: OUTPUT_CAPACITY=8192 may be too large or small for specific templates
+### Discarded ❌
+- [x] Inline output_append String ternary — larger generated code hurts parse more than it helps render
+- [x] Inline Hash fast-path in generated code — same issue, bigger code = slower eval
+
+### To explore (render)
+- **Inline more filters via filter_send**: need better error handling wrapper that preserves line numbers. Tried but had 2 regressions from error handling differences
+- **Skip assign_local cleanup at end of loop**: the restore of prev forloop/item is only needed if the loop variable name is used after the loop
+- **ForloopDrop: avoid allocation for simple loops**: if forloop isn't accessed in body, skip creating it entirely
+- **Reduce Hash allocations in Scope.new**: currently `stringify_keys` is called twice (static_environments + root_scope). Could share when no isolation needed
+- **String#<< vs String#+**: check if output building could be faster with different strategy
+- **Frozen string output for static templates**: if a template has no variables, return a frozen string constant
 
 ## Parse-time ideas
 
-### Done / In progress
-- [x] Zero-alloc TemplateLexer: cursor-based, returns symbol, stores offsets as ivars
-- [x] Perfect hash keywords in ExpressionLexer: byte-level disambiguation by length + first byte
-- [x] Inline whitespace skip in ExpressionLexer (byte check instead of regex)
-- [ ] Fix 3 test regressions from TemplateLexer rewrite (currently at 4087 vs 4090)
+### Done ✅
+- [x] Zero-alloc TemplateLexer: cursor-based, returns symbol, offsets as ivars
+- [x] Perfect hash keywords in ExpressionLexer: byte-level dispatch, no .downcase
+- [x] Inline whitespace skip in ExpressionLexer
+- [x] Lazy tag_name extraction: frozen common-tag lookup, skip split+downcase
 
-### To explore
-- **Deferred content extraction in parser**: parser calls `token_content` (which does byteslice+strip) even when it only needs the tag name. Could extract tag name separately with a cheaper method
-- **Skip optimization passes**: currently skipping passes 16-19, but there may be other passes that are expensive and low-value for structured compiler
-- **Smaller generated Ruby source**: shorter variable names, fewer comments → faster eval()
-- **Cache compiled partials**: if same partial is included multiple times, compile once
-- **Lazy partial compilation**: only compile partials when first rendered, not at parse time
+### To explore (parse — big gap: 7.2ms vs 1.49ms target)
+- **Profile IL optimizer passes**: which passes take the most time? Could skip more
+- **Reduce IL instruction allocations**: each instruction is an Array — could use a more compact format
+- **Faster StructuredCompiler codegen**: string building with << instead of interpolation
+- **Faster eval**: try `RubyVM::InstructionSequence.compile_option=` tweaks
+- **Smaller generated Ruby**: shorter variable names, fewer comments → faster eval
+- **Deferred content extraction**: parser calls token_content (byteslice+strip) even for tag names it already extracted via tag_name
+- **Cache compiled partials globally**: partial compilation is expensive and repeated across templates
 
 ## Links & Inspiration
-- [tenderlove: Fast Tokenizers with StringScanner](https://tenderlovemaking.com/2023/09/02/fast-tokenizers-with-stringscanner/) — zero-alloc lexer patterns, byte lookup tables, perfect hashing, skip vs scan, deferred string extraction
-- Ruby YJIT: method calls are cheaper than lambda.call; case/when is well-optimized
-- `getbyte` + `byteslice` are the fastest string access patterns in Ruby (no encoding overhead)
-- `| 32` trick for case-insensitive ASCII byte comparison (only works for a-z/A-Z)
+- [tenderlove: Fast Tokenizers with StringScanner](https://tenderlovemaking.com/2023/09/02/fast-tokenizers-with-stringscanner/) — zero-alloc lexer patterns
+- Ruby YJIT: method calls cheaper than lambda.call; case/when well-optimized
+- `getbyte` + `byteslice` are fastest string access (no encoding overhead)
+- `| 32` trick for case-insensitive ASCII byte comparison
+- Default argument `= {}` allocates on every call even when not used — use `= nil` and `|| {}` lazily
 
-## Searches worth doing
-- How does Liquid Ruby's lexer work? Compare allocation counts
-- Profile with `ruby-prof` or `stackprof` to find actual hotspots in the 9 benchmark templates
-- Check if `eval` of generated code could be replaced with `RubyVM::InstructionSequence.compile` for faster compilation
-- Look at how Shopify's liquid-c extension achieves its performance
+## Key insight from this session
+**The biggest wins came from eliminating sneaky default-argument allocations** (`seen = {}` in Utils.to_s was -314 allocs, -6% render time). Always audit method signatures for `= {}`, `= []`, or other mutable defaults on hot paths.

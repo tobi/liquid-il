@@ -1983,24 +1983,33 @@ module LiquidIL
       # else: no offset, no limit, no offset:continue — skip slicing entirely
 
       code << "#{inner_prefix}#{coll_var} = #{coll_var}.reverse\n" if reversed
-      code << "#{inner_prefix}if !#{coll_var}.empty?\n"
-      code << "#{inner_prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
-      # Save previous values for scope cleanup after loop
-      code << "#{inner_prefix}  __prev_forloop_#{depth}__ = __scope__.lookup('forloop')\n"
-      code << "#{inner_prefix}  __prev_item_#{depth}__ = __scope__.lookup(#{item_var.inspect})\n"
-      # Wrap with catch for break support (throw/catch works across block boundaries)
-      code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n"
-      # Check if loop body needs scope sync:
-      # - Partials that read parent scope
-      # - Nested for loops (need parentloop from scope)
-      # - Any scope.lookup('forloop') or scope.lookup(item_var) calls
+
+      # Check what the loop body actually needs
       needs_scope_sync = body_code.include?("__partial_") ||
                          body_code.include?("execute_dynamic_partial") ||
                          body_code.include?("ForloopDrop.new") ||
                          body_code.include?("__scope__.lookup('forloop')") ||
                          body_code.include?("__scope__.lookup(#{item_var.inspect})")
-      code << "#{inner_prefix}    #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
-      code << "#{inner_prefix}      #{forloop_var}.index0 = #{idx_var}\n"
+      needs_forloop = body_code.include?(forloop_var) || needs_scope_sync
+
+      code << "#{inner_prefix}if !#{coll_var}.empty?\n"
+      if needs_forloop
+        code << "#{inner_prefix}  #{forloop_var} = LiquidIL::ForloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{parent_forloop})\n"
+      end
+      # Save previous values for scope cleanup after loop
+      if needs_scope_sync
+        code << "#{inner_prefix}  __prev_forloop_#{depth}__ = __scope__.lookup('forloop')\n"
+      end
+      code << "#{inner_prefix}  __prev_item_#{depth}__ = __scope__.lookup(#{item_var.inspect})\n" if needs_scope_sync
+      # Wrap with catch for break support (throw/catch works across block boundaries)
+      code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n"
+      if needs_forloop
+        code << "#{inner_prefix}    #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
+        code << "#{inner_prefix}      #{forloop_var}.index0 = #{idx_var}\n"
+      else
+        # No forloop needed — use plain each (skip index tracking overhead)
+        code << "#{inner_prefix}    #{coll_var}.each do |#{item_var_internal}|\n"
+      end
       if needs_scope_sync
         code << "#{inner_prefix}      __scope__.assign_local('forloop', #{forloop_var})\n"
         code << "#{inner_prefix}      __scope__.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
@@ -2012,13 +2021,17 @@ module LiquidIL
       code << body_code
       code << "#{inner_prefix}    end\n"
       code << "#{inner_prefix}  end\n"
-      code << "#{inner_prefix}  # Update forloop.index0 to final count (for escaped references)\n"
-      code << "#{inner_prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
+      if needs_forloop
+        code << "#{inner_prefix}  # Update forloop.index0 to final count (for escaped references)\n"
+        code << "#{inner_prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
+      end
       code << "#{inner_prefix}  # Update offset:continue position for next loop with same name\n"
       code << "#{inner_prefix}  __scope__.set_for_offset(#{loop_name.inspect}, #{offset_var} + #{coll_var}.length)\n"
-      code << "#{inner_prefix}  # Restore previous scope values (avoid push_scope/pop_scope overhead)\n"
-      code << "#{inner_prefix}  __scope__.assign_local('forloop', __prev_forloop_#{depth}__)\n"
-      code << "#{inner_prefix}  __scope__.assign_local(#{item_var.inspect}, __prev_item_#{depth}__)\n"
+      if needs_scope_sync
+        code << "#{inner_prefix}  # Restore previous scope values (avoid push_scope/pop_scope overhead)\n"
+        code << "#{inner_prefix}  __scope__.assign_local('forloop', __prev_forloop_#{depth}__)\n"
+        code << "#{inner_prefix}  __scope__.assign_local(#{item_var.inspect}, __prev_item_#{depth}__)\n"
+      end
 
       # Add else block if present (for-else pattern)
       if !else_code.empty?
