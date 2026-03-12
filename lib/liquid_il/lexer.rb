@@ -63,6 +63,42 @@ module LiquidIL
       end
     end
 
+    # Extract just the tag name from a TAG token — no content string allocation.
+    # Scans bytes from content_start, skips leading whitespace, extracts first word, downcases.
+    # Returns a frozen string (no allocation for common tag names).
+    COMMON_TAGS = %w[if elsif else endif unless endunless for endfor case when endcase
+                     assign capture endcapture comment endcomment raw endraw render include
+                     increment decrement tablerow endtablerow cycle ifchanged break continue
+                     liquid echo].each_with_object({}) { |t, h| h[t] = t.freeze }.freeze
+
+    def tag_name
+      src = @source
+      pos = @content_start
+      limit = @content_end
+
+      # Skip leading whitespace
+      while pos < limit
+        b = src.getbyte(pos)
+        break unless b == 32 || b == 9 || b == 10 || b == 13  # space, tab, newline, cr
+        pos += 1
+      end
+
+      # Find end of tag name (first whitespace or end of content)
+      name_start = pos
+      while pos < limit
+        b = src.getbyte(pos)
+        break if b == 32 || b == 9 || b == 10 || b == 13
+        pos += 1
+      end
+
+      return nil if pos == name_start
+
+      # Extract and downcase the tag name
+      # For common tags (all already lowercase), COMMON_TAGS lookup returns frozen string (no extra alloc)
+      name = src.byteslice(name_start, pos - name_start)
+      COMMON_TAGS[name] || name.downcase
+    end
+
     # Scan raw content until {% endraw %}
     # Returns [content, trim_left, trim_right] or nil if no endraw found
     def scan_raw_body

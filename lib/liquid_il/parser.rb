@@ -80,7 +80,7 @@ module LiquidIL
           when TemplateLexer::TAG
             trim_previous_raw if current_template_trim_left
             @pending_trim_left = current_template_trim_right  # For next RAW token
-            tag_name = tag_name_from_content(current_template_content)
+            tag_name = @template_lexer.tag_name
 
             # Check if this is an end tag we're looking for
             return [tag_name, blank, raw_indices] if end_tags && end_tags.include?(tag_name)
@@ -113,7 +113,7 @@ module LiquidIL
       depth = 1
       while !template_eos? && depth > 0
         if current_template_type == TemplateLexer::TAG
-          tag_name = tag_name_from_content(current_template_content)
+          tag_name = @template_lexer.tag_name
           # Track nesting for tags that can nest
           case tag_name
           when 'if', 'unless', 'case', 'for', 'tablerow', 'capture', 'comment'
@@ -1730,7 +1730,7 @@ module LiquidIL
       comment_depth = 0 # Track nested comments
       until template_eos?
         if current_template_type == TemplateLexer::TAG
-          tag_name = tag_name_from_content(current_template_content)
+          tag_name = @template_lexer.tag_name
           case tag_name
           when 'raw'
             raw_depth += 1
@@ -1759,7 +1759,7 @@ module LiquidIL
       has_content = false
       until template_eos?
         if current_template_type == TemplateLexer::TAG
-          tag_name = tag_name_from_content(current_template_content)
+          tag_name = @template_lexer.tag_name
           if tag_name == 'enddoc'
             advance_template
             break
