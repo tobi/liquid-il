@@ -7,7 +7,7 @@ module LiquidIL
     HASH_TO_S_METHOD = Hash.instance_method(:to_s)
     HASH_INSPECT_METHOD = Hash.instance_method(:inspect)
 
-    def self.to_s(obj, seen = {})
+    def self.to_s(obj, seen = nil)
       return obj if obj.is_a?(String)
       case obj
       when Integer, Float then obj.to_s
@@ -15,12 +15,12 @@ module LiquidIL
       when BigDecimal then obj.to_s("F")
       when Hash
         if obj.class.instance_method(:to_s) == HASH_TO_S_METHOD
-          hash_inspect(obj, seen)
+          hash_inspect(obj, seen || {})
         else
           obj.to_s
         end
       when Array
-        array_inspect(obj, seen)
+        array_inspect(obj, seen || {})
       else
         obj.to_s
       end
