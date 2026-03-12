@@ -393,11 +393,17 @@ module LiquidIL
 
     def stringify_keys(hash)
       return {} unless hash.is_a?(Hash)
-      result = {}
-      hash.each do |k, v|
-        result[k.to_s] = v
+      return hash.dup if hash.empty?
+      # Check if all keys are already strings
+      all_strings = true
+      hash.each_key { |k| unless k.is_a?(String); all_strings = false; break; end }
+      if all_strings
+        hash.dup  # Must dup to avoid aliasing between static_environments and root_scope
+      else
+        result = {}
+        hash.each { |k, v| result[k.to_s] = v }
+        result
       end
-      result
     end
   end
 

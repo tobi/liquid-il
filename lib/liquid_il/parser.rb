@@ -33,31 +33,31 @@ module LiquidIL
     private
 
     def advance_template
-      @current_token = @template_lexer.next_token
+      @template_lexer.next_token
     end
 
     def current_template_type
-      @current_token[0]
+      @template_lexer.token_type
     end
 
     def current_template_content
-      @current_token[1]
+      @template_lexer.token_content
     end
 
     def current_template_trim_left
-      @current_token[2]
+      @template_lexer.trim_left
     end
 
     def current_template_trim_right
-      @current_token[3]
+      @template_lexer.trim_right
     end
 
     def current_template_start_pos
-      @current_token[4]
+      @template_lexer.token_start
     end
 
     def current_template_end_pos
-      @current_token[5]
+      @template_lexer.token_end
     end
 
     def parse_block_body(end_tags)
@@ -80,7 +80,7 @@ module LiquidIL
           when TemplateLexer::TAG
             trim_previous_raw if current_template_trim_left
             @pending_trim_left = current_template_trim_right  # For next RAW token
-            tag_name = tag_name_from_content(current_template_content)
+            tag_name = @template_lexer.tag_name
 
             # Check if this is an end tag we're looking for
             return [tag_name, blank, raw_indices] if end_tags && end_tags.include?(tag_name)
@@ -108,12 +108,38 @@ module LiquidIL
       content.split(/\s+/, 2).first&.downcase
     end
 
+    # Extract tag arguments from current token — everything after the tag name.
+    # Uses byte scanning on source to avoid content.split allocation.
+    def extract_tag_args
+      src = @source
+      pos = @template_lexer.content_start
+      limit = @template_lexer.content_end
+      # Skip leading whitespace
+      while pos < limit && (b = src.getbyte(pos)) && (b == 32 || b == 9 || b == 10 || b == 13)
+        pos += 1
+      end
+      # Skip tag name (non-whitespace)
+      while pos < limit && (b = src.getbyte(pos)) && b > 32
+        pos += 1
+      end
+      # Skip whitespace between tag name and args
+      while pos < limit && (b = src.getbyte(pos)) && (b == 32 || b == 9 || b == 10 || b == 13)
+        pos += 1
+      end
+      # Trim trailing whitespace
+      e = limit
+      while e > pos && (b = src.getbyte(e - 1)) && (b == 32 || b == 9 || b == 10 || b == 13)
+        e -= 1
+      end
+      pos < e ? src.byteslice(pos, e - pos) : ""
+    end
+
     # Skip to a specific end tag without emitting IL (for error recovery)
     def skip_to_end_tag(end_tag_name)
       depth = 1
       while !template_eos? && depth > 0
         if current_template_type == TemplateLexer::TAG
-          tag_name = tag_name_from_content(current_template_content)
+          tag_name = @template_lexer.tag_name
           # Track nesting for tags that can nest
           case tag_name
           when 'if', 'unless', 'case', 'for', 'tablerow', 'capture', 'comment'
@@ -167,12 +193,10 @@ module LiquidIL
     end
 
     def parse_tag
-      content = current_template_content
       start_pos = current_template_start_pos
       end_pos = current_template_end_pos
-      parts = content.split(/\s+/, 2)
-      tag_name = parts[0]&.downcase
-      tag_args = parts[1] || ''
+      tag_name = @template_lexer.tag_name
+      tag_args = extract_tag_args
 
       @builder.with_span(start_pos, end_pos)
 
@@ -637,9 +661,7 @@ module LiquidIL
       branch_blanks = []
       branch_raws = []
 
-      content = current_template_content
-      parts = content.split(/\s+/, 2)
-      condition_str = parts[1] || ''
+      condition_str = extract_tag_args
 
       expr_lexer = ExpressionLexer.new(condition_str)
       expr_lexer.advance
@@ -726,9 +748,7 @@ module LiquidIL
       branch_blanks = []
       branch_raws = []
 
-      content = current_template_content
-      parts = content.split(/\s+/, 2)
-      condition_str = parts[1] || ''
+      condition_str = extract_tag_args
 
       expr_lexer = ExpressionLexer.new(condition_str)
       expr_lexer.advance
@@ -827,9 +847,7 @@ module LiquidIL
     end
 
     def parse_when_clause_with_flag(case_value_temp, case_flag_temp)
-      content = current_template_content
-      parts = content.split(/\s+/, 2)
-      when_values_str = parts[1] || ''
+      when_values_str = extract_tag_args
 
       # Parse comma-separated values
       label_body = @builder.new_label
@@ -1730,7 +1748,7 @@ module LiquidIL
       comment_depth = 0 # Track nested comments
       until template_eos?
         if current_template_type == TemplateLexer::TAG
-          tag_name = tag_name_from_content(current_template_content)
+          tag_name = @template_lexer.tag_name
           case tag_name
           when 'raw'
             raw_depth += 1
@@ -1759,7 +1777,7 @@ module LiquidIL
       has_content = false
       until template_eos?
         if current_template_type == TemplateLexer::TAG
-          tag_name = tag_name_from_content(current_template_content)
+          tag_name = @template_lexer.tag_name
           if tag_name == 'enddoc'
             advance_template
             break

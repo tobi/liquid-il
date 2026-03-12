@@ -48,7 +48,8 @@ module LiquidIL
 
       def apply(name, input, args, context)
         @context = context
-        method_name = name.to_s.downcase
+        # name from compiled code is already a frozen lowercase string — skip to_s.downcase
+        method_name = name.is_a?(String) ? name : name.to_s.downcase
         if valid_filter_methods[method_name]
           send(method_name, input, *args)
         else
