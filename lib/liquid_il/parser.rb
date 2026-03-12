@@ -108,6 +108,32 @@ module LiquidIL
       content.split(/\s+/, 2).first&.downcase
     end
 
+    # Extract tag arguments from current token — everything after the tag name.
+    # Uses byte scanning on source to avoid content.split allocation.
+    def extract_tag_args
+      src = @source
+      pos = @template_lexer.content_start
+      limit = @template_lexer.content_end
+      # Skip leading whitespace
+      while pos < limit && (b = src.getbyte(pos)) && (b == 32 || b == 9 || b == 10 || b == 13)
+        pos += 1
+      end
+      # Skip tag name (non-whitespace)
+      while pos < limit && (b = src.getbyte(pos)) && b > 32
+        pos += 1
+      end
+      # Skip whitespace between tag name and args
+      while pos < limit && (b = src.getbyte(pos)) && (b == 32 || b == 9 || b == 10 || b == 13)
+        pos += 1
+      end
+      # Trim trailing whitespace
+      e = limit
+      while e > pos && (b = src.getbyte(e - 1)) && (b == 32 || b == 9 || b == 10 || b == 13)
+        e -= 1
+      end
+      pos < e ? src.byteslice(pos, e - pos) : ""
+    end
+
     # Skip to a specific end tag without emitting IL (for error recovery)
     def skip_to_end_tag(end_tag_name)
       depth = 1
@@ -167,12 +193,10 @@ module LiquidIL
     end
 
     def parse_tag
-      content = current_template_content
       start_pos = current_template_start_pos
       end_pos = current_template_end_pos
-      parts = content.split(/\s+/, 2)
-      tag_name = parts[0]&.downcase
-      tag_args = parts[1] || ''
+      tag_name = @template_lexer.tag_name
+      tag_args = extract_tag_args
 
       @builder.with_span(start_pos, end_pos)
 
