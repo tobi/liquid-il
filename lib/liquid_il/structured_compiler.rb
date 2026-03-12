@@ -173,20 +173,8 @@ module LiquidIL
         end
       end
 
-      # If we have both includes and for loops, check if any partial uses interrupts
-      # Break/continue in partials doesn't propagate correctly with throw/catch
-      if has_include && has_for_loop
-        @instructions.each do |inst|
-          if inst[0] == IL::INCLUDE_PARTIAL
-            name = inst[1]
-            args = inst[2] || {}
-            next if args["__dynamic_name__"] || args["__invalid_name__"]
-            if partial_uses_interrupts?(name)
-              blockers << "partial '#{name}' uses interrupts inside for loop"
-            end
-          end
-        end
-      end
+      # Include + interrupt propagation is now supported — partials push interrupts
+      # to scope, and the caller checks after each include call.
 
       blockers
     end
@@ -399,12 +387,12 @@ module LiquidIL
                    else
                      "__scope__.lookup(#{inst[1].inspect})"
                    end
-        inline_output_append(var_expr, prefix)
+        inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts)
 
       when IL::WRITE_VAR_PATH
         @pc += 1
         var_expr = generate_var_path_expr(inst[1], inst[2])
-        inline_output_append(var_expr, prefix)
+        inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts)
 
       when IL::FIND_VAR, IL::FIND_VAR_PATH
         if peek_for_loop?
@@ -798,6 +786,10 @@ module LiquidIL
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = __idx__ }\n"
         end
         code << "#{prefix}    #{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+        # Break out of include-for iteration if partial set interrupt
+        unless isolated
+          code << "#{prefix}    break if __scope__.has_interrupt?\n"
+        end
         code << "#{prefix}  end\n"
         if isolated
           # render iterates over ranges
@@ -846,6 +838,18 @@ module LiquidIL
       else
         # Simple render
         code << "#{prefix}#{lambda_name}.call(__partial_args__, __output__, __scope__, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+      end
+
+      # After include: propagate interrupts (break/continue) from partial to caller's loop
+      if !isolated && @loop_depth > 0
+        code << "#{prefix}if __scope__.has_interrupt?\n"
+        code << "#{prefix}  __int__ = __scope__.pop_interrupt\n"
+        code << "#{prefix}  if __int__ == :break\n"
+        code << "#{prefix}    throw(:loop_break_#{@loop_depth - 1})\n"
+        code << "#{prefix}  else\n"
+        code << "#{prefix}    next\n"
+        code << "#{prefix}  end\n"
+        code << "#{prefix}end\n"
       end
 
       # Close the include disable check
