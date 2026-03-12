@@ -21,12 +21,12 @@ module LiquidIL
     def self.lookup_prop(obj, key)
       if obj.is_a?(Hash)
         if SPECIAL_KEYS[key]
-          LOOKUP.call(obj, key)
+          lookup(obj, key)
         else
           obj.fetch(key) { obj[key.to_sym] }
         end
       else
-        LOOKUP.call(obj, key)
+        lookup(obj, key)
       end
     end
 
@@ -64,7 +64,7 @@ module LiquidIL
       end
     }
 
-    LOOKUP = ->(obj, key) {
+    def self.lookup(obj, key)
       return nil if obj.nil?
       case obj
       when Hash
@@ -104,9 +104,12 @@ module LiquidIL
       else
         obj.respond_to?(:[]) ? obj[key.to_s] : nil
       end
-    }
+    end
 
-    CALL_FILTER = ->(name, input, args, scope, current_file = nil, line = 1) do
+    # Lambda wrapper for backward compatibility with generated code
+    LOOKUP = method(:lookup)
+
+    def self.call_filter(name, input, args, scope, current_file = nil, line = 1)
       LiquidIL::Filters.apply(name, input, args, scope)
     rescue LiquidIL::FilterError
       nil
@@ -115,7 +118,7 @@ module LiquidIL
       LiquidIL::ErrorMarker.new(e.message, location)
     end
 
-    COMPARE = ->(left, right, op, output = nil, current_file = nil) {
+    def self.compare(left, right, op, output = nil, current_file = nil)
       left = left.to_liquid_value if left.respond_to?(:to_liquid_value)
       right = right.to_liquid_value if right.respond_to?(:to_liquid_value)
 
@@ -165,8 +168,8 @@ module LiquidIL
         return false if left.is_a?(Array) || left.is_a?(Hash) || right.is_a?(Array) || right.is_a?(Hash)
         return false if left.is_a?(LiquidIL::RangeValue) || right.is_a?(LiquidIL::RangeValue)
 
-        left_num = TO_NUM.call(left)
-        right_num = TO_NUM.call(right)
+        left_num = to_num(left)
+        right_num = to_num(right)
 
         if left_num.nil? || right_num.nil?
           if output
@@ -185,9 +188,9 @@ module LiquidIL
         end
       else false
       end
-    }
+    end
 
-    TO_NUM = ->(v) {
+    def self.to_num(v)
       case v
       when Integer, Float then v
       when String
@@ -197,9 +200,9 @@ module LiquidIL
         end
       else nil
       end
-    }
+    end
 
-    CONTAINS = ->(left, right) {
+    def self.contains(left, right)
       return false if left.nil? || right.nil?
       case left
       when String then left.include?(right.to_s)
@@ -207,9 +210,9 @@ module LiquidIL
       when Hash then left.key?(right.to_s) || left.key?(right.to_s.to_sym)
       else false
       end
-    }
+    end
 
-    TO_ITERABLE = ->(value) {
+    def self.to_iterable(value)
       case value
       when nil, true, false, Integer, Float
         []
@@ -236,9 +239,9 @@ module LiquidIL
           [value]
         end
       end
-    }
+    end
 
-    SLICE_COLLECTION = ->(collection, from, to) {
+    def self.slice_collection(collection, from, to)
       if collection.is_a?(Array)
         from = 0 if from < 0
         sz = collection.length
@@ -263,17 +266,17 @@ module LiquidIL
         end
         segments
       end
-    }
+    end
 
-    VALID_INTEGER = ->(value) {
+    def self.valid_integer(value)
       return true if value.nil?
       return true if value.is_a?(Integer)
       return true if value.is_a?(Float)
       return true if value.is_a?(String) && value.match?(/\A-?\d/)
       false
-    }
+    end
 
-    BRACKET_LOOKUP = ->(obj, key) {
+    def self.bracket_lookup(obj, key)
       return nil if obj.nil?
       return nil if key.is_a?(LiquidIL::RangeValue) || key.is_a?(Range)
       key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
@@ -298,7 +301,17 @@ module LiquidIL
       else
         nil
       end
-    }
+    end
+
+    # Lambda wrappers for backward compatibility
+    CALL_FILTER = method(:call_filter)
+    COMPARE = method(:compare)
+    TO_NUM = method(:to_num)
+    CONTAINS = method(:contains)
+    TO_ITERABLE = method(:to_iterable)
+    SLICE_COLLECTION = method(:slice_collection)
+    VALID_INTEGER = method(:valid_integer)
+    BRACKET_LOOKUP = method(:bracket_lookup)
 
     # Runtime dynamic partial execution — used when partial name is a variable.
     # Compiles and runs the partial on-the-fly.
