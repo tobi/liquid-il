@@ -142,9 +142,9 @@ module LiquidIL
           tag_name = @template_lexer.tag_name
           # Track nesting for tags that can nest
           case tag_name
-          when 'if', 'unless', 'case', 'for', 'tablerow', 'capture', 'comment'
+          when 'if', 'unless', 'case', 'for', 'tablerow', 'capture', 'comment', 'style', 'schema'
             depth += 1
-          when 'endif', 'endunless', 'endcase', 'endfor', 'endtablerow', 'endcapture', 'endcomment'
+          when 'endif', 'endunless', 'endcase', 'endfor', 'endtablerow', 'endcapture', 'endcomment', 'endstyle', 'endschema'
             if tag_name == end_tag_name && depth == 1
               advance_template
               return
@@ -254,6 +254,15 @@ module LiquidIL
       when 'doc'
         advance_template
         parse_doc_tag
+      when 'style'
+        # Shopify {% style %}...{% endstyle %}: outputs content (with Liquid evaluation)
+        advance_template
+        parse_block_body(['endstyle'])
+        advance_template
+      when 'schema'
+        # Shopify {% schema %}...{% endschema %}: discards content (metadata only)
+        advance_template
+        skip_to_end_tag('endschema')
       when 'render'
         advance_template
         parse_render_tag(tag_args)
