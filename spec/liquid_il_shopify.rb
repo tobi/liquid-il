@@ -22,7 +22,15 @@ LiquidSpec.setup do |ctx|
   LiquidIL::Filters.singleton_class.class_eval do
     # --- Shopify URL / asset filters ---
     def asset_url(input)
-      "//cdn.shopify.com/s/files/1/0000/0001/t/1/assets/#{input}"
+      # Derive CDN domain from shop domain in scope context
+      domain = @context&.respond_to?(:lookup) ? @context.lookup("shop")&.dig("domain") : nil
+      domain ||= @context.respond_to?(:[]) ? @context["shop"]&.dig("domain") : nil rescue nil
+      if domain
+        cdn_domain = domain.sub(/\A[^.]+\.shopify\./, "cdn.shopify.")
+        "//#{cdn_domain}/s/files/1/0000/0001/t/1/assets/#{input}"
+      else
+        "//cdn.shopify.com/s/files/1/0000/0001/t/1/assets/#{input}"
+      end
     end
 
     def asset_img_url(input, size = nil)
