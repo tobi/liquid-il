@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "liquid_il/lexer"
+require_relative "liquid_il/tags"
 require_relative "liquid_il/parser"
 require_relative "liquid_il/il"
 require_relative "liquid_il/passes"

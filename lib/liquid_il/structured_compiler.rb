@@ -618,6 +618,38 @@ module LiquidIL
       when IL::INCLUDE_PARTIAL
         generate_partial_call(inst, @pc, indent, isolated: false)
 
+      when :PAGINATE_SETUP
+        @pc += 1
+        coll_path = inst[1]
+        page_size = inst[2]
+        prefix = "  " * indent
+        # Generate runtime paginate setup
+        parts = coll_path.split(".")
+        lookup = "__scope__.lookup(#{parts[0].inspect})"
+        parts[1..].each { |p| lookup = "_H.lookup(#{lookup}, #{p.inspect})" }
+        code = String.new
+        code << "#{prefix}__pg_coll__ = #{lookup}\n"
+        code << "#{prefix}__pg_coll__ = __pg_coll__.respond_to?(:to_a) ? __pg_coll__.to_a : Array(__pg_coll__) unless __pg_coll__.is_a?(Array)\n"
+        code << "#{prefix}__pg_size__ = #{page_size}\n"
+        code << "#{prefix}__pg_page__ = (__scope__.lookup('current_page') || 1).to_i\n"
+        code << "#{prefix}__pg_total__ = __pg_coll__.length\n"
+        code << "#{prefix}__pg_pages__ = (__pg_total__ + __pg_size__ - 1) / __pg_size__\n"
+        code << "#{prefix}__pg_pages__ = 1 if __pg_pages__ < 1\n"
+        code << "#{prefix}__pg_page__ = [[__pg_page__, 1].max, __pg_pages__].min\n"
+        code << "#{prefix}__pg_offset__ = (__pg_page__ - 1) * __pg_size__\n"
+        code << "#{prefix}__pg_items__ = __pg_coll__[__pg_offset__, __pg_size__] || []\n"
+        # Build paginate object
+        code << "#{prefix}__pg_parts__ = (1..__pg_pages__).map { |p| { 'title' => p.to_s, 'url' => \"?page=\#{p}\", 'is_link' => p != __pg_page__ } }\n"
+        code << "#{prefix}__paginate__ = { 'page_size' => __pg_size__, 'current_page' => __pg_page__, 'current_offset' => __pg_offset__, 'pages' => __pg_pages__, 'items' => __pg_items__, 'parts' => __pg_parts__, 'previous' => __pg_page__ > 1 ? { 'title' => '&laquo; Previous', 'url' => \"?page=\#{__pg_page__ - 1}\", 'is_link' => true } : nil, 'next' => __pg_page__ < __pg_pages__ ? { 'title' => 'Next &raquo;', 'url' => \"?page=\#{__pg_page__ + 1}\", 'is_link' => true } : nil, 'collection_size' => __pg_total__ }\n"
+        code << "#{prefix}__scope__.assign('paginate', __paginate__)\n"
+        # Replace the collection variable with the sliced page
+        code << "#{prefix}__scope__.assign(#{parts.last.inspect}, __pg_items__)\n" if parts.length == 1
+        code
+
+      when :PAGINATE_TEARDOWN
+        @pc += 1
+        ""
+
       else
         generate_expression_statement(indent)
       end
