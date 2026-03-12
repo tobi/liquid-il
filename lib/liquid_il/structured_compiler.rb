@@ -255,6 +255,7 @@ module LiquidIL
       code << "# frozen_string_literal: true\n"
       code << "proc do |__scope__, __spans__, __template_source__|\n"
       code << "  _H = LiquidIL::StructuredHelpers\n"
+      code << "  _U = LiquidIL::Utils\n"
       code << generate_partial_lambdas
       code << "  __output__ = String.new(capacity: #{OUTPUT_CAPACITY})\n"
       code << "  __current_file__ = nil\n"
@@ -1565,7 +1566,7 @@ module LiquidIL
       when :case_compare
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "LiquidIL::Utils.case_equal?(#{right}, #{left})"
+        "_U.case_equal?(#{right}, #{left})"
       when :temp
         "__temp_#{expr.value}__"
       when :and
@@ -2547,22 +2548,22 @@ module LiquidIL
       case name
       when "upcase"
         return nil unless args.empty?
-        "LiquidIL::Utils.to_s(#{input}).upcase"
+        "_U.to_s(#{input}).upcase"
       when "downcase"
         return nil unless args.empty?
-        "LiquidIL::Utils.to_s(#{input}).downcase"
+        "_U.to_s(#{input}).downcase"
       when "capitalize"
         return nil unless args.empty?
-        "LiquidIL::Utils.to_s(#{input}).capitalize"
+        "_U.to_s(#{input}).capitalize"
       when "strip"
         return nil unless args.empty?
-        "LiquidIL::Utils.to_s(#{input}).strip"
+        "_U.to_s(#{input}).strip"
       when "lstrip"
         return nil unless args.empty?
-        "LiquidIL::Utils.to_s(#{input}).lstrip"
+        "_U.to_s(#{input}).lstrip"
       when "rstrip"
         return nil unless args.empty?
-        "LiquidIL::Utils.to_s(#{input}).rstrip"
+        "_U.to_s(#{input}).rstrip"
       when "escape"
         return nil unless args.empty?
         "((__fi__ = #{input}); __fi__.nil? ? nil : CGI.escapeHTML(LiquidIL::Utils.to_s(__fi__)))"
