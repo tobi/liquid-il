@@ -890,17 +890,47 @@ module LiquidIL
       end
 
       # Handle 'with' clause for include
-      if (with_expr = args["__with__"])
-        as_alias = args["__as__"]
-        # The item var defaults to the partial name (resolved at runtime for dynamic)
-        if as_alias
-          code << "#{prefix}__dyn_assigns__[#{as_alias.inspect}] = #{generate_var_lookup(with_expr)}\n"
-        else
-          code << "#{prefix}__dyn_assigns__[__dyn_name__] = #{generate_var_lookup(with_expr)}\n"
-        end
-      end
+      for_expr = args["__for__"]
+      with_expr = args["__with__"]
+      as_alias = args["__as__"]
 
-      code << "#{prefix}_H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+      if for_expr
+        # for clause: iterate over collection, render partial once per item
+        expr = generate_var_lookup(for_expr)
+        item_var_expr = as_alias ? as_alias.inspect : "__dyn_name__"
+        code << "#{prefix}__for_coll__ = #{expr}\n"
+        code << "#{prefix}if __for_coll__.is_a?(Array)\n"
+        code << "#{prefix}  __for_coll__.each do |__item__|\n"
+        code << "#{prefix}    __dyn_assigns__[#{item_var_expr}] = __item__\n"
+        code << "#{prefix}    _H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << "#{prefix}  end\n"
+        code << "#{prefix}else\n"
+        code << "#{prefix}  __dyn_assigns__[#{item_var_expr}] = __for_coll__\n"
+        code << "#{prefix}  _H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << "#{prefix}end\n"
+      elsif with_expr
+        # with clause: pass value (iterate if array for include)
+        expr = generate_var_lookup(with_expr)
+        item_var_expr = as_alias ? as_alias.inspect : "__dyn_name__"
+        code << "#{prefix}__with_val__ = #{expr}\n"
+        unless isolated
+          # For include, arrays iterate
+          code << "#{prefix}if __with_val__.is_a?(Array)\n"
+          code << "#{prefix}  __with_val__.each do |__item__|\n"
+          code << "#{prefix}    __dyn_assigns__[#{item_var_expr}] = __item__\n"
+          code << "#{prefix}    _H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+          code << "#{prefix}  end\n"
+          code << "#{prefix}else\n"
+          code << "#{prefix}  __dyn_assigns__[#{item_var_expr}] = __with_val__\n"
+          code << "#{prefix}  _H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+          code << "#{prefix}end\n"
+        else
+          code << "#{prefix}__dyn_assigns__[#{item_var_expr}] = __with_val__\n"
+          code << "#{prefix}_H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        end
+      else
+        code << "#{prefix}_H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+      end
 
       unless isolated
         # For include, also assign partial args to current scope
