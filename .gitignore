@@ -45,3 +45,4 @@
 # Local-only adapters and deps (require internal dependencies)
 spec/liquid_vm.rb
 Gemfile.local
+spec/liquid_ruby_bench.rb
