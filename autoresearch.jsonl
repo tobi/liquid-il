@@ -1,1 +1,2 @@
 {"type":"config","name":"LiquidIL spec coverage (failures → 0)","metricName":"failures","metricUnit":"","bestDirection":"lower"}
+{"run":1,"commit":"bcfb090","metric":12,"metrics":{"passed":4090,"parse_µs":6167,"render_µs":329},"status":"keep","description":"Baseline: 12 failures (4 failed + 8 errors). 4090 passed. Categories: 9 include+interrupt, 1 render syntax, 2 dynamic include","timestamp":1773354874440,"segment":1}
