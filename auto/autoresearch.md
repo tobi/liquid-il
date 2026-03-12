@@ -68,5 +68,10 @@ The generated Ruby proc executes directly. It calls into:
 - `bench_collection_with_filters`: heavy filter chains (169µs, 487 allocs)
 - `bench_product_grid`: nested loops + forloop drop (118µs, 464 allocs)
 
+## Session Protocol
+- Keep `auto/autoresearch.ideas.md` with longer-term optimization ideas, links, and searches worth doing
+- Before stopping a session, review that file: update it with new ideas, prune stale ones, and pursue promising ones
+- When the user says something mid-session, defer acting on it until after the next `log_experiment`
+
 ## What's Been Tried
 (Starting fresh — update as experiments accumulate)

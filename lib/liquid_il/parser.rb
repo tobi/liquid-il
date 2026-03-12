@@ -33,31 +33,31 @@ module LiquidIL
     private
 
     def advance_template
-      @current_token = @template_lexer.next_token
+      @template_lexer.next_token
     end
 
     def current_template_type
-      @current_token[0]
+      @template_lexer.token_type
     end
 
     def current_template_content
-      @current_token[1]
+      @template_lexer.token_content
     end
 
     def current_template_trim_left
-      @current_token[2]
+      @template_lexer.trim_left
     end
 
     def current_template_trim_right
-      @current_token[3]
+      @template_lexer.trim_right
     end
 
     def current_template_start_pos
-      @current_token[4]
+      @template_lexer.token_start
     end
 
     def current_template_end_pos
-      @current_token[5]
+      @template_lexer.token_end
     end
 
     def parse_block_body(end_tags)
