@@ -1,10 +1,10 @@
 # Autoresearch: Optimization Ideas
 
-## Current numbers (after 12 experiments)
-- **Render**: 362µs (target was 384µs liquid-vm — **beaten by 5.7%**)
-- **Parse**: 7,216µs (target 1,490µs — still 4.8x slower)
-- **Render allocs**: 1,951 (target 741 — 2.6x more)
-- **Parse allocs**: 22,844
+## Current numbers (after 18 experiments)
+- **Render**: 330µs (target was 384µs liquid-vm — **beaten by 14%**)
+- **Parse**: 6,682µs (target 1,490µs — still 4.5x slower)
+- **Render allocs**: 1,832 (target 741 — 2.5x more)
+- **Parse allocs**: 22,053
 
 ## Render-time ideas
 
@@ -14,13 +14,19 @@
 - [x] Conditional preamble: skip unused cycle_state/capture_stack/ifchanged_state
 - [x] Frozen EMPTY_ARRAY for no-arg filter calls
 - [x] Skip to_s.downcase in Filters.apply (names already lowercase)
-- [x] Lazy seen={} in Utils.to_s and inspect
+- [x] Lazy seen={} in Utils.to_s and inspect (-314 allocs, -6% render!)
 - [x] Skip assign_local in loops without partials/nested loops
 - [x] Scope#stringify_keys: dup when all keys already strings
+- [x] Skip ForloopDrop when body doesn't reference forloop (-6.6% render!)
+- [x] Skip catch(:loop_break) when body has no break/continue
+- [x] lookup_prop_fast: skip SPECIAL_KEYS check for non-special keys
+- [x] Avoid fetch block alloc in lookup_prop_fast
 
 ### Discarded ❌
-- [x] Inline output_append String ternary — larger generated code hurts parse more than it helps render
-- [x] Inline Hash fast-path in generated code — same issue, bigger code = slower eval
+- [x] Inline output_append String ternary — larger generated code hurts parse
+- [x] Inline Hash fast-path in generated code — same issue
+- [x] Reduced OUTPUT_CAPACITY — resizing overhead for larger templates
+- [x] dig2/dig3 for multi-level paths — ~same, block alloc overhead cancels out
 
 ### To explore (render)
 - **Inline more filters via filter_send**: need better error handling wrapper that preserves line numbers. Tried but had 2 regressions from error handling differences
@@ -55,4 +61,8 @@
 - Default argument `= {}` allocates on every call even when not used — use `= nil` and `|| {}` lazily
 
 ## Key insight from this session
-**The biggest wins came from eliminating sneaky default-argument allocations** (`seen = {}` in Utils.to_s was -314 allocs, -6% render time). Always audit method signatures for `= {}`, `= []`, or other mutable defaults on hot paths.
+**The biggest wins came from:**
+1. **Eliminating sneaky default-argument allocations** — `seen = {}` in Utils.to_s was -314 allocs, -6% render. Always audit `= {}`, `= []` defaults on hot paths.
+2. **Skipping unused work at codegen time** — ForloopDrop, assign_local, catch/throw all skipped when body doesn't need them. Each saved ~2-6% render.
+3. **Method dispatch over lambda.call** — converting lambdas to module methods saved ~2% render.
+4. **Zero-alloc lexer patterns** — from tenderlove's article: byte tables, skip not scan, deferred extraction.
