@@ -409,7 +409,7 @@ module LiquidIL
 
     def ==(other)
       case other
-      when EmptyLiteral then true
+      when EmptyLiteral, BlankLiteral then false  # empty/blank never equal each other
       when String then other.empty?
       when Array then other.empty?
       when Hash then other.empty?
@@ -430,7 +430,7 @@ module LiquidIL
 
     def ==(other)
       case other
-      when BlankLiteral then true
+      when EmptyLiteral, BlankLiteral then false  # empty/blank never equal each other
       when nil then true
       when false then true
       when String then other.empty? || other.strip.empty?

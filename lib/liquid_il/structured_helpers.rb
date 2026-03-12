@@ -125,6 +125,13 @@ module LiquidIL
         right = LiquidIL::RangeValue.new(right.begin, right.end)
       end
 
+      # empty/blank literals never equal each other
+      if (left.is_a?(LiquidIL::EmptyLiteral) || left.is_a?(LiquidIL::BlankLiteral)) &&
+         (right.is_a?(LiquidIL::EmptyLiteral) || right.is_a?(LiquidIL::BlankLiteral))
+        return op == :ne if [:eq, :ne].include?(op)
+        return false
+      end
+
       if right.is_a?(LiquidIL::EmptyLiteral)
         is_empty = !left.nil? && (left == "" || left == [] || (left.respond_to?(:empty?) && left.empty?))
         return op == :eq ? is_empty : !is_empty if [:eq, :ne].include?(op)
@@ -292,5 +299,67 @@ module LiquidIL
         nil
       end
     }
+
+    # Runtime dynamic partial execution — used when partial name is a variable.
+    # Compiles and runs the partial on-the-fly.
+    def self.execute_dynamic_partial(name, assigns, output, scope, isolated:, tag_type: "include", caller_line: 1, parent_cycle_state: nil)
+      # Validate the name
+      unless name.is_a?(String) && !name.empty?
+        location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
+        output << "Liquid error (#{location}): Argument error in tag '#{tag_type}' - Illegal template name"
+        return
+      end
+
+      fs = scope.file_system
+      unless fs
+        location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
+        output << "Liquid error (#{location}): Could not find partial '#{name}'"
+        return
+      end
+
+      # Load source
+      source = fs.respond_to?(:read_template_file) ? (fs.read_template_file(name) rescue nil) : fs.read(name)
+      unless source
+        location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
+        output << "Liquid error (#{location}): Could not find partial '#{name}'"
+        return
+      end
+
+      # Compile and execute
+      prev_file = scope.current_file
+      scope.current_file = name
+      scope.push_render_depth
+      if scope.render_depth_exceeded?(strict: isolated)
+        scope.current_file = prev_file
+        scope.pop_render_depth
+        raise LiquidIL::RuntimeError.new("Nesting too deep", file: name, line: 1, partial_output: output.dup)
+      end
+
+      begin
+        dyn_ctx = LiquidIL::Context.new(file_system: fs)
+        compiled = dyn_ctx.parse(source)
+        child_scope = isolated ? scope.isolated : scope
+        assigns.each { |k, v| child_scope.assign(k, v) }
+        child_scope.file_system = fs
+        child_scope.render_errors = scope.render_errors
+        # Execute the compiled proc directly with the child scope
+        result = compiled.instance_variable_get(:@compiled_proc).call(child_scope, compiled.spans, compiled.source)
+        output << result
+      rescue LiquidIL::RuntimeError => e
+        raise unless scope.render_errors
+        output << (e.partial_output || "")
+        location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
+        output << "Liquid error (#{location}): #{e.message}"
+      rescue LiquidIL::SyntaxError => e
+        raise unless scope.render_errors
+        output << "Liquid syntax error (#{name} line #{e.line}): #{e.message}"
+      rescue => e
+        raise unless scope.render_errors
+        output << "Liquid error (#{name} line 1): #{LiquidIL.clean_error_message(e.message)}"
+      ensure
+        scope.current_file = prev_file
+        scope.pop_render_depth
+      end
+    end
   end
 end

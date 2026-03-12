@@ -246,14 +246,13 @@ class PartialInliningTest < Minitest::Test
     assert_equal "Shared: hi", template.render("greeting" => "hi")
   end
 
-  def test_dynamic_include_not_compilable
-    # Dynamic includes (variable partial name) can't be compiled by the structured compiler
+  def test_dynamic_include_resolved_at_runtime
+    # Dynamic includes (variable partial name) are resolved at runtime
     fs = MemoryFS.new("shared" => "Hello")
     ctx = LiquidIL::Context.new(file_system: fs)
     opt = LiquidIL::Optimizer.optimize(ctx)
-    assert_raises(RuntimeError) do
-      opt.parse("{% assign tpl = 'shared' %}{% include tpl %}")
-    end
+    template = opt.parse("{% assign tpl = 'shared' %}{% include tpl %}")
+    assert_equal "Hello", template.render
   end
 end
 

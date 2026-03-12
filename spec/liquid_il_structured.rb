@@ -25,17 +25,22 @@ LiquidSpec.configure do |config|
   config.features = [:core, :runtime_drops]
 end
 
-# Fallback template for unsupported features (dynamic partials, recursion, etc.)
+# Fallback for templates that can't be compiled (dynamic partials, recursion, etc.)
 class FallbackTemplate
-  def initialize(error_message)
-    @error_message = error_message
+  def initialize(error)
+    @error = error
   end
 
   def render(assigns = {}, render_errors: true, **_)
     if render_errors
-      ""
+      case @error
+      when LiquidIL::SyntaxError
+        "Liquid syntax error (line #{@error.line}): #{@error.message}"
+      else
+        ""
+      end
     else
-      raise LiquidIL::RuntimeError.new(@error_message)
+      raise @error
     end
   end
 end
@@ -50,11 +55,10 @@ LiquidSpec.compile do |ctx, source, compile_options|
   ctx[:context] = context
   begin
     ctx[:template] = context.parse(source)
+  rescue LiquidIL::SyntaxError => e
+    ctx[:template] = FallbackTemplate.new(e)
   rescue => e
-    # Structured compiler can't handle some edge cases (dynamic partials,
-    # recursive partials, break/continue in included partials inside loops).
-    # Return a fallback that renders empty (matching Liquid's safe behavior).
-    ctx[:template] = FallbackTemplate.new(e.message)
+    ctx[:template] = FallbackTemplate.new(e)
   end
 end
 

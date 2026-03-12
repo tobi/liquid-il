@@ -88,14 +88,13 @@ class Pass0InlineSimplePartialsTest < Minitest::Test
     assert_equal "Hello World", template.render
   end
 
-  def test_dynamic_include_not_compilable
-    # Dynamic partial names cannot be compiled by the structured compiler
+  def test_dynamic_include_resolved_at_runtime
+    # Dynamic partial names are resolved at runtime
     fs = MemoryFS.new("dynamic" => "content")
     ctx = LiquidIL::Context.new(file_system: fs)
     opt = LiquidIL::Optimizer.optimize(ctx)
-    assert_raises(RuntimeError) do
-      opt.parse("{% assign tpl = 'dynamic' %}{% include tpl %}")
-    end
+    template = opt.parse("{% assign tpl = 'dynamic' %}{% include tpl %}")
+    assert_equal "content", template.render
   end
 
   def test_render_with_for_clause_not_fully_inlined

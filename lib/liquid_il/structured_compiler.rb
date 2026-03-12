@@ -73,9 +73,10 @@ module LiquidIL
     # Compile a partial and store it for later code generation
     def compile_partial(name)
       return if @partials[name]
-      # Mutual recursion detected - can't compile this to lambdas
+      # Mutual recursion detected — mark as recursive for runtime resolution
       if @partial_names_in_progress.include?(name)
-        raise "Mutual recursion detected: #{name}"
+        @partials[name] = { recursive: true }
+        return
       end
 
       @partial_names_in_progress.add(name)
@@ -99,7 +100,9 @@ module LiquidIL
         result = compiler.compile
       rescue LiquidIL::SyntaxError => e
         @partial_names_in_progress.delete(name)
-        raise "Partial '#{name}' has syntax error: #{e.message}"
+        # Store the syntax error for runtime rendering
+        @partials[name] = { syntax_error: e, source: source, name: name }
+        return
       end
       instructions = result[:instructions]
       spans = result[:spans]
@@ -157,10 +160,11 @@ module LiquidIL
         case inst[0]
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
           args = inst[2] || {}
-          blockers << "dynamic partial name" if args["__dynamic_name__"]
-          blockers << "invalid partial name" if args["__invalid_name__"]
-          blockers << "no file system for partials" unless @context&.file_system
-          has_include = true if inst[0] == IL::INCLUDE_PARTIAL
+          # Dynamic/invalid names and missing file system are handled at codegen
+          # (they emit inline error messages). Only block on structural issues.
+          if !args["__dynamic_name__"] && !args["__invalid_name__"] && @context&.file_system
+            has_include = true if inst[0] == IL::INCLUDE_PARTIAL
+          end
         when IL::FOR_INIT, IL::TABLEROW_INIT
           has_for_loop = true
         end
@@ -253,8 +257,9 @@ module LiquidIL
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
           name = inst[1]
           args = inst[2] || {}
-          # Skip dynamic/invalid partials (handled by can_compile?)
+          # Skip dynamic/invalid/no-fs partials (handled at codegen)
           next if args["__dynamic_name__"] || args["__invalid_name__"]
+          next unless @context&.file_system
           next if @partials[name]
           # compile_partial will raise if mutual recursion detected
           compile_partial(name)
@@ -268,7 +273,15 @@ module LiquidIL
 
       code = String.new
       code << "\n  # Compiled partial lambdas\n"
+      # Forward-declare all lambda variables so mutual references work
       @partials.each do |name, info|
+        next if info[:recursive] || info[:syntax_error]
+        code << "  #{partial_lambda_name(name)} = nil\n"
+      end
+      code << "\n"
+
+      @partials.each do |name, info|
+        next if info[:recursive] || info[:syntax_error]  # Handled at runtime
         lambda_name = partial_lambda_name(name)
         code << "  #{lambda_name} = ->(assigns, __output__, __parent_scope__, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
         code << "    __prev_file__ = __parent_scope__.current_file\n"
@@ -654,10 +667,54 @@ module LiquidIL
       prefix = "  " * indent
       name = inst[1]
       args = inst[2] || {}
-      lambda_name = partial_lambda_name(name)
       tag_type = isolated ? "render" : "include"
       line_num = line_for_pc(pc)
 
+      # Handle invalid/dynamic partial names — emit inline error
+      if args["__invalid_name__"]
+        return "#{prefix}# #{tag_type} with invalid name\n" \
+               "#{prefix}__output__ << \"Liquid error (line #{line_num}): Argument error in tag '#{tag_type}' - Illegal template name\"\n"
+      end
+      if args["__dynamic_name__"]
+        return generate_dynamic_partial(inst, pc, indent, isolated: isolated)
+      end
+      if !@context&.file_system
+        return "#{prefix}# #{tag_type} '#{name}' (no file system)\n" \
+               "#{prefix}__output__ << \"Liquid error (line #{line_num}): Could not find partial '#{name}'\"\n"
+      end
+
+      # Syntax error in partial — use dynamic execution to surface the error
+      if @partials[name]&.[](:syntax_error)
+        code = String.new
+        code << "#{prefix}# #{tag_type} '#{name}' (syntax error)\n"
+        code << "#{prefix}__dyn_assigns__ = {}\n"
+        code << "#{prefix}LiquidIL::StructuredHelpers.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        return code
+      end
+
+      # Recursive partials use runtime resolution
+      if @partials[name]&.[](:recursive)
+        code = String.new
+        code << "#{prefix}# #{tag_type} '#{name}' (recursive — runtime resolution)\n"
+        code << "#{prefix}__dyn_assigns__ = {}\n"
+        args.each do |k, v|
+          next if k.start_with?("__")
+          if v.is_a?(Hash) && v[:__var__]
+            code << "#{prefix}__dyn_assigns__[#{k.inspect}] = #{generate_var_lookup(v[:__var__])}\n"
+          else
+            code << "#{prefix}__dyn_assigns__[#{k.inspect}] = #{v.inspect}\n"
+          end
+        end
+        if (with_expr = args["__with__"])
+          as_alias = args["__as__"] || name
+          code << "#{prefix}__dyn_assigns__[#{as_alias.inspect}] = #{generate_var_lookup(with_expr)}\n"
+        end
+        code << "#{prefix}LiquidIL::StructuredHelpers.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        @pc = @pc  # Already incremented
+        return code
+      end
+
+      lambda_name = partial_lambda_name(name)
       code = String.new
       code << "#{prefix}# #{tag_type} '#{name}'\n"
 
@@ -771,6 +828,63 @@ module LiquidIL
       # Close the include disable check
       unless isolated
         code << "  " * indent << "end\n"
+      end
+
+      code
+    end
+
+    # Generate code for dynamic partial (name from variable)
+    def generate_dynamic_partial(inst, pc, indent, isolated:)
+      prefix = "  " * indent
+      args = inst[2] || {}
+      tag_type = isolated ? "render" : "include"
+      line_num = line_for_pc(pc)
+
+      # The partial name comes from a variable
+      dyn_var = args["__dynamic_name__"] || inst[1]
+      # Handle dotted paths like "item.template"
+      parts = dyn_var.to_s.split(".")
+      if parts.length == 1
+        name_lookup = "__scope__.lookup(#{parts[0].inspect})"
+      else
+        name_lookup = "__scope__.lookup(#{parts[0].inspect})"
+        parts[1..].each { |p| name_lookup = "LiquidIL::StructuredHelpers.lookup_prop(#{name_lookup}, #{p.inspect})" }
+      end
+
+      code = String.new
+      code << "#{prefix}# dynamic #{tag_type}\n"
+      code << "#{prefix}__dyn_name__ = #{name_lookup}\n"
+
+      # Build assigns hash from args
+      code << "#{prefix}__dyn_assigns__ = {}\n"
+      args.each do |k, v|
+        next if k.start_with?("__")
+        if v.is_a?(Hash) && v[:__var__]
+          code << "#{prefix}__dyn_assigns__[#{k.inspect}] = #{generate_var_lookup(v[:__var__])}\n"
+        else
+          code << "#{prefix}__dyn_assigns__[#{k.inspect}] = #{v.inspect}\n"
+        end
+      end
+
+      # Handle 'with' clause for include
+      if (with_expr = args["__with__"])
+        as_alias = args["__as__"]
+        # The item var defaults to the partial name (resolved at runtime for dynamic)
+        if as_alias
+          code << "#{prefix}__dyn_assigns__[#{as_alias.inspect}] = #{generate_var_lookup(with_expr)}\n"
+        else
+          code << "#{prefix}__dyn_assigns__[__dyn_name__] = #{generate_var_lookup(with_expr)}\n"
+        end
+      end
+
+      code << "#{prefix}LiquidIL::StructuredHelpers.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+
+      unless isolated
+        # For include, also assign partial args to current scope
+        args.each do |k, v|
+          next if k.start_with?("__")
+          code << "#{prefix}__scope__.assign(#{k.inspect}, __dyn_assigns__[#{k.inspect}])\n"
+        end
       end
 
       code

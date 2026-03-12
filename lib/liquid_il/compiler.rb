@@ -1295,6 +1295,9 @@ module LiquidIL
         return cached
       end
 
+      # Prevent infinite recursion
+      return nil if @inline_partial_stack.include?(name)
+
       source = begin
                  loader.read(name)
                rescue StandardError
@@ -1410,9 +1413,21 @@ module LiquidIL
     end
 
     def safe_compare(left, right, op)
+      # Don't fold ordered comparisons between incompatible types —
+      # these produce runtime error messages that must be rendered inline.
+      if [:lt, :le, :gt, :ge].include?(op) && !comparable_types?(left, right)
+        return nil
+      end
       const_evaluator.compare(left, right, op)
     rescue StandardError
       nil
+    end
+
+    def comparable_types?(left, right)
+      return false if left.nil? || right.nil?
+      return false if left == true || left == false || right == true || right == false
+      (left.is_a?(Numeric) || (left.is_a?(String) && left.match?(/\A-?\d/))) &&
+        (right.is_a?(Numeric) || (right.is_a?(String) && right.match?(/\A-?\d/)))
     end
 
     def safe_case_compare(left, right)
