@@ -254,6 +254,7 @@ module LiquidIL
       code = String.new
       code << "# frozen_string_literal: true\n"
       code << "proc do |__scope__, __spans__, __template_source__|\n"
+      code << "  _H = LiquidIL::StructuredHelpers\n"
       code << generate_partial_lambdas
       code << "  __output__ = String.new(capacity: #{OUTPUT_CAPACITY})\n"
       code << "  __current_file__ = nil\n"
@@ -709,7 +710,7 @@ module LiquidIL
         code = String.new
         code << "#{prefix}# #{tag_type} '#{name}' (syntax error)\n"
         code << "#{prefix}__dyn_assigns__ = {}\n"
-        code << "#{prefix}LiquidIL::StructuredHelpers.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << "#{prefix}_H.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
         return code
       end
 
@@ -730,7 +731,7 @@ module LiquidIL
           as_alias = args["__as__"] || name
           code << "#{prefix}__dyn_assigns__[#{as_alias.inspect}] = #{generate_var_lookup(with_expr)}\n"
         end
-        code << "#{prefix}LiquidIL::StructuredHelpers.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << "#{prefix}_H.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
         @pc = @pc  # Already incremented
         return code
       end
@@ -869,7 +870,7 @@ module LiquidIL
         name_lookup = "__scope__.lookup(#{parts[0].inspect})"
       else
         name_lookup = "__scope__.lookup(#{parts[0].inspect})"
-        parts[1..].each { |p| name_lookup = "LiquidIL::StructuredHelpers.lookup_prop(#{name_lookup}, #{p.inspect})" }
+        parts[1..].each { |p| name_lookup = "_H.lookup_prop(#{name_lookup}, #{p.inspect})" }
       end
 
       code = String.new
@@ -898,7 +899,7 @@ module LiquidIL
         end
       end
 
-      code << "#{prefix}LiquidIL::StructuredHelpers.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+      code << "#{prefix}_H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, __output__, __scope__, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
 
       unless isolated
         # For include, also assign partial args to current scope
@@ -939,7 +940,7 @@ module LiquidIL
           key.to_s =~ /^\d+$/ ? key.to_i : key.inspect
         end
         result = "__scope__.lookup(#{first_var.inspect})"
-        rest_keys.each { |k| result = "LiquidIL::StructuredHelpers.lookup(#{result}, #{k})" }
+        rest_keys.each { |k| result = "_H.lookup(#{result}, #{k})" }
         result
       end
     end
@@ -1506,13 +1507,13 @@ module LiquidIL
         if expr.value # const key
           inline_lookup(obj, expr.value)
         else # dynamic key
-          "LiquidIL::StructuredHelpers.lookup(#{obj}, #{expr_to_ruby(expr.children[1])})"
+          "_H.lookup(#{obj}, #{expr_to_ruby(expr.children[1])})"
         end
       when :bracket_lookup
         # Bracket access obj[key] - stricter semantics than property access
         obj = expr_to_ruby(expr.children[0])
         key = expr_to_ruby(expr.children[1])
-        "LiquidIL::StructuredHelpers.bracket_lookup(#{obj}, #{key})"
+        "_H.bracket_lookup(#{obj}, #{key})"
       when :command
         obj = expr_to_ruby(expr.children[0])
         case expr.value
@@ -1523,16 +1524,16 @@ module LiquidIL
         when "last"
           "((__o__ = #{obj}).respond_to?(:last) ? __o__.last : nil)"
         else
-          "LiquidIL::StructuredHelpers.lookup(#{obj}, #{expr.value.inspect})"
+          "_H.lookup(#{obj}, #{expr.value.inspect})"
         end
       when :compare
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "LiquidIL::StructuredHelpers.compare(#{left}, #{right}, #{expr.value.inspect}, __output__, __current_file__)"
+        "_H.compare(#{left}, #{right}, #{expr.value.inspect}, __output__, __current_file__)"
       when :contains
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "LiquidIL::StructuredHelpers.contains(#{left}, #{right})"
+        "_H.contains(#{left}, #{right})"
       when :not
         child = expr_to_ruby(expr.children[0])
         "((__tt__ = #{child}); __tt__.nil? || __tt__ == false)"
@@ -1557,9 +1558,9 @@ module LiquidIL
         if inlined
           inlined
         elsif args.empty?
-          "LiquidIL::StructuredHelpers.call_filter(#{expr.value.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, __scope__, __current_file__, #{filter_line})"
+          "_H.call_filter(#{expr.value.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, __scope__, __current_file__, #{filter_line})"
         else
-          "LiquidIL::StructuredHelpers.call_filter(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], __scope__, __current_file__, #{filter_line})"
+          "_H.call_filter(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], __scope__, __current_file__, #{filter_line})"
         end
       when :case_compare
         left = expr_to_ruby(expr.children[0])
@@ -1592,7 +1593,7 @@ module LiquidIL
         result = "__scope__.lookup(#{var.inspect})"
       end
       path.each do |key|
-        result = "LiquidIL::StructuredHelpers.lookup(#{result}, #{key.inspect})"
+        result = "_H.lookup(#{result}, #{key.inspect})"
       end
       result
     end
@@ -1935,11 +1936,11 @@ module LiquidIL
         # Check if collection is nil/false (skip validation for nil/false)
         code << "#{inner_prefix}__is_nil_#{depth}__ = __orig_coll_#{depth}__.nil? || __orig_coll_#{depth}__ == false\n"
         # Inline to_iterable: fast path for Array (most common), fallback for others
-        code << "#{inner_prefix}#{coll_var} = __orig_coll_#{depth}__.is_a?(Array) ? __orig_coll_#{depth}__ : LiquidIL::StructuredHelpers.to_iterable(__orig_coll_#{depth}__)\n"
+        code << "#{inner_prefix}#{coll_var} = __orig_coll_#{depth}__.is_a?(Array) ? __orig_coll_#{depth}__ : _H.to_iterable(__orig_coll_#{depth}__)\n"
       else
         # No offset/limit: skip string/nil checks, directly convert to iterable
         code << "#{inner_prefix}#{coll_var} = #{coll_ruby}\n"
-        code << "#{inner_prefix}#{coll_var} = LiquidIL::StructuredHelpers.to_iterable(#{coll_var}) unless #{coll_var}.is_a?(Array)\n"
+        code << "#{inner_prefix}#{coll_var} = _H.to_iterable(#{coll_var}) unless #{coll_var}.is_a?(Array)\n"
       end
 
       # Calculate starting offset for offset:continue or explicit offset
@@ -1952,7 +1953,7 @@ module LiquidIL
         # Validate offset is a valid integer (unless collection is nil/false)
         if has_offset
           code << "#{inner_prefix}__offset_val_#{depth}__ = #{offset_ruby}\n"
-          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || LiquidIL::StructuredHelpers.valid_integer(__offset_val_#{depth}__)\n"
+          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || _H.valid_integer(__offset_val_#{depth}__)\n"
           code << "#{inner_prefix}#{offset_var} = __offset_val_#{depth}__.to_i\n"
         else
           code << "#{inner_prefix}#{offset_var} = (#{offset_ruby}).to_i\n"
@@ -1970,15 +1971,15 @@ module LiquidIL
         # Validate limit is a valid integer (unless collection is nil/false)
         if has_limit
           code << "#{inner_prefix}__limit_val_#{depth}__ = #{limit_ruby}\n"
-          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || LiquidIL::StructuredHelpers.valid_integer(__limit_val_#{depth}__)\n"
+          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless __is_nil_#{depth}__ || _H.valid_integer(__limit_val_#{depth}__)\n"
           code << "#{inner_prefix}__to_#{depth}__ = #{offset_var} + __limit_val_#{depth}__.to_i\n"
         else
           code << "#{inner_prefix}__to_#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
         end
-        code << "#{inner_prefix}#{coll_var} = LiquidIL::StructuredHelpers.slice_collection(#{coll_var}, #{offset_var}, __to_#{depth}__) unless __is_string_#{depth}__\n"
+        code << "#{inner_prefix}#{coll_var} = _H.slice_collection(#{coll_var}, #{offset_var}, __to_#{depth}__) unless __is_string_#{depth}__\n"
       elsif needs_slicing
         # Has offset but no limit - apply offset using slice
-        code << "#{inner_prefix}#{coll_var} = LiquidIL::StructuredHelpers.slice_collection(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
+        code << "#{inner_prefix}#{coll_var} = _H.slice_collection(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
       end
       # else: no offset, no limit, no offset:continue — skip slicing entirely
 
@@ -2232,7 +2233,7 @@ module LiquidIL
       code << "#{prefix}__orig_tablerow_coll_#{depth}__ = #{coll_ruby}\n"
       code << "#{prefix}__is_string_#{depth}__ = __orig_tablerow_coll_#{depth}__.is_a?(String)\n"
       code << "#{prefix}__is_nil_#{depth}__ = __orig_tablerow_coll_#{depth}__.nil? || __orig_tablerow_coll_#{depth}__ == false\n"
-      code << "#{prefix}#{coll_var} = LiquidIL::StructuredHelpers.to_iterable(__orig_tablerow_coll_#{depth}__)\n"
+      code << "#{prefix}#{coll_var} = _H.to_iterable(__orig_tablerow_coll_#{depth}__)\n"
 
       # Handle cols parameter
       case cols
@@ -2242,7 +2243,7 @@ module LiquidIL
           code << "#{prefix}if __cols_val_#{depth}__.nil?\n"
           code << "#{prefix}  #{cols_var} = #{coll_var}.length\n"
           code << "#{prefix}  __cols_explicit_nil_#{depth}__ = true\n"
-          code << "#{prefix}elsif !__is_nil_#{depth}__ && !LiquidIL::StructuredHelpers.valid_integer(__cols_val_#{depth}__)\n"
+          code << "#{prefix}elsif !__is_nil_#{depth}__ && !_H.valid_integer(__cols_val_#{depth}__)\n"
           code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1)\n"
           code << "#{prefix}else\n"
           code << "#{prefix}  #{cols_var} = __cols_val_#{depth}__.to_i\n"
@@ -2271,7 +2272,7 @@ module LiquidIL
           offset_ruby = expr_to_ruby(offset_expr)
           code << "#{prefix}__offset_val_#{depth}__ = #{offset_ruby}\n"
           code << "#{prefix}unless __is_nil_#{depth}__\n"
-          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless LiquidIL::StructuredHelpers.valid_integer(__offset_val_#{depth}__)\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless _H.valid_integer(__offset_val_#{depth}__)\n"
           code << "#{prefix}  __offset_#{depth}__ = __offset_val_#{depth}__.nil? ? 0 : __offset_val_#{depth}__.to_i\n"
           code << "#{prefix}  __offset_#{depth}__ = [__offset_#{depth}__, 0].max\n"
           code << "#{prefix}  #{coll_var} = #{coll_var}.drop(__offset_#{depth}__) unless __is_string_#{depth}__\n"
@@ -2287,7 +2288,7 @@ module LiquidIL
           limit_ruby = expr_to_ruby(limit_expr)
           code << "#{prefix}__limit_val_#{depth}__ = #{limit_ruby}\n"
           code << "#{prefix}unless __is_nil_#{depth}__\n"
-          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless LiquidIL::StructuredHelpers.valid_integer(__limit_val_#{depth}__)\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: __current_file__, line: 1) unless _H.valid_integer(__limit_val_#{depth}__)\n"
           code << "#{prefix}  __limit_#{depth}__ = __limit_val_#{depth}__.nil? ? 0 : __limit_val_#{depth}__.to_i\n"
           code << "#{prefix}  __limit_#{depth}__ = 0 if __limit_#{depth}__ < 0\n"
           code << "#{prefix}  #{coll_var} = #{coll_var}.take(__limit_#{depth}__) unless __is_string_#{depth}__\n"
@@ -2615,9 +2616,9 @@ module LiquidIL
     def inline_lookup(obj_ruby, key)
       key_s = key.to_s
       if StructuredHelpers::SPECIAL_KEYS[key_s]
-        "LiquidIL::StructuredHelpers.lookup_prop(#{obj_ruby}, #{key_s.inspect})"
+        "_H.lookup_prop(#{obj_ruby}, #{key_s.inspect})"
       else
-        "LiquidIL::StructuredHelpers.lookup_prop_fast(#{obj_ruby}, #{key_s.inspect})"
+        "_H.lookup_prop_fast(#{obj_ruby}, #{key_s.inspect})"
       end
     end
 
@@ -2625,9 +2626,9 @@ module LiquidIL
     # Returns code that appends the expression value to __output__
     def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
       if guard_interrupt
-        "#{prefix}LiquidIL::StructuredHelpers.output_append(__output__, #{expr_ruby}) unless __scope__.has_interrupt?\n"
+        "#{prefix}_H.output_append(__output__, #{expr_ruby}) unless __scope__.has_interrupt?\n"
       else
-        "#{prefix}LiquidIL::StructuredHelpers.output_append(__output__, #{expr_ruby})\n"
+        "#{prefix}_H.output_append(__output__, #{expr_ruby})\n"
       end
     end
 
