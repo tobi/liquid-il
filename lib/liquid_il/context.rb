@@ -128,8 +128,30 @@ module LiquidIL
     MAX_RENDER_DEPTH = 100
 
     def initialize(assigns = {}, registers: {}, strict_errors: false, static_environments: nil)
-      @static_environments = stringify_keys(static_environments || assigns)
-      root_scope = stringify_keys(assigns)
+      if static_environments
+        @static_environments = stringify_keys(static_environments)
+        root_scope = stringify_keys(assigns)
+      else
+        # Optimized common case: assigns serves as both static env and root scope.
+        # If keys are already strings, take ownership (no copy).
+        # Caller (Template#render) typically provides a fresh hash each time.
+        all_strings = false
+        if assigns.is_a?(Hash) && !assigns.empty?
+          all_strings = true
+          assigns.each_key { |k| unless k.is_a?(String); all_strings = false; break; end }
+        end
+        if all_strings
+          # Keys already strings — take direct ownership of the hash.
+          # static_environments and root_scope share the same object.
+          # This is safe because assigns to root_scope via scope.assign go to @scopes.last,
+          # and lookups check scopes first before falling through to static_environments.
+          @static_environments = assigns
+          root_scope = assigns
+        else
+          root_scope = stringify_keys(assigns)
+          @static_environments = root_scope
+        end
+      end
       @scopes = [root_scope]
       @top_scope = root_scope  # Cache for hot-path assign_local
       @strict_errors = strict_errors
