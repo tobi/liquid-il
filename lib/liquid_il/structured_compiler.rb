@@ -904,7 +904,6 @@ module LiquidIL
       end
 
       code = String.new
-      code << "#{prefix}# dynamic #{tag_type}\n"
       code << "#{prefix}__dyn_name__ = #{name_lookup}\n"
 
       # Build assigns hash from args
@@ -2008,7 +2007,6 @@ module LiquidIL
       end
 
       # Complex path: full collection prep with offset/limit/slicing support
-      code << "#{prefix}# for #{item_var}\n"
       code << "#{prefix}begin\n" if needs_error_handling
       inner_prefix = needs_error_handling ? "#{prefix}  " : prefix
 
@@ -2084,12 +2082,10 @@ module LiquidIL
       code << "#{inner_prefix}    end\n"
       code << "#{inner_prefix}  end\n" if needs_catch
       if needs_forloop
-        code << "#{inner_prefix}  # Update forloop.index0 to final count (for escaped references)\n"
         code << "#{inner_prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
       end
       code << "#{inner_prefix}  _S.set_for_offset(#{loop_name.inspect}, #{offset_var} + #{coll_var}.length)\n"
       if needs_scope_sync
-        code << "#{inner_prefix}  # Restore previous scope values (avoid push_scope/pop_scope overhead)\n"
         code << "#{inner_prefix}  _S.assign_local('forloop', _pfl#{depth}__)\n"
         code << "#{inner_prefix}  _S.assign_local(#{item_var.inspect}, _pi#{depth}__)\n"
       end
@@ -2289,7 +2285,6 @@ module LiquidIL
       cols_var = "__tablerow_cols_#{depth}__"
       coll_ruby = expr_to_ruby(coll_expr)
 
-      code << "#{prefix}# tablerow #{item_var}\n"
       code << "#{prefix}__orig_tablerow_coll_#{depth}__ = #{coll_ruby}\n"
       code << "#{prefix}_is#{depth}__ = __orig_tablerow_coll_#{depth}__.is_a?(String)\n"
       code << "#{prefix}_in#{depth}__ = __orig_tablerow_coll_#{depth}__.nil? || __orig_tablerow_coll_#{depth}__ == false\n"
@@ -2377,7 +2372,6 @@ module LiquidIL
       code << "#{prefix}    _S.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
 
       # Output HTML tags before body content
-      code << "#{prefix}    # Close previous cell/row if not first iteration\n"
       code << "#{prefix}    if #{idx_var} > 0\n"
       code << "#{prefix}      _O << \"</td>\"\n"
       code << "#{prefix}      if (#{idx_var} % #{cols_var}) == 0\n"
@@ -2385,7 +2379,6 @@ module LiquidIL
       code << "#{prefix}      end\n"
       code << "#{prefix}    end\n"
 
-      code << "#{prefix}    # Open new row if at start of row\n"
       code << "#{prefix}    if (#{idx_var} % #{cols_var}) == 0\n"
       code << "#{prefix}      __row__ = (#{idx_var} / #{cols_var}) + 1\n"
       code << "#{prefix}      if __row__ == 1\n"
