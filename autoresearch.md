@@ -40,4 +40,25 @@ RUBY_YJIT_ENABLE=1 ./autoresearch.sh
 - Main liquid-spec suite should not regress
 
 ## What's Been Tried
-(Starting fresh)
+
+### Key Finding: deep_copy Dominates render_µs (99.7%)
+The benchmark calls `deep_copy(assigns)` per render iteration, copying the 13,347-object theme 
+database. With YJIT: deep_copy=2923µs, our render=5-71µs. render_µs is 99.7% benchmark overhead.
+
+### Kept
+1. **Zero-copy Scope.new** — Share assigns hash between root_scope and static_environments 
+   when keys already strings. Saves 2 allocs/render. Marginal timing improvement.
+2. **Fast-path fold_const_ops** — Skip non-constant opcodes with hash lookup instead of 
+   const_value() method call.
+
+### Discarded
+- Skip dup for static_environments — No measurable impact
+- Inline output_append case statement — Parse 32% slower from code bloat, render unchanged
+- Avoid *args splat in Filters.apply — No measurable impact  
+- Skip IL passes 1,2,3,5 — Parse 0.9% faster but breaks 362 tests in main suite
+- Coalesce consecutive WRITE_RAW — Too few consecutive instances to matter
+
+### Dead Ends
+- **Scope.new optimization**: 2.45µs → 2.23µs, negligible vs 2923µs deep_copy
+- **Filter dispatch optimization**: Minimal impact, deep_copy dominates
+- **Generated code inlining**: Code bloat hurts parse time more than it helps render

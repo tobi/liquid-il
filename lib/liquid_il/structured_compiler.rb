@@ -2714,7 +2714,7 @@ module LiquidIL
     # Evaluate generated Ruby code
     # Use TOPLEVEL_BINDING to avoid constant resolution issues in class context
     def eval_ruby(source)
-      eval(source, TOPLEVEL_BINDING, "(liquid_il_structured)")
+      RubyVM::InstructionSequence.compile(source, "(liquid_il_structured)").eval
     rescue SyntaxError => e
       nil
     end
