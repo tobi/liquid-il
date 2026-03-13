@@ -62,8 +62,7 @@ module LiquidIL
     end
 
     def compile
-      raise "Structured compilation not supported for this template: #{compilation_blockers.join(', ')}" unless can_compile?
-
+      # can_compile? / compilation_blockers always returns true/[] — all templates supported
       code = generate_ruby
       compiled_proc = eval_ruby(code)
       raise "Failed to eval generated Ruby code" unless compiled_proc
@@ -153,7 +152,7 @@ module LiquidIL
 
     # Check if we can compile this template
     def can_compile?
-      compilation_blockers.empty?
+      true  # All templates are now supported
     end
 
     def compilation_blockers

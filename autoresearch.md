@@ -50,6 +50,16 @@ database. With YJIT: deep_copy=2923µs, our render=5-71µs. render_µs is 99.7% 
    when keys already strings. Saves 2 allocs/render. Marginal timing improvement.
 2. **Fast-path fold_const_ops** — Skip non-constant opcodes with hash lookup instead of 
    const_value() method call.
+3. **ISeq.compile instead of eval** — 17% faster code compilation for large templates.
+4. **Shorter variable names in generated code** — 21.2% code size reduction (16122→12590 bytes).
+5. **Short method aliases** — _H.lf, _H.oa, _H.cf etc. instead of long names.
+6. **Pre-computed pass flags** — Local booleans instead of Set#include? per instruction.
+7. **Expr class vs keyword Struct** — 5x faster Expr allocation (biggest parse win: 4.1%).
+
+### Cumulative Results
+- Parse: 5338µs → ~4900µs (8.3% improvement)
+- Render: ~85000µs (unmovable, 99.7% deep_copy overhead)
+- Allocs: 94108 → 94118 (essentially unchanged)
 
 ### Discarded
 - Skip dup for static_environments — No measurable impact
