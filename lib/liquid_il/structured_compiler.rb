@@ -2736,9 +2736,10 @@ module LiquidIL
     # Structured Ruby compiler — the default (and only) compilation path.
     # Generates YJIT-friendly Ruby with native control flow.
     module Structured
+      STRUCTURED_DEFAULTS = { optimize: true, skip_passes: [0, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22] }.freeze
+
       def self.compile(source, context: nil, **options)
-        # Default to optimized; skip passes 16-19 (redundant with structured codegen)
-        opts = { optimize: true, skip_passes: [0, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22] }.merge(options)
+        opts = options.empty? ? STRUCTURED_DEFAULTS : STRUCTURED_DEFAULTS.merge(options)
         compiler = Compiler.new(source, **opts)
         result = compiler.compile
         instructions = result[:instructions]
