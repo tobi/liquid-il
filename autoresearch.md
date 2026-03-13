@@ -56,10 +56,16 @@ database. With YJIT: deep_copy=2923µs, our render=5-71µs. render_µs is 99.7% 
 6. **Pre-computed pass flags** — Local booleans instead of Set#include? per instruction.
 7. **Expr class vs keyword Struct** — 5x faster Expr allocation (biggest parse win: 4.1%).
 
+### After liquid-spec Fix (shallow dup instead of deep_copy)
+8. **Filters.apply splat avoidance** — case on args.length instead of *args. Render 464→447µs.
+9. **Paginate helper extraction** — _H.build_paginate reduces generated code size. Parse 4%+ faster.
+10. **EMPTY_HASH for registers** — Avoid creating empty hash when context has no registers.
+11. **Broader filter inlining** — Direct Filters.send for money, asset_url, handle, etc. Render 447→421µs.
+
 ### Cumulative Results
-- Parse: 5338µs → ~4900µs (8.3% improvement)
-- Render: ~85000µs (unmovable, 99.7% deep_copy overhead)
-- Allocs: 94108 → 94118 (essentially unchanged)
+- Parse: 5338µs → ~4700µs (12% improvement)
+- Render: 464µs → ~423µs (9% improvement)  
+- Allocs: 3432 → 3376 (1.6% fewer)
 
 ### Discarded
 - Skip dup for static_environments — No measurable impact
