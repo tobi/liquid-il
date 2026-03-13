@@ -1653,7 +1653,7 @@ module LiquidIL
         result = "_S.lookup(#{var.inspect})"
       end
       path.each do |key|
-        result = "_H.lookup(#{result}, #{key.inspect})"
+        result = inline_lookup(result, key)
       end
       result
     end
