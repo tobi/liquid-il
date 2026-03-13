@@ -232,11 +232,24 @@ module LiquidIL
       end
     end
 
+    # Fast opcode check for constant instructions (avoids const_value method call overhead)
+    CONST_OPCODE_SET = [
+      IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING,
+      IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_NIL,
+      IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK
+    ].each_with_object({}) { |op, h| h[op] = true }.freeze
+
     def fold_const_ops(instructions, spans)
       i = 0
       while i < instructions.length
         inst = instructions[i]
         opcode = inst[0]
+
+        # Fast path: skip non-constant opcodes without calling const_value
+        unless CONST_OPCODE_SET[opcode]
+          i += 1
+          next
+        end
 
         if (const1 = const_value(inst))
           val1 = const1[1]
