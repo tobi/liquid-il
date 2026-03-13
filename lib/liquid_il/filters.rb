@@ -51,7 +51,13 @@ module LiquidIL
         # name from compiled code is already a frozen lowercase string — skip to_s.downcase
         method_name = name.is_a?(String) ? name : name.to_s.downcase
         if valid_filter_methods[method_name]
-          send(method_name, input, *args)
+          # Avoid *args splat allocation for common cases (0-2 args)
+          case args.length
+          when 0 then send(method_name, input)
+          when 1 then send(method_name, input, args[0])
+          when 2 then send(method_name, input, args[0], args[1])
+          else send(method_name, input, *args)
+          end
         else
           input  # Unknown filter, return input unchanged
         end
