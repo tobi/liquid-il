@@ -41,7 +41,7 @@ module LiquidIL
       @partial_names_in_progress = partial_names_in_progress || Set.new
       @uses_interrupts = detect_uses_interrupts
       # Maps Liquid variable names to Ruby local variable names inside for loops
-      # e.g. "i" => "__item_0__", "forloop" => "__forloop_0__"
+      # e.g. "i" => "_i0__", "forloop" => "_fl0__"
       @loop_var_aliases = {}
     end
 
@@ -521,7 +521,7 @@ module LiquidIL
         end
         # Skip WRITE_VALUE if it follows (we output directly)
         @pc += 1 if @instructions[@pc]&.[](0) == IL::WRITE_VALUE
-        # Use __cycle_idx__ to avoid conflict with __idx__ in for loops
+        # Use __cycle_idx__ to avoid conflict with _x_ in for loops
         # Handle empty values: cycle with 0 choices outputs nothing (empty string)
         if raw_values.empty?
           "#{prefix}__cycle_state__[#{identity.inspect}] = (__cycle_state__[#{identity.inspect}] || 0) + 1\n"
@@ -685,11 +685,11 @@ module LiquidIL
       when :assign
         var = @instructions[@pc - 1][1]
         # Skip assignment if value is ErrorMarker (already output the error)
-        temp_code + "#{prefix}__v__ = #{expr_to_ruby(expr)}; _S.assign(#{var.inspect}, __v__) unless __v__.is_a?(LiquidIL::ErrorMarker)\n"
+        temp_code + "#{prefix}_v = #{expr_to_ruby(expr)}; _S.assign(#{var.inspect}, _v) unless _v.is_a?(LiquidIL::ErrorMarker)\n"
       when :assign_local
         var = @instructions[@pc - 1][1]
         # Skip assignment if value is ErrorMarker (already output the error)
-        temp_code + "#{prefix}__v__ = #{expr_to_ruby(expr)}; _S.assign_local(#{var.inspect}, __v__) unless __v__.is_a?(LiquidIL::ErrorMarker)\n"
+        temp_code + "#{prefix}_v = #{expr_to_ruby(expr)}; _S.assign_local(#{var.inspect}, _v) unless _v.is_a?(LiquidIL::ErrorMarker)\n"
       when :store_temp
         slot = @instructions[@pc][1]
         @pc += 1
@@ -812,10 +812,10 @@ module LiquidIL
         expr = generate_var_lookup(for_expr)
         code << "#{prefix}__for_coll__ = #{expr}\n"
         code << "#{prefix}if __for_coll__.is_a?(Array)\n"
-        code << "#{prefix}  __for_coll__.each_with_index do |__item__, __idx__|\n"
-        code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
+        code << "#{prefix}  __for_coll__.each_with_index do |_i_, _x_|\n"
+        code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
         if isolated
-          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = __idx__ }\n"
+          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = _x_ }\n"
         end
         code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
         # Break out of include-for iteration if partial set interrupt
@@ -827,17 +827,17 @@ module LiquidIL
           # render iterates over ranges
           code << "#{prefix}elsif __for_coll__.is_a?(LiquidIL::RangeValue) || __for_coll__.is_a?(Range)\n"
           code << "#{prefix}  __items__ = __for_coll__.to_a\n"
-          code << "#{prefix}  __items__.each_with_index do |__item__, __idx__|\n"
-          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
-          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
+          code << "#{prefix}  __items__.each_with_index do |_i_, _x_|\n"
+          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
+          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = _x_ }\n"
           code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
           code << "#{prefix}  end\n"
           # Also handle other enumerables for render
           code << "#{prefix}elsif !__for_coll__.is_a?(Hash) && !__for_coll__.is_a?(String) && __for_coll__.respond_to?(:each) && __for_coll__.respond_to?(:to_a)\n"
           code << "#{prefix}  __items__ = __for_coll__.to_a\n"
-          code << "#{prefix}  __items__.each_with_index do |__item__, __idx__|\n"
-          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
-          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = __idx__ }\n"
+          code << "#{prefix}  __items__.each_with_index do |_i_, _x_|\n"
+          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
+          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = _x_ }\n"
           code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
           code << "#{prefix}  end\n"
         end
@@ -858,8 +858,8 @@ module LiquidIL
         else
           # For include, __with_val__ was already looked up BEFORE keyword args modified scope
           code << "#{prefix}if __with_val__.is_a?(Array)\n"
-          code << "#{prefix}  __with_val__.each do |__item__|\n"
-          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = __item__\n"
+          code << "#{prefix}  __with_val__.each do |_i_|\n"
+          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
           code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
           code << "#{prefix}  end\n"
           code << "#{prefix}else\n"
@@ -936,8 +936,8 @@ module LiquidIL
         item_var_expr = as_alias ? as_alias.inspect : "__dyn_name__"
         code << "#{prefix}__for_coll__ = #{expr}\n"
         code << "#{prefix}if __for_coll__.is_a?(Array)\n"
-        code << "#{prefix}  __for_coll__.each do |__item__|\n"
-        code << "#{prefix}    __dyn_assigns__[#{item_var_expr}] = __item__\n"
+        code << "#{prefix}  __for_coll__.each do |_i_|\n"
+        code << "#{prefix}    __dyn_assigns__[#{item_var_expr}] = _i_\n"
         code << "#{prefix}    _H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
         code << "#{prefix}  end\n"
         code << "#{prefix}else\n"
@@ -952,8 +952,8 @@ module LiquidIL
         unless isolated
           # For include, arrays iterate
           code << "#{prefix}if __with_val__.is_a?(Array)\n"
-          code << "#{prefix}  __with_val__.each do |__item__|\n"
-          code << "#{prefix}    __dyn_assigns__[#{item_var_expr}] = __item__\n"
+          code << "#{prefix}  __with_val__.each do |_i_|\n"
+          code << "#{prefix}    __dyn_assigns__[#{item_var_expr}] = _i_\n"
           code << "#{prefix}    _H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
           code << "#{prefix}  end\n"
           code << "#{prefix}else\n"
@@ -1603,7 +1603,7 @@ module LiquidIL
         "_H.contains(#{left}, #{right})"
       when :not
         child = expr_to_ruby(expr.children[0])
-        "((__tt__ = #{child}); __tt__.nil? || __tt__ == false)"
+        "((_t = #{child}); _t.nil? || _t == false)"
       when :hash
         # Build hash from pairs: children = [key1, val1, key2, val2, ...]
         pairs = []
@@ -1895,7 +1895,7 @@ module LiquidIL
       # Parse loop body — set up aliases so expr_to_ruby can resolve loop vars
       # to Ruby locals instead of _S.lookup() calls
       saved_aliases = {}
-      alias_names = { item_var => "__item_#{depth}__", "forloop" => "__forloop_#{depth}__" }
+      alias_names = { item_var => "_i#{depth}__", "forloop" => "_fl#{depth}__" }
       alias_names.each do |liq_var, ruby_var|
         saved_aliases[liq_var] = @loop_var_aliases[liq_var]
         @loop_var_aliases[liq_var] = ruby_var
@@ -1977,15 +1977,15 @@ module LiquidIL
       coll_ruby = expr_to_ruby(coll_expr)
 
       # Use depth-indexed variables for forloop and collection
-      forloop_var = "__forloop_#{depth}__"
-      coll_var = "__coll_#{depth}__"
-      item_var_internal = "__item_#{depth}__"
-      idx_var = "__idx_#{depth}__"
+      forloop_var = "_fl#{depth}__"
+      coll_var = "_c#{depth}__"
+      item_var_internal = "_i#{depth}__"
+      idx_var = "_x#{depth}__"
 
       # Get parent forloop reference (if nested)
       # Always check scope for existing forloop - this handles:
       # - parentloop access in includes (depth 0 with outer loop in scope)
-      # - for loops inside tablerows (depth > 0 but no __forloop_{depth-1}__ exists)
+      # - for loops inside tablerows (depth > 0 but no _fl{depth-1}__ exists)
       parent_forloop = "_S.lookup('forloop')"
 
       # Wrap validation and loop in begin/rescue for inline error handling
@@ -1998,12 +1998,12 @@ module LiquidIL
       # Only needed when we have offset/limit/offset_continue
       needs_slicing = limit_expr || offset_expr || offset_continue
       if needs_slicing || has_offset || has_limit
-        code << "#{inner_prefix}__orig_coll_#{depth}__ = #{coll_ruby}\n"
-        code << "#{inner_prefix}__is_string_#{depth}__ = __orig_coll_#{depth}__.is_a?(String)\n"
+        code << "#{inner_prefix}_oc#{depth}__ = #{coll_ruby}\n"
+        code << "#{inner_prefix}_is#{depth}__ = _oc#{depth}__.is_a?(String)\n"
         # Check if collection is nil/false (skip validation for nil/false)
-        code << "#{inner_prefix}__is_nil_#{depth}__ = __orig_coll_#{depth}__.nil? || __orig_coll_#{depth}__ == false\n"
+        code << "#{inner_prefix}_in#{depth}__ = _oc#{depth}__.nil? || _oc#{depth}__ == false\n"
         # Inline to_iterable: fast path for Array (most common), fallback for others
-        code << "#{inner_prefix}#{coll_var} = __orig_coll_#{depth}__.is_a?(Array) ? __orig_coll_#{depth}__ : _H.to_iterable(__orig_coll_#{depth}__)\n"
+        code << "#{inner_prefix}#{coll_var} = _oc#{depth}__.is_a?(Array) ? _oc#{depth}__ : _H.to_iterable(_oc#{depth}__)\n"
       else
         # No offset/limit: skip string/nil checks, directly convert to iterable
         code << "#{inner_prefix}#{coll_var} = #{coll_ruby}\n"
@@ -2011,7 +2011,7 @@ module LiquidIL
       end
 
       # Calculate starting offset for offset:continue or explicit offset
-      offset_var = "__start_offset_#{depth}__"
+      offset_var = "_so#{depth}__"
       if offset_continue
         # offset:continue uses stored offset from previous loop with same name
         code << "#{inner_prefix}#{offset_var} = _S.for_offset(#{loop_name.inspect})\n"
@@ -2019,9 +2019,9 @@ module LiquidIL
         offset_ruby = expr_to_ruby(offset_expr)
         # Validate offset is a valid integer (unless collection is nil/false)
         if has_offset
-          code << "#{inner_prefix}__offset_val_#{depth}__ = #{offset_ruby}\n"
-          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless __is_nil_#{depth}__ || _H.valid_integer(__offset_val_#{depth}__)\n"
-          code << "#{inner_prefix}#{offset_var} = __offset_val_#{depth}__.to_i\n"
+          code << "#{inner_prefix}_ov#{depth}__ = #{offset_ruby}\n"
+          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.valid_integer(_ov#{depth}__)\n"
+          code << "#{inner_prefix}#{offset_var} = _ov#{depth}__.to_i\n"
         else
           code << "#{inner_prefix}#{offset_var} = (#{offset_ruby}).to_i\n"
         end
@@ -2037,16 +2037,16 @@ module LiquidIL
         limit_ruby = expr_to_ruby(limit_expr)
         # Validate limit is a valid integer (unless collection is nil/false)
         if has_limit
-          code << "#{inner_prefix}__limit_val_#{depth}__ = #{limit_ruby}\n"
-          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless __is_nil_#{depth}__ || _H.valid_integer(__limit_val_#{depth}__)\n"
-          code << "#{inner_prefix}__to_#{depth}__ = #{offset_var} + __limit_val_#{depth}__.to_i\n"
+          code << "#{inner_prefix}_lv#{depth}__ = #{limit_ruby}\n"
+          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.valid_integer(_lv#{depth}__)\n"
+          code << "#{inner_prefix}_to#{depth}__ = #{offset_var} + _lv#{depth}__.to_i\n"
         else
-          code << "#{inner_prefix}__to_#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
+          code << "#{inner_prefix}_to#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
         end
-        code << "#{inner_prefix}#{coll_var} = _H.slice_collection(#{coll_var}, #{offset_var}, __to_#{depth}__) unless __is_string_#{depth}__\n"
+        code << "#{inner_prefix}#{coll_var} = _H.slice_collection(#{coll_var}, #{offset_var}, _to#{depth}__) unless _is#{depth}__\n"
       elsif needs_slicing
         # Has offset but no limit - apply offset using slice
-        code << "#{inner_prefix}#{coll_var} = _H.slice_collection(#{coll_var}, #{offset_var}, nil) unless __is_string_#{depth}__\n"
+        code << "#{inner_prefix}#{coll_var} = _H.slice_collection(#{coll_var}, #{offset_var}, nil) unless _is#{depth}__\n"
       end
       # else: no offset, no limit, no offset:continue — skip slicing entirely
 
@@ -2066,9 +2066,9 @@ module LiquidIL
       end
       # Save previous values for scope cleanup after loop
       if needs_scope_sync
-        code << "#{inner_prefix}  __prev_forloop_#{depth}__ = _S.lookup('forloop')\n"
+        code << "#{inner_prefix}  _pfl#{depth}__ = _S.lookup('forloop')\n"
       end
-      code << "#{inner_prefix}  __prev_item_#{depth}__ = _S.lookup(#{item_var.inspect})\n" if needs_scope_sync
+      code << "#{inner_prefix}  _pi#{depth}__ = _S.lookup(#{item_var.inspect})\n" if needs_scope_sync
       # Only wrap with catch if body uses break/continue (throw/catch has overhead)
       needs_catch = body_code.include?(":loop_break_#{depth}") || body_code.include?("throw(:loop_break")
       code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n" if needs_catch
@@ -2097,8 +2097,8 @@ module LiquidIL
       code << "#{inner_prefix}  _S.set_for_offset(#{loop_name.inspect}, #{offset_var} + #{coll_var}.length)\n"
       if needs_scope_sync
         code << "#{inner_prefix}  # Restore previous scope values (avoid push_scope/pop_scope overhead)\n"
-        code << "#{inner_prefix}  _S.assign_local('forloop', __prev_forloop_#{depth}__)\n"
-        code << "#{inner_prefix}  _S.assign_local(#{item_var.inspect}, __prev_item_#{depth}__)\n"
+        code << "#{inner_prefix}  _S.assign_local('forloop', _pfl#{depth}__)\n"
+        code << "#{inner_prefix}  _S.assign_local(#{item_var.inspect}, _pi#{depth}__)\n"
       end
 
       # Add else block if present (for-else pattern)
@@ -2115,10 +2115,10 @@ module LiquidIL
 
       # Close error handling block
       if needs_error_handling
-        code << "#{prefix}rescue LiquidIL::RuntimeError => __e_#{depth}__\n"
+        code << "#{prefix}rescue LiquidIL::RuntimeError => _e#{depth}__\n"
         code << "#{prefix}  raise unless _S.render_errors\n"
-        code << "#{prefix}  __loc_#{depth}__ = __e_#{depth}__.file ? \"\#{__e_#{depth}__.file} line \#{__e_#{depth}__.line}\" : \"line \#{__e_#{depth}__.line}\"\n"
-        code << "#{prefix}  _O << \"Liquid error (\#{__loc_#{depth}__}): \#{__e_#{depth}__.message}\"\n"
+        code << "#{prefix}  _loc#{depth}__ = _e#{depth}__.file ? \"\#{_e#{depth}__.file} line \#{_e#{depth}__.line}\" : \"line \#{_e#{depth}__.line}\"\n"
+        code << "#{prefix}  _O << \"Liquid error (\#{_loc#{depth}__}): \#{_e#{depth}__.message}\"\n"
         code << "#{prefix}end\n"
       end
 
@@ -2298,8 +2298,8 @@ module LiquidIL
 
       code << "#{prefix}# tablerow #{item_var}\n"
       code << "#{prefix}__orig_tablerow_coll_#{depth}__ = #{coll_ruby}\n"
-      code << "#{prefix}__is_string_#{depth}__ = __orig_tablerow_coll_#{depth}__.is_a?(String)\n"
-      code << "#{prefix}__is_nil_#{depth}__ = __orig_tablerow_coll_#{depth}__.nil? || __orig_tablerow_coll_#{depth}__ == false\n"
+      code << "#{prefix}_is#{depth}__ = __orig_tablerow_coll_#{depth}__.is_a?(String)\n"
+      code << "#{prefix}_in#{depth}__ = __orig_tablerow_coll_#{depth}__.nil? || __orig_tablerow_coll_#{depth}__ == false\n"
       code << "#{prefix}#{coll_var} = _H.to_iterable(__orig_tablerow_coll_#{depth}__)\n"
 
       # Handle cols parameter
@@ -2310,7 +2310,7 @@ module LiquidIL
           code << "#{prefix}if __cols_val_#{depth}__.nil?\n"
           code << "#{prefix}  #{cols_var} = #{coll_var}.length\n"
           code << "#{prefix}  __cols_explicit_nil_#{depth}__ = true\n"
-          code << "#{prefix}elsif !__is_nil_#{depth}__ && !_H.valid_integer(__cols_val_#{depth}__)\n"
+          code << "#{prefix}elsif !_in#{depth}__ && !_H.valid_integer(__cols_val_#{depth}__)\n"
           code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1)\n"
           code << "#{prefix}else\n"
           code << "#{prefix}  #{cols_var} = __cols_val_#{depth}__.to_i\n"
@@ -2337,12 +2337,12 @@ module LiquidIL
       if has_offset
         if offset_expr
           offset_ruby = expr_to_ruby(offset_expr)
-          code << "#{prefix}__offset_val_#{depth}__ = #{offset_ruby}\n"
-          code << "#{prefix}unless __is_nil_#{depth}__\n"
-          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.valid_integer(__offset_val_#{depth}__)\n"
-          code << "#{prefix}  __offset_#{depth}__ = __offset_val_#{depth}__.nil? ? 0 : __offset_val_#{depth}__.to_i\n"
+          code << "#{prefix}_ov#{depth}__ = #{offset_ruby}\n"
+          code << "#{prefix}unless _in#{depth}__\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.valid_integer(_ov#{depth}__)\n"
+          code << "#{prefix}  __offset_#{depth}__ = _ov#{depth}__.nil? ? 0 : _ov#{depth}__.to_i\n"
           code << "#{prefix}  __offset_#{depth}__ = [__offset_#{depth}__, 0].max\n"
-          code << "#{prefix}  #{coll_var} = #{coll_var}.drop(__offset_#{depth}__) unless __is_string_#{depth}__\n"
+          code << "#{prefix}  #{coll_var} = #{coll_var}.drop(__offset_#{depth}__) unless _is#{depth}__\n"
           code << "#{prefix}end\n"
         end
       end
@@ -2353,12 +2353,12 @@ module LiquidIL
       if has_limit
         if limit_expr
           limit_ruby = expr_to_ruby(limit_expr)
-          code << "#{prefix}__limit_val_#{depth}__ = #{limit_ruby}\n"
-          code << "#{prefix}unless __is_nil_#{depth}__\n"
-          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.valid_integer(__limit_val_#{depth}__)\n"
-          code << "#{prefix}  __limit_#{depth}__ = __limit_val_#{depth}__.nil? ? 0 : __limit_val_#{depth}__.to_i\n"
+          code << "#{prefix}_lv#{depth}__ = #{limit_ruby}\n"
+          code << "#{prefix}unless _in#{depth}__\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.valid_integer(_lv#{depth}__)\n"
+          code << "#{prefix}  __limit_#{depth}__ = _lv#{depth}__.nil? ? 0 : _lv#{depth}__.to_i\n"
           code << "#{prefix}  __limit_#{depth}__ = 0 if __limit_#{depth}__ < 0\n"
-          code << "#{prefix}  #{coll_var} = #{coll_var}.take(__limit_#{depth}__) unless __is_string_#{depth}__\n"
+          code << "#{prefix}  #{coll_var} = #{coll_var}.take(__limit_#{depth}__) unless _is#{depth}__\n"
           code << "#{prefix}end\n"
         end
       end
@@ -2373,7 +2373,7 @@ module LiquidIL
       code << "#{prefix}catch(:loop_break_#{depth}) do\n"
 
       # Output opening row tag for empty collections
-      code << "#{prefix}  if #{coll_var}.empty? && !__is_nil_#{depth}__\n"
+      code << "#{prefix}  if #{coll_var}.empty? && !_in#{depth}__\n"
       code << "#{prefix}    _O << \"<tr class=\\\"row1\\\">\\n\"\n"
       code << "#{prefix}    _O << \"</tr>\\n\"\n"
       code << "#{prefix}  end\n"
@@ -2632,10 +2632,10 @@ module LiquidIL
         "_U.to_s(#{input}).rstrip"
       when "escape"
         return nil unless args.empty?
-        "((__fi__ = #{input}); __fi__.nil? ? nil : CGI.escapeHTML(LiquidIL::Utils.to_s(__fi__)))"
+        "((_fi = #{input}); _fi.nil? ? nil : CGI.escapeHTML(LiquidIL::Utils.to_s(_fi)))"
       when "size"
         return nil unless args.empty?
-        "((__fi__ = #{input}); __fi__.respond_to?(:size) ? __fi__.size : 0)"
+        "((_fi = #{input}); _fi.respond_to?(:size) ? _fi.size : 0)"
       when "append"
         return nil unless args.length == 1
         "(LiquidIL::Utils.to_s(#{input}) + LiquidIL::Utils.to_s(#{args[0]}))"
@@ -2706,8 +2706,8 @@ module LiquidIL
       if expr_ruby =~ /\A[a-zA-Z_][a-zA-Z0-9_.]*\z/ || expr_ruby =~ /\A__\w+__\z/
         "!(#{expr_ruby}).nil? && #{expr_ruby} != false"
       else
-        # Complex expression - use __tt__ temp to avoid double evaluation
-        "((__tt__ = #{expr_ruby}); !__tt__.nil? && __tt__ != false)"
+        # Complex expression - use _t temp to avoid double evaluation
+        "((_t = #{expr_ruby}); !_t.nil? && _t != false)"
       end
     end
 
