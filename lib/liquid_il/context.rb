@@ -122,7 +122,8 @@ module LiquidIL
   # Internal execution state with scope stack and registers
   # (Public API uses Context - this is the VM's internal state)
   class Scope
-    attr_reader :scopes, :strict_errors, :static_environments
+    attr_reader :strict_errors, :static_environments
+    def scopes; @scopes || [@root_scope]; end
     attr_accessor :file_system, :disable_include, :render_errors, :current_file
 
     MAX_RENDER_DEPTH = 100
@@ -162,8 +163,9 @@ module LiquidIL
           @static_environments = root_scope
         end
       end
-      @scopes = [root_scope]
-      @top_scope = root_scope  # Cache for hot-path assign_local
+      @scopes = nil  # Lazy: only created on push_scope
+      @root_scope = root_scope
+      @top_scope = root_scope
       @strict_errors = strict_errors
       @render_errors = true
       @file_system = nil
@@ -216,15 +218,16 @@ module LiquidIL
 
     def push_scope(scope = nil)
       new_scope = scope ? stringify_keys(scope) : {}
+      # Lazy-create @scopes on first push
+      @scopes ||= [@root_scope]
       @scopes.unshift(new_scope)
       @top_scope = new_scope
     end
 
     def pop_scope
-      if @scopes.length > 1
-        @scopes.shift
-        @top_scope = @scopes.first
-      end
+      return unless @scopes && @scopes.length > 1
+      @scopes.shift
+      @top_scope = @scopes.first
     end
 
     def lookup(key)
@@ -239,16 +242,22 @@ module LiquidIL
       end
       # Check if this was explicitly assigned - assigned vars take precedence over counters
       if @has_counters && @assigned_vars && @assigned_vars[key]
-        @scopes.each do |scope|
-          return scope[key] if scope.key?(key)
+        if @scopes
+          @scopes.each do |scope|
+            return scope[key] if scope.key?(key)
+          end
+        else
+          return top[key] if top.key?(key)
         end
       end
       # Check counters - they shadow environment variables (but not assigned ones)
       return @counters[key] if @has_counters && @counters.key?(key)
-      # Check remaining scopes
-      @scopes.each_with_index do |scope, i|
-        next if i == 0 # already checked
-        return scope[key] if scope.key?(key)
+      # Check remaining scopes (only when push_scope was called)
+      if @scopes
+        @scopes.each_with_index do |scope, i|
+          next if i == 0 # already checked
+          return scope[key] if scope.key?(key)
+        end
       end
       # Check static_environments (shared with render)
       @static_environments[key] if @static_environments&.key?(key)
@@ -262,7 +271,7 @@ module LiquidIL
       # Track that this was explicitly assigned (takes precedence over counters)
       (@assigned_vars ||= {})[key] = true
       # Liquid assigns to the root/environment scope, not the current scope
-      @scopes.last[key] = value
+      @root_scope[key] = value
     end
 
     # Assign to current (top) scope - used for loop variables that should be local
