@@ -2677,6 +2677,23 @@ module LiquidIL
         else
           "LiquidIL::Filters.send(:truncatewords, #{input}, #{args[0]}, #{args[1]})"
         end
+      when "money", "asset_url", "handle", "handleize",
+           "script_tag", "stylesheet_tag", "weight_with_unit",
+           "money_with_currency", "money_without_trailing_zeros",
+           "default_pagination", "pluralize", "json", "t",
+           "product_img_url", "img_url", "image_url",
+           "newline_to_br", "split", "join",
+           "first", "last", "uniq", "compact",
+           "abs", "at_least", "at_most", "modulo",
+           "url_encode", "url_decode"
+        # Bypass Filters.apply dispatch for safe filters — direct send
+        # Excludes filters that may raise FilterRuntimeError (replace, concat, sort, map, etc.)
+        case args.length
+        when 0 then "LiquidIL::Filters.send(:#{name}, #{input})"
+        when 1 then "LiquidIL::Filters.send(:#{name}, #{input}, #{args[0]})"
+        when 2 then "LiquidIL::Filters.send(:#{name}, #{input}, #{args[0]}, #{args[1]})"
+        else nil
+        end
       else
         nil
       end
