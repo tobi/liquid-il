@@ -909,7 +909,7 @@ module LiquidIL
         name_lookup = "_S.lookup(#{parts[0].inspect})"
       else
         name_lookup = "_S.lookup(#{parts[0].inspect})"
-        parts[1..].each { |p| name_lookup = "_H.lookup_prop(#{name_lookup}, #{p.inspect})" }
+        parts[1..].each { |p| name_lookup = "_H.lp(#{name_lookup}, #{p.inspect})" }
       end
 
       code = String.new
@@ -1627,9 +1627,9 @@ module LiquidIL
         if inlined
           inlined
         elsif args.empty?
-          "_H.call_filter(#{expr.value.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{filter_line})"
+          "_H.cf(#{expr.value.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{filter_line})"
         else
-          "_H.call_filter(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{filter_line})"
+          "_H.cf(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{filter_line})"
         end
       when :case_compare
         left = expr_to_ruby(expr.children[0])
@@ -2685,9 +2685,9 @@ module LiquidIL
     def inline_lookup(obj_ruby, key)
       key_s = key.to_s
       if StructuredHelpers::SPECIAL_KEYS[key_s]
-        "_H.lookup_prop(#{obj_ruby}, #{key_s.inspect})"
+        "_H.lp(#{obj_ruby}, #{key_s.inspect})"
       else
-        "_H.lookup_prop_fast(#{obj_ruby}, #{key_s.inspect})"
+        "_H.lf(#{obj_ruby}, #{key_s.inspect})"
       end
     end
 
@@ -2695,9 +2695,9 @@ module LiquidIL
     # Returns code that appends the expression value to _O
     def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
       if guard_interrupt
-        "#{prefix}_H.output_append(_O, #{expr_ruby}) unless _S.has_interrupt?\n"
+        "#{prefix}_H.oa(_O, #{expr_ruby}) unless _S.has_interrupt?\n"
       else
-        "#{prefix}_H.output_append(_O, #{expr_ruby})\n"
+        "#{prefix}_H.oa(_O, #{expr_ruby})\n"
       end
     end
 

@@ -386,5 +386,13 @@ module LiquidIL
         scope.pop_render_depth
       end
     end
+
+    # Short aliases for generated code compactness (saves ~10% code size)
+    class << self
+      alias_method :lf, :lookup_prop_fast
+      alias_method :lp, :lookup_prop
+      alias_method :oa, :output_append
+      alias_method :cf, :call_filter
+    end
   end
 end
