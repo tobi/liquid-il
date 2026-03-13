@@ -1,58 +1,43 @@
-# Autoresearch: 100% liquid-spec Coverage
+# Autoresearch: Shopify Benchmark Optimization
 
 ## Objective
-Fix all remaining liquid-spec failures to reach 100% pass rate. Currently at 4090/4102 (99.7%). The 12 failures fall into 3 categories:
+Optimize render performance of the liquid_il_shopify.rb benchmarks. These benchmarks exercise Shopify-specific filters (money, img_url, handle, etc.) and realistic theme templates (blog, cart, collection, product, search pages) with YJIT enabled.
 
-### Category 1: Include + interrupt propagation (8 errors)
-Break/continue inside an included partial must propagate to the caller's for loop. The structured compiler currently **refuses to compile** these templates (raises RuntimeError) because `throw/catch` doesn't propagate across the compiled partial lambda boundary.
+Current baseline (YJIT, Ruby 4.0.1):
+- Parse: ~5.3ms total
+- Render: ~85ms total  
+- Render allocs: ~94,108 total
 
-**Tests:** include_break_exits_innermost_for_loop, include_propagates_continue, include_propagates_break, break_propagates_through_include, continue_propagates_through_include, break_in_nested_include_blocks, include_for_propagates_break_to_outer, test_break_through_include, test_can_continue_loop_from_inside_included_snippet
-
-**Root cause:** Compiled partials are lambda closures. `throw(:loop_break_N)` inside a lambda doesn't unwind to the `catch(:loop_break_N)` in the caller — Ruby's `throw` doesn't cross lambda boundaries.
-
-**Fix approach:** After executing an included partial, check the scope's interrupt stack. If the partial pushed a break/continue interrupt, propagate it in the caller's loop (throw to the catch, or skip remaining body).
-
-### Category 2: Render tag syntax validation (1 failure)
-`{% render name %}` (variable, not string literal) should be a parse error but is accepted.
-
-**Test:** render_static_name_only
-
-**Fix approach:** Add parse-time validation in `parse_render_tag` — if the argument is an identifier (not a quoted string), raise SyntaxError.
-
-### Category 3: Include with dynamic name + `for` iteration (2 failures)
-`{% include page for foo %}` with `page` as a variable, and `{% include foo with product_list as p_list %}` with `foo` as a variable — the `for` loop iteration and `with`/`as` don't work correctly with dynamic partial names.
-
-**Tests:** test_including_via_variable_value, test_with_iterates_variables_when_it_is_an_array_for_dynamic_templates
-
-**Fix approach:** Fix the dynamic partial execution path to properly handle `for` iteration (call partial once per item) and `with`/`as` aliasing.
-
-### Category 4: Max complexity (secondary concern)
-The spec suite stops at complexity 200/1000. Higher complexity tests are not run. Not a blocker but worth tracking.
+The render path is the main target. Most filter tests render ~2.9ms each, theme pages ~3.0-3.3ms. All tests have ~3100-3900 render allocations suggesting a fixed overhead.
 
 ## Metrics
-- **Primary**: `failures` (count of failed + errored tests, lower is better)
-- **Secondary**: `passed` (total passed), `parse_µs`, `render_µs`
+- **Primary**: `render_µs` (total render microseconds across all 29 specs, lower is better)
+- **Secondary**: `parse_µs`, `render_allocs`, `passed`
 
 ## How to Run
 ```bash
-./autoresearch.sh
+RUBY_YJIT_ENABLE=1 ./autoresearch.sh
 ```
 
 ## Files in Scope
-- `lib/liquid_il/structured_compiler.rb` — compilation blockers check, partial lambda generation, for loop codegen
-- `lib/liquid_il/structured_helpers.rb` — `execute_dynamic_partial` for runtime dynamic includes
-- `lib/liquid_il/parser.rb` — render tag parsing (syntax validation)
-- `spec/liquid_il_structured.rb` — adapter file (compile/render entry points, fallback handling)
+- `lib/liquid_il/structured_compiler.rb` — Code generation (inline filters, output paths)
+- `lib/liquid_il/structured_helpers.rb` — Runtime helpers (lookup, compare, call_filter, output_append)
+- `lib/liquid_il/filters.rb` — Filter implementations (money, escape, to_number, etc.)
+- `lib/liquid_il/utils.rb` — Utility functions (to_s, output_string)
+- `lib/liquid_il/drops.rb` — Drop protocol (ForloopDrop, etc.)
+- `lib/liquid_il/context.rb` — Scope/context (lookup, assign)
+- `spec/liquid_il_shopify.rb` — Shopify adapter with filter definitions
 
 ## Off Limits
-- Don't change the liquid-spec test expectations
-- Don't regress any currently-passing tests
-- Don't regress benchmark speed (render_µs, parse_µs)
+- Don't change liquid-spec test expectations
+- Don't regress any currently-passing tests (29/29 must pass)
+- Don't change the benchmark harness itself
 
 ## Constraints
-- `bundle exec liquid-spec run spec/liquid_il_structured.rb` is the test command
-- Must maintain YJIT compatibility
-- Benchmark: `./auto/autoresearch.sh` for speed metrics
+- All benchmarks MUST be run with `--jit` flag and `RUBY_YJIT_ENABLE=1`
+- `bundle exec liquid-spec run spec/liquid_il_shopify.rb --bench --jit` is the benchmark command
+- Must maintain correctness (29/29 tests passing)
+- Main liquid-spec suite should not regress
 
 ## What's Been Tried
 (Starting fresh)
