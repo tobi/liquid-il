@@ -627,26 +627,15 @@ module LiquidIL
         coll_path = inst[1]
         page_size = inst[2]
         prefix = INDENT[indent]
-        # Generate runtime paginate setup
+        # Generate runtime paginate setup using helper method
         parts = coll_path.split(".")
         lookup = "_S.lookup(#{parts[0].inspect})"
-        parts[1..].each { |p| lookup = "_H.lookup(#{lookup}, #{p.inspect})" }
+        parts[1..].each { |p| lookup = "_H.l(#{lookup}, #{p.inspect})" }
         code = String.new
         code << "#{prefix}_pc = #{lookup}\n"
         code << "#{prefix}_pc = _pc.respond_to?(:to_a) ? _pc.to_a : Array(_pc) unless _pc.is_a?(Array)\n"
-        code << "#{prefix}_ps = #{page_size}\n"
-        code << "#{prefix}_pp = (_S.lookup('current_page') || 1).to_i\n"
-        code << "#{prefix}_pt = _pc.length\n"
-        code << "#{prefix}_pgs = (_pt + _ps - 1) / _ps\n"
-        code << "#{prefix}_pgs = 1 if _pgs < 1\n"
-        code << "#{prefix}_pp = [[_pp, 1].max, _pgs].min\n"
-        code << "#{prefix}_po = (_pp - 1) * _ps\n"
-        code << "#{prefix}_pi2 = _pc[_po, _ps] || []\n"
-        # Build paginate object
-        code << "#{prefix}_pp2 = (1.._pgs).map { |p| { 'title' => p.to_s, 'url' => \"?page=\#{p}\", 'is_link' => p != _pp } }\n"
-        code << "#{prefix}_pg = { 'page_size' => _ps, 'current_page' => _pp, 'current_offset' => _po, 'pages' => _pgs, 'items' => _pi2, 'parts' => _pp2, 'previous' => _pp > 1 ? { 'title' => '&laquo; Previous', 'url' => \"?page=\#{_pp - 1}\", 'is_link' => true } : nil, 'next' => _pp < _pgs ? { 'title' => 'Next &raquo;', 'url' => \"?page=\#{_pp + 1}\", 'is_link' => true } : nil, 'collection_size' => _pt }\n"
+        code << "#{prefix}_pg, _pi2 = _H.build_paginate(_pc, #{page_size}, (_S.lookup('current_page') || 1).to_i)\n"
         code << "#{prefix}_S.assign('paginate', _pg)\n"
-        # Replace the collection variable with the sliced page
         code << "#{prefix}_S.assign(#{parts.last.inspect}, _pi2)\n" if parts.length == 1
         code
 

@@ -387,6 +387,26 @@ module LiquidIL
       end
     end
 
+    # Build paginate object — extracted from generated code to reduce code size
+    def self.build_paginate(collection, page_size, current_page)
+      total = collection.length
+      pages = (total + page_size - 1) / page_size
+      pages = 1 if pages < 1
+      current_page = [[current_page, 1].max, pages].min
+      offset = (current_page - 1) * page_size
+      items = collection[offset, page_size] || []
+      parts = (1..pages).map { |p| { 'title' => p.to_s, 'url' => "?page=#{p}", 'is_link' => p != current_page } }
+      paginate = {
+        'page_size' => page_size, 'current_page' => current_page,
+        'current_offset' => offset, 'pages' => pages, 'items' => items,
+        'parts' => parts,
+        'previous' => current_page > 1 ? { 'title' => '&laquo; Previous', 'url' => "?page=#{current_page - 1}", 'is_link' => true } : nil,
+        'next' => current_page < pages ? { 'title' => 'Next &raquo;', 'url' => "?page=#{current_page + 1}", 'is_link' => true } : nil,
+        'collection_size' => total
+      }
+      [paginate, items]
+    end
+
     # Short aliases for generated code compactness (saves ~10% code size)
     class << self
       alias_method :lf, :lookup_prop_fast
