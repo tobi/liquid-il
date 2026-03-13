@@ -63,9 +63,15 @@ database. With YJIT: deep_copy=2923µs, our render=5-71µs. render_µs is 99.7% 
 11. **Broader filter inlining** — Direct Filters.send for money, asset_url, handle, etc. Render 447→421µs.
 
 ### Cumulative Results (honest — no benchmark-specific flags)
-- Parse: 5338µs → ~4730µs (11.4% improvement)
-- Render: 464µs → ~395µs (14.9% improvement)  
+- Parse: 5338µs → ~4714µs (11.7% improvement)
+- Render: 464µs → ~387µs (16.6% improvement)  
 - Allocs: 3432 → 3119 (9.1% fewer)
+
+### Additional honest optimizations after overfitting audit
+12. **Compile-time filter validation** — `apply_fast` skips name lookup for known filters. 
+    Full error handling preserved. Render 395→387µs.
+13. **truncatewords split limit** — `split(nil, words+1)` avoids splitting entire string. 
+    Saves ~210 allocs per blog page.
 
 ### Removed (overfitting)
 - trust_string_keys flag (benchmark-only, skipped validation)
