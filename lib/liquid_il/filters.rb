@@ -48,17 +48,16 @@ module LiquidIL
 
       def apply(name, input, args, context)
         @context = context
-        # name from compiled code is already a frozen lowercase string — skip to_s.downcase
-        if valid_filter_methods[name]
-          # Avoid *args splat allocation for common cases (0-2 args)
-          case args.length
-          when 0 then send(name, input)
-          when 1 then send(name, input, args[0])
-          when 2 then send(name, input, args[0], args[1])
-          else send(name, input, *args)
-          end
-        else
-          input  # Unknown filter, return input unchanged
+        name = name.to_s unless name.is_a?(String)
+        unless valid_filter_methods[name]
+          return input  # Unknown filter, return input unchanged
+        end
+        # Avoid *args splat allocation for common cases (0-2 args)
+        case args.length
+        when 0 then send(name, input)
+        when 1 then send(name, input, args[0])
+        when 2 then send(name, input, args[0], args[1])
+        else send(name, input, *args)
         end
       rescue ArgumentError => e
         # Convert ArgumentError to FilterRuntimeError so it shows in output
