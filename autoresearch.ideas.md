@@ -41,3 +41,7 @@ This means micro-optimizations to template execution won't move the render_µs m
   of code size for templates with many loops.
 - **Template compile caching**: Cache compiled procs keyed by source string hash. The benchmark
   re-compiles the same template in each compile timing iteration.
+- **Conditional preamble aliases**: Only add constant aliases (RuntimeError, ForloopDrop, etc.)
+  for templates that actually use them. The preamble costs more for simple templates.
+- **Optimize fused_peephole's delete_at**: Use mark-and-compact instead of O(n) delete_at.
+  59 deletions × ~300 shifts each = ~17K array operations for product page.
