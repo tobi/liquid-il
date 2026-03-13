@@ -216,7 +216,10 @@ module LiquidIL
         words = [to_integer(words), 1].max  # At least 1 word
         ellipsis = Utils.to_s(ellipsis)
         input_str = Utils.to_s(input)
-        word_list = input_str.split
+        # Split with limit: only create words+1 substrings instead of all words.
+        # Clamp to avoid RangeError with huge integers.
+        limit = words < 1_000_000 ? words + 1 : 0
+        word_list = input_str.split(nil, limit)
 
         if word_list.length > words
           # Truncate and add ellipsis
