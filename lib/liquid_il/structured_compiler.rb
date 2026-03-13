@@ -22,9 +22,11 @@ module LiquidIL
     # Expression node for reconstructed expressions
     # Using Struct instead of Data.define to avoid Ruby 4.0 segfaults with deep recursion
     # pc: optional instruction index for error line tracking (used by filters)
+    # Expr with keyword_init for readability, but fast defaults
     Expr = Struct.new(:type, :value, :children, :pc, keyword_init: true) do
-      def initialize(type:, value: nil, children: [], pc: nil)
-        super
+      EMPTY = [].freeze
+      def initialize(type:, value: nil, children: EMPTY, pc: nil)
+        super(type: type, value: value, children: children, pc: pc)
       end
     end
 
