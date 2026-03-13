@@ -2664,6 +2664,19 @@ module LiquidIL
       when "floor"
         return nil unless args.empty?
         "LiquidIL::Filters.send(:floor, #{input})"
+      when "date"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:date, #{input}, #{args[0]})"
+      when "strip_html"
+        return nil unless args.empty?
+        "LiquidIL::Filters.send(:strip_html, #{input})"
+      when "truncatewords"
+        return nil unless args.length >= 1 && args.length <= 2
+        if args.length == 1
+          "LiquidIL::Filters.send(:truncatewords, #{input}, #{args[0]})"
+        else
+          "LiquidIL::Filters.send(:truncatewords, #{input}, #{args[0]}, #{args[1]})"
+        end
       else
         nil
       end
