@@ -43,5 +43,9 @@ This means micro-optimizations to template execution won't move the render_µs m
   re-compiles the same template in each compile timing iteration.
 - **Conditional preamble aliases**: Only add constant aliases (RuntimeError, ForloopDrop, etc.)
   for templates that actually use them. The preamble costs more for simple templates.
-- **Optimize fused_peephole's delete_at**: Use mark-and-compact instead of O(n) delete_at.
-  59 deletions × ~300 shifts each = ~17K array operations for product page.
+- **Skip set_for_offset when offset:continue not used**: Currently always called, creates 1 hash alloc.
+  Would need a flag in FOR_INIT instruction.
+- **Lazy @assigned_vars**: Only track when @has_counters is set. CAREFUL: assign() can be called
+  before increment(), so need retroactive tracking. Complex to implement.
+- **Hash-direct access in for loops**: When iterating over arrays of hashes (common in Shopify data),
+  generate `_i0__["key"]` instead of `_H.lf(_i0__, "key")`. Would need type inference or an opt-in flag.
