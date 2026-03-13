@@ -1582,7 +1582,7 @@ module LiquidIL
         # Bracket access obj[key] - stricter semantics than property access
         obj = expr_to_ruby(expr.children[0])
         key = expr_to_ruby(expr.children[1])
-        "_H.bracket_lookup(#{obj}, #{key})"
+        "_H.bl(#{obj}, #{key})"
       when :command
         obj = expr_to_ruby(expr.children[0])
         case expr.value
@@ -1598,11 +1598,11 @@ module LiquidIL
       when :compare
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "_H.compare(#{left}, #{right}, #{expr.value.inspect}, _O, _F)"
+        "_H.cmp(#{left}, #{right}, #{expr.value.inspect}, _O, _F)"
       when :contains
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "_H.contains(#{left}, #{right})"
+        "_H.ct(#{left}, #{right})"
       when :not
         child = expr_to_ruby(expr.children[0])
         "((_t = #{child}); _t.nil? || _t == false)"
@@ -2005,11 +2005,11 @@ module LiquidIL
         # Check if collection is nil/false (skip validation for nil/false)
         code << "#{inner_prefix}_in#{depth}__ = _oc#{depth}__.nil? || _oc#{depth}__ == false\n"
         # Inline to_iterable: fast path for Array (most common), fallback for others
-        code << "#{inner_prefix}#{coll_var} = _oc#{depth}__.is_a?(Array) ? _oc#{depth}__ : _H.to_iterable(_oc#{depth}__)\n"
+        code << "#{inner_prefix}#{coll_var} = _oc#{depth}__.is_a?(Array) ? _oc#{depth}__ : _H.ti(_oc#{depth}__)\n"
       else
         # No offset/limit: skip string/nil checks, directly convert to iterable
         code << "#{inner_prefix}#{coll_var} = #{coll_ruby}\n"
-        code << "#{inner_prefix}#{coll_var} = _H.to_iterable(#{coll_var}) unless #{coll_var}.is_a?(Array)\n"
+        code << "#{inner_prefix}#{coll_var} = _H.ti(#{coll_var}) unless #{coll_var}.is_a?(Array)\n"
       end
 
       # Calculate starting offset for offset:continue or explicit offset
@@ -2022,7 +2022,7 @@ module LiquidIL
         # Validate offset is a valid integer (unless collection is nil/false)
         if has_offset
           code << "#{inner_prefix}_ov#{depth}__ = #{offset_ruby}\n"
-          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.valid_integer(_ov#{depth}__)\n"
+          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.vi(_ov#{depth}__)\n"
           code << "#{inner_prefix}#{offset_var} = _ov#{depth}__.to_i\n"
         else
           code << "#{inner_prefix}#{offset_var} = (#{offset_ruby}).to_i\n"
@@ -2040,15 +2040,15 @@ module LiquidIL
         # Validate limit is a valid integer (unless collection is nil/false)
         if has_limit
           code << "#{inner_prefix}_lv#{depth}__ = #{limit_ruby}\n"
-          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.valid_integer(_lv#{depth}__)\n"
+          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.vi(_lv#{depth}__)\n"
           code << "#{inner_prefix}_to#{depth}__ = #{offset_var} + _lv#{depth}__.to_i\n"
         else
           code << "#{inner_prefix}_to#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
         end
-        code << "#{inner_prefix}#{coll_var} = _H.slice_collection(#{coll_var}, #{offset_var}, _to#{depth}__) unless _is#{depth}__\n"
+        code << "#{inner_prefix}#{coll_var} = _H.sc(#{coll_var}, #{offset_var}, _to#{depth}__) unless _is#{depth}__\n"
       elsif needs_slicing
         # Has offset but no limit - apply offset using slice
-        code << "#{inner_prefix}#{coll_var} = _H.slice_collection(#{coll_var}, #{offset_var}, nil) unless _is#{depth}__\n"
+        code << "#{inner_prefix}#{coll_var} = _H.sc(#{coll_var}, #{offset_var}, nil) unless _is#{depth}__\n"
       end
       # else: no offset, no limit, no offset:continue — skip slicing entirely
 
@@ -2302,7 +2302,7 @@ module LiquidIL
       code << "#{prefix}__orig_tablerow_coll_#{depth}__ = #{coll_ruby}\n"
       code << "#{prefix}_is#{depth}__ = __orig_tablerow_coll_#{depth}__.is_a?(String)\n"
       code << "#{prefix}_in#{depth}__ = __orig_tablerow_coll_#{depth}__.nil? || __orig_tablerow_coll_#{depth}__ == false\n"
-      code << "#{prefix}#{coll_var} = _H.to_iterable(__orig_tablerow_coll_#{depth}__)\n"
+      code << "#{prefix}#{coll_var} = _H.ti(__orig_tablerow_coll_#{depth}__)\n"
 
       # Handle cols parameter
       case cols
@@ -2312,7 +2312,7 @@ module LiquidIL
           code << "#{prefix}if __cols_val_#{depth}__.nil?\n"
           code << "#{prefix}  #{cols_var} = #{coll_var}.length\n"
           code << "#{prefix}  __cols_explicit_nil_#{depth}__ = true\n"
-          code << "#{prefix}elsif !_in#{depth}__ && !_H.valid_integer(__cols_val_#{depth}__)\n"
+          code << "#{prefix}elsif !_in#{depth}__ && !_H.vi(__cols_val_#{depth}__)\n"
           code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1)\n"
           code << "#{prefix}else\n"
           code << "#{prefix}  #{cols_var} = __cols_val_#{depth}__.to_i\n"
@@ -2341,7 +2341,7 @@ module LiquidIL
           offset_ruby = expr_to_ruby(offset_expr)
           code << "#{prefix}_ov#{depth}__ = #{offset_ruby}\n"
           code << "#{prefix}unless _in#{depth}__\n"
-          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.valid_integer(_ov#{depth}__)\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.vi(_ov#{depth}__)\n"
           code << "#{prefix}  __offset_#{depth}__ = _ov#{depth}__.nil? ? 0 : _ov#{depth}__.to_i\n"
           code << "#{prefix}  __offset_#{depth}__ = [__offset_#{depth}__, 0].max\n"
           code << "#{prefix}  #{coll_var} = #{coll_var}.drop(__offset_#{depth}__) unless _is#{depth}__\n"
@@ -2357,7 +2357,7 @@ module LiquidIL
           limit_ruby = expr_to_ruby(limit_expr)
           code << "#{prefix}_lv#{depth}__ = #{limit_ruby}\n"
           code << "#{prefix}unless _in#{depth}__\n"
-          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.valid_integer(_lv#{depth}__)\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.vi(_lv#{depth}__)\n"
           code << "#{prefix}  __limit_#{depth}__ = _lv#{depth}__.nil? ? 0 : _lv#{depth}__.to_i\n"
           code << "#{prefix}  __limit_#{depth}__ = 0 if __limit_#{depth}__ < 0\n"
           code << "#{prefix}  #{coll_var} = #{coll_var}.take(__limit_#{depth}__) unless _is#{depth}__\n"

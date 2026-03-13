@@ -393,6 +393,12 @@ module LiquidIL
       alias_method :lp, :lookup_prop
       alias_method :oa, :output_append
       alias_method :cf, :call_filter
+      alias_method :cmp, :compare
+      alias_method :ct, :contains
+      alias_method :ti, :to_iterable
+      alias_method :sc, :slice_collection
+      alias_method :vi, :valid_integer
+      alias_method :bl, :bracket_lookup
     end
   end
 end
