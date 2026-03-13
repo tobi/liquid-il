@@ -1634,7 +1634,7 @@ module LiquidIL
       when :case_compare
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "_U.case_equal?(#{right}, #{left})"
+        "_U.ce?(#{right}, #{left})"
       when :temp
         "__temp_#{expr.value}__"
       when :and
@@ -2634,16 +2634,16 @@ module LiquidIL
         "_U.to_s(#{input}).rstrip"
       when "escape"
         return nil unless args.empty?
-        "((_fi = #{input}); _fi.nil? ? nil : CGI.escapeHTML(LiquidIL::Utils.to_s(_fi)))"
+        "((_fi = #{input}); _fi.nil? ? nil : CGI.escapeHTML(_U.to_s(_fi)))"
       when "size"
         return nil unless args.empty?
         "((_fi = #{input}); _fi.respond_to?(:size) ? _fi.size : 0)"
       when "append"
         return nil unless args.length == 1
-        "(LiquidIL::Utils.to_s(#{input}) + LiquidIL::Utils.to_s(#{args[0]}))"
+        "(_U.to_s(#{input}) + _U.to_s(#{args[0]}))"
       when "prepend"
         return nil unless args.length == 1
-        "(LiquidIL::Utils.to_s(#{args[0]}) + LiquidIL::Utils.to_s(#{input}))"
+        "(_U.to_s(#{args[0]}) + _U.to_s(#{input}))"
       when "default"
         # default filter has complex semantics (allow_false option, empty arrays/hashes)
         # Too many edge cases to inline safely
