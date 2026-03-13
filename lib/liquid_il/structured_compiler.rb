@@ -249,7 +249,7 @@ module LiquidIL
       code << "  _H = LiquidIL::StructuredHelpers\n"
       code << "  _U = LiquidIL::Utils\n"
       code << generate_partial_lambdas
-      code << "  _O = String.new(capacity: #{OUTPUT_CAPACITY})\n"
+      code << "  _O = +\"\"\n"
       code << "  _F = nil\n"
       code << "  _cs = {}\n" if @uses_cycles
       code << "  _cst = []\n" if @uses_captures || @uses_ifchanged
