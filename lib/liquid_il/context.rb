@@ -250,7 +250,8 @@ module LiquidIL
     def assign(key, value)
       key = key.to_s unless key.is_a?(String)
       # Track that this was explicitly assigned (takes precedence over counters)
-      (@assigned_vars ||= {})[key] = true
+      # Only needed when counters are active (increment/decrement used)
+      (@assigned_vars ||= {})[key] = true if @has_counters
       # Liquid assigns to the root/environment scope, not the current scope
       @scopes.last[key] = value
     end
