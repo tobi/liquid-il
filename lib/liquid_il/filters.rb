@@ -48,18 +48,42 @@ module LiquidIL
 
       def apply(name, input, args, context)
         @context = context
-        # name from compiled code is already a frozen lowercase string — skip to_s.downcase
-        method_name = name.is_a?(String) ? name : name.to_s.downcase
-        if valid_filter_methods[method_name]
-          send(method_name, input, *args)
-        else
-          input  # Unknown filter, return input unchanged
+        name = name.to_s unless name.is_a?(String)
+        unless valid_filter_methods[name]
+          return input  # Unknown filter, return input unchanged
+        end
+        # Avoid *args splat allocation for common cases (0-2 args)
+        case args.length
+        when 0 then send(name, input)
+        when 1 then send(name, input, args[0])
+        when 2 then send(name, input, args[0], args[1])
+        else send(name, input, *args)
         end
       rescue ArgumentError => e
         # Convert ArgumentError to FilterRuntimeError so it shows in output
         raise context.strict_errors ? e : FilterRuntimeError.new(e.message)
       rescue => e
         # Re-raise in strict mode, raise FilterRuntimeError("internal") otherwise
+        raise e if context.strict_errors || e.is_a?(FilterRuntimeError)
+        raise FilterRuntimeError.new("internal")
+      ensure
+        @context = nil
+      end
+
+      # Fast dispatch — caller has already validated the filter name exists.
+      # Skips valid_filter_methods lookup and name.to_s conversion.
+      # Used by structured compiler for filters known at compile time.
+      def apply_fast(name, input, args, context)
+        @context = context
+        case args.length
+        when 0 then send(name, input)
+        when 1 then send(name, input, args[0])
+        when 2 then send(name, input, args[0], args[1])
+        else send(name, input, *args)
+        end
+      rescue ArgumentError => e
+        raise context.strict_errors ? e : FilterRuntimeError.new(e.message)
+      rescue => e
         raise e if context.strict_errors || e.is_a?(FilterRuntimeError)
         raise FilterRuntimeError.new("internal")
       ensure
@@ -211,7 +235,10 @@ module LiquidIL
         words = [to_integer(words), 1].max  # At least 1 word
         ellipsis = Utils.to_s(ellipsis)
         input_str = Utils.to_s(input)
-        word_list = input_str.split
+        # Split with limit: only create words+1 substrings instead of all words.
+        # Clamp to avoid RangeError with huge integers.
+        limit = words < 1_000_000 ? words + 1 : 0
+        word_list = input_str.split(nil, limit)
 
         if word_list.length > words
           # Truncate and add ellipsis
@@ -650,6 +677,9 @@ module LiquidIL
         end
       end
 
+      # Fast ISO date pattern: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
+      ISO_DATE_RE = /\A(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}):(\d{2}))?\z/
+
       def parse_date(input)
         case input
         when Time, DateTime
@@ -659,14 +689,18 @@ module LiquidIL
         when Numeric
           Time.at(input)
         when String
-          str = input.downcase
-          if str == "now" || str == "today"
-            Time.now
-          elsif input =~ /\A-?\d+\z/
-            # Numeric string - treat as timestamp
-            Time.at(input.to_i)
+          # Fast path for ISO dates (most common in Shopify data)
+          if (m = ISO_DATE_RE.match(input))
+            Time.new(m[1].to_i, m[2].to_i, m[3].to_i, m[4]&.to_i || 0, m[5]&.to_i || 0, m[6]&.to_i || 0)
           else
-            Time.parse(input)
+            str = input.downcase
+            if str == "now" || str == "today"
+              Time.now
+            elsif input =~ /\A-?\d+\z/
+              Time.at(input.to_i)
+            else
+              Time.parse(input)
+            end
           end
         else
           nil

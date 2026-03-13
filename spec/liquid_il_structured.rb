@@ -56,7 +56,8 @@ LiquidSpec.compile do |ctx, source, compile_options|
   begin
     ctx[:template] = context.parse(source)
   rescue LiquidIL::SyntaxError => e
-    ctx[:template] = FallbackTemplate.new(e)
+    # Let syntax errors propagate — liquid-spec runner detects them as parse_error
+    raise
   rescue => e
     ctx[:template] = FallbackTemplate.new(e)
   end

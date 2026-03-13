@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "liquid_il/lexer"
+require_relative "liquid_il/tags"
 require_relative "liquid_il/parser"
 require_relative "liquid_il/il"
 require_relative "liquid_il/passes"
@@ -14,6 +15,7 @@ require_relative "liquid_il/structured_compiler"
 
 module LiquidIL
   EMPTY_ARRAY = [].freeze
+  EMPTY_HASH = {}.freeze
 
   class Error < StandardError; end
 
@@ -124,8 +126,10 @@ module LiquidIL
     # Render the template with the given variables.
     def render(assigns = {}, render_errors: true, **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
-      scope = Scope.new(assigns, registers: @context&.registers&.dup || {}, strict_errors: @context&.strict_errors || false)
-      scope.file_system = @context&.file_system
+      ctx = @context
+      regs = ctx&.registers
+      scope = Scope.new(assigns, registers: regs ? regs.dup : EMPTY_HASH, strict_errors: ctx&.strict_errors || false)
+      scope.file_system = ctx&.file_system
       scope.render_errors = render_errors
 
       @compiled_proc.call(scope, @spans, @source)

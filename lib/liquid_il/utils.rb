@@ -148,6 +148,12 @@ module LiquidIL
       case_value == when_value
     end
 
+    # Short aliases for generated code compactness
+    class << self
+      alias_method :os, :output_string
+      alias_method :ce?, :case_equal?
+    end
+
     private_constant :HASH_TO_S_METHOD, :HASH_INSPECT_METHOD
   end
 end

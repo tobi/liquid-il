@@ -130,6 +130,17 @@ module LiquidIL
       LiquidIL::ErrorMarker.new(e.message, location)
     end
 
+    # Fast filter call — filter name pre-validated at compile time.
+    # Skips name lookup in Filters.apply. Used for filters known to exist.
+    def self.call_filter_fast(name, input, args, scope, current_file = nil, line = 1)
+      LiquidIL::Filters.apply_fast(name, input, args, scope)
+    rescue LiquidIL::FilterError
+      nil
+    rescue LiquidIL::FilterRuntimeError => e
+      location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+      LiquidIL::ErrorMarker.new(e.message, location)
+    end
+
     def self.compare(left, right, op, output = nil, current_file = nil)
       left = left.to_liquid_value if left.respond_to?(:to_liquid_value)
       right = right.to_liquid_value if right.respond_to?(:to_liquid_value)
@@ -385,6 +396,50 @@ module LiquidIL
         scope.current_file = prev_file
         scope.pop_render_depth
       end
+    end
+
+    # Simple for-loop helper — handles collection prep and offset tracking.
+    # Used for loops without ForloopDrop, offset, or limit.
+    def self.each_iter(collection, loop_name, scope)
+      coll = collection.is_a?(Array) ? collection : to_iterable(collection)
+      return if coll.empty?
+      coll.each { |item| yield item }
+      scope.set_for_offset(loop_name, coll.length)
+    end
+
+    # Build paginate object — extracted from generated code to reduce code size
+    def self.build_paginate(collection, page_size, current_page)
+      total = collection.length
+      pages = (total + page_size - 1) / page_size
+      pages = 1 if pages < 1
+      current_page = [[current_page, 1].max, pages].min
+      offset = (current_page - 1) * page_size
+      items = collection[offset, page_size] || []
+      parts = (1..pages).map { |p| { 'title' => p.to_s, 'url' => "?page=#{p}", 'is_link' => p != current_page } }
+      paginate = {
+        'page_size' => page_size, 'current_page' => current_page,
+        'current_offset' => offset, 'pages' => pages, 'items' => items,
+        'parts' => parts,
+        'previous' => current_page > 1 ? { 'title' => '&laquo; Previous', 'url' => "?page=#{current_page - 1}", 'is_link' => true } : nil,
+        'next' => current_page < pages ? { 'title' => 'Next &raquo;', 'url' => "?page=#{current_page + 1}", 'is_link' => true } : nil,
+        'collection_size' => total
+      }
+      [paginate, items]
+    end
+
+    # Short aliases for generated code compactness (saves ~10% code size)
+    class << self
+      alias_method :lf, :lookup_prop_fast
+      alias_method :lp, :lookup_prop
+      alias_method :oa, :output_append
+      alias_method :cf, :call_filter
+      alias_method :cff, :call_filter_fast
+      alias_method :cmp, :compare
+      alias_method :ct, :contains
+      alias_method :ti, :to_iterable
+      alias_method :sc, :slice_collection
+      alias_method :vi, :valid_integer
+      alias_method :bl, :bracket_lookup
     end
   end
 end
