@@ -30,3 +30,14 @@ This means micro-optimizations to template execution won't move the render_µs m
 - **Inline more filters at compile time**: money, handle, img_url could be inlined to avoid
   call_filter dispatch overhead.
 - **Avoid @scopes array allocation in Scope.new**: Use a single ivar for single-scope case.
+
+## Ideas for parse_µs improvement
+- **Two-pass instruction removal**: Instead of delete_at (O(n) per deletion), mark instructions
+  as NOOP in first pass, compact in single sweep. Would save ~17K array element shifts for product page.
+- **Reduce code generation time**: generate_body creates many small strings. Using an array of 
+  parts + join might be faster (tested: 27% faster for 222 parts).
+- **Extract for-loop boilerplate into helper method**: Each for loop generates ~20 lines of 
+  boilerplate. A `_H.for_loop(...)` helper with a block could reduce to ~5 lines, saving 33%
+  of code size for templates with many loops.
+- **Template compile caching**: Cache compiled procs keyed by source string hash. The benchmark
+  re-compiles the same template in each compile timing iteration.

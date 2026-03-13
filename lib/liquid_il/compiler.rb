@@ -122,20 +122,31 @@ module LiquidIL
     # Fused peephole optimizer — one forward scan handles multiple transforms.
     # Avoids N separate array walks by combining all simple peephole patterns.
     def fused_peephole(instructions, spans, enabled)
+      # Pre-compute pass flags to avoid Set#include? per instruction
+      p3 = p3
+      p4 = p4
+      p5 = p5
+      p6 = p6
+      p7 = enabled.include?(7)
+      p8 = p8
+      p9 = p9
+      p13 = p13
+      p20 = p20
+
       i = 0
       while i < instructions.length
         inst = instructions[i]
         opcode = inst[0]
 
         # Pass 7: Remove NOOPs
-        if opcode == IL::NOOP && enabled.include?(7)
+        if opcode == IL::NOOP && p7
           instructions.delete_at(i)
           spans.delete_at(i)
           next
         end
 
         # Pass 13: Remove empty WRITE_RAW
-        if opcode == IL::WRITE_RAW && inst[1].empty? && enabled.include?(13)
+        if opcode == IL::WRITE_RAW && inst[1].empty? && p13
           instructions.delete_at(i)
           spans.delete_at(i)
           next
@@ -147,7 +158,7 @@ module LiquidIL
           next_opcode = next_inst[0]
 
           # Pass 3: Fold const writes (CONST + WRITE_VALUE → WRITE_RAW)
-          if enabled.include?(3) && next_opcode == IL::WRITE_VALUE
+          if p3 && next_opcode == IL::WRITE_VALUE
             cv = const_value(inst)
             if cv
               instructions[i] = [IL::WRITE_RAW, Utils.output_string(cv[1])]
@@ -159,7 +170,7 @@ module LiquidIL
           end
 
           # Pass 5: Collapse FIND_VAR + LOOKUP_CONST_PATH
-          if enabled.include?(5) && opcode == IL::FIND_VAR && next_opcode == IL::LOOKUP_CONST_PATH
+          if p5 && opcode == IL::FIND_VAR && next_opcode == IL::LOOKUP_CONST_PATH
             instructions[i] = [IL::FIND_VAR_PATH, inst[1], next_inst[1]]
             spans[i] = spans[i + 1]
             instructions.delete_at(i + 1)
@@ -168,7 +179,7 @@ module LiquidIL
           end
 
           # Pass 6: Remove redundant IS_TRUTHY after boolean ops
-          if enabled.include?(6) && next_opcode == IL::IS_TRUTHY
+          if p6 && next_opcode == IL::IS_TRUTHY
             if opcode == IL::COMPARE || opcode == IL::CASE_COMPARE || opcode == IL::CONTAINS || opcode == IL::BOOL_NOT
               instructions.delete_at(i + 1)
               spans.delete_at(i + 1)
@@ -178,14 +189,14 @@ module LiquidIL
           end
 
           # Pass 8: Remove jump-to-next-label
-          if enabled.include?(8) && opcode == IL::JUMP && next_opcode == IL::LABEL && inst[1] == next_inst[1]
+          if p8 && opcode == IL::JUMP && next_opcode == IL::LABEL && inst[1] == next_inst[1]
             instructions.delete_at(i)
             spans.delete_at(i)
             next
           end
 
           # Pass 9: Merge consecutive WRITE_RAW
-          if enabled.include?(9) && opcode == IL::WRITE_RAW && next_opcode == IL::WRITE_RAW
+          if p9 && opcode == IL::WRITE_RAW && next_opcode == IL::WRITE_RAW
             instructions[i] = [IL::WRITE_RAW, inst[1] + next_inst[1]]
             instructions.delete_at(i + 1)
             spans.delete_at(i + 1)
@@ -193,7 +204,7 @@ module LiquidIL
           end
 
           # Pass 20: Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR
-          if enabled.include?(20) && opcode == IL::FIND_VAR && next_opcode == IL::WRITE_VALUE
+          if p20 && opcode == IL::FIND_VAR && next_opcode == IL::WRITE_VALUE
             instructions[i] = [IL::WRITE_VAR, inst[1]]
             spans[i] = spans[i + 1]
             instructions.delete_at(i + 1)
@@ -203,7 +214,7 @@ module LiquidIL
           end
 
           # Pass 20: Fuse FIND_VAR_PATH + WRITE_VALUE → WRITE_VAR_PATH
-          if enabled.include?(20) && opcode == IL::FIND_VAR_PATH && next_opcode == IL::WRITE_VALUE
+          if p20 && opcode == IL::FIND_VAR_PATH && next_opcode == IL::WRITE_VALUE
             instructions[i] = [IL::WRITE_VAR_PATH, inst[1], inst[2]]
             spans[i] = spans[i + 1]
             instructions.delete_at(i + 1)
@@ -214,7 +225,7 @@ module LiquidIL
         end
 
         # Pass 4: Collapse LOOKUP_CONST_KEY chains (looks ahead multiple)
-        if enabled.include?(4) && opcode == IL::LOOKUP_CONST_KEY
+        if p4 && opcode == IL::LOOKUP_CONST_KEY
           j = i + 1
           while j < instructions.length && instructions[j][0] == IL::LOOKUP_CONST_KEY
             j += 1
