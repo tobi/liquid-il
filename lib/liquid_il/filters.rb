@@ -655,6 +655,9 @@ module LiquidIL
         end
       end
 
+      # Fast ISO date pattern: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
+      ISO_DATE_RE = /\A(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}):(\d{2}))?\z/
+
       def parse_date(input)
         case input
         when Time, DateTime
@@ -664,14 +667,18 @@ module LiquidIL
         when Numeric
           Time.at(input)
         when String
-          str = input.downcase
-          if str == "now" || str == "today"
-            Time.now
-          elsif input =~ /\A-?\d+\z/
-            # Numeric string - treat as timestamp
-            Time.at(input.to_i)
+          # Fast path for ISO dates (most common in Shopify data)
+          if (m = ISO_DATE_RE.match(input))
+            Time.new(m[1].to_i, m[2].to_i, m[3].to_i, m[4]&.to_i || 0, m[5]&.to_i || 0, m[6]&.to_i || 0)
           else
-            Time.parse(input)
+            str = input.downcase
+            if str == "now" || str == "today"
+              Time.now
+            elsif input =~ /\A-?\d+\z/
+              Time.at(input.to_i)
+            else
+              Time.parse(input)
+            end
           end
         else
           nil
