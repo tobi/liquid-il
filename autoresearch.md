@@ -62,10 +62,15 @@ database. With YJIT: deep_copy=2923µs, our render=5-71µs. render_µs is 99.7% 
 10. **EMPTY_HASH for registers** — Avoid creating empty hash when context has no registers.
 11. **Broader filter inlining** — Direct Filters.send for money, asset_url, handle, etc. Render 447→421µs.
 
-### Cumulative Results
-- Parse: 5338µs → ~4700µs (12% improvement)
-- Render: 464µs → ~423µs (9% improvement)  
-- Allocs: 3432 → 3376 (1.6% fewer)
+### Cumulative Results (honest — no benchmark-specific flags)
+- Parse: 5338µs → ~4730µs (11.4% improvement)
+- Render: 464µs → ~395µs (14.9% improvement)  
+- Allocs: 3432 → 3119 (9.1% fewer)
+
+### Removed (overfitting)
+- trust_string_keys flag (benchmark-only, skipped validation)
+- Hardcoded Shopify filter names in inline_filter (bypassed error handling for external code)
+- Removed name.is_a?(String) skip (broke public API for Symbol callers)
 
 ### Discarded
 - Skip dup for static_environments — No measurable impact
