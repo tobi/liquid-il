@@ -2704,8 +2704,22 @@ module LiquidIL
 
     # Evaluate generated Ruby code
     # Use TOPLEVEL_BINDING to avoid constant resolution issues in class context
+    # Class-level ISeq binary cache: source hash → frozen binary string.
+    # Avoids re-parsing Ruby source for identical generated code.
+    # Capped at 1000 entries to bound memory; LRU eviction via simple clear.
+    ISEQ_CACHE_MAX = 1000
+    @@iseq_cache = {}
+
     def eval_ruby(source)
-      RubyVM::InstructionSequence.compile(source, "(liquid_il_structured)").eval
+      key = source.hash
+      if (bin = @@iseq_cache[key])
+        RubyVM::InstructionSequence.load_from_binary(bin).eval
+      else
+        iseq = RubyVM::InstructionSequence.compile(source, "(liquid_il_structured)")
+        @@iseq_cache.clear if @@iseq_cache.size >= ISEQ_CACHE_MAX
+        @@iseq_cache[key] = iseq.to_binary.freeze
+        iseq.eval
+      end
     rescue SyntaxError => e
       nil
     end
