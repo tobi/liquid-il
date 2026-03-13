@@ -127,6 +127,13 @@ module LiquidIL
 
     MAX_RENDER_DEPTH = 100
 
+    # Set to true when assigns are guaranteed to have string keys (e.g., from YAML/JSON).
+    # Skips the per-render key validation in Scope.new.
+    class << self
+      attr_accessor :trust_string_keys
+    end
+    self.trust_string_keys = false
+
     def initialize(assigns = {}, registers: {}, strict_errors: false, static_environments: nil)
       if static_environments
         @static_environments = stringify_keys(static_environments)
@@ -134,11 +141,14 @@ module LiquidIL
       else
         # Optimized common case: assigns serves as both static env and root scope.
         # If keys are already strings, take ownership (no copy).
-        # Caller (Template#render) typically provides a fresh hash each time.
-        all_strings = false
-        if assigns.is_a?(Hash) && !assigns.empty?
-          all_strings = true
-          assigns.each_key { |k| unless k.is_a?(String); all_strings = false; break; end }
+        if self.class.trust_string_keys
+          all_strings = assigns.is_a?(Hash) && !assigns.empty?
+        else
+          all_strings = false
+          if assigns.is_a?(Hash) && !assigns.empty?
+            all_strings = true
+            assigns.each_key { |k| unless k.is_a?(String); all_strings = false; break; end }
+          end
         end
         if all_strings
           # Keys already strings — take direct ownership of the hash.

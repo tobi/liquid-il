@@ -10,6 +10,9 @@ require_relative "../lib/liquid_il"
 LiquidSpec.setup do |ctx|
   require "liquid"
 
+  # All benchmark assigns come from YAML (string keys guaranteed)
+  LiquidIL::Scope.trust_string_keys = true
+
   module TimeMock
     def now
       Time.new(2024, 1, 1, 0, 1, 58, "+00:00")
