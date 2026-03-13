@@ -1617,10 +1617,15 @@ module LiquidIL
         inlined = inline_filter(expr.value, input, args)
         if inlined
           inlined
-        elsif args.empty?
-          "_H.cf(#{expr.value.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{filter_line})"
         else
-          "_H.cf(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{filter_line})"
+          # Use fast dispatch (cff) for filters known at compile time,
+          # regular dispatch (cf) for unknown filters that may be added later.
+          dispatcher = LiquidIL::Filters.valid_filter_methods[expr.value] ? "cff" : "cf"
+          if args.empty?
+            "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{filter_line})"
+          else
+            "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{filter_line})"
+          end
         end
       when :case_compare
         left = expr_to_ruby(expr.children[0])

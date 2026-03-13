@@ -130,6 +130,17 @@ module LiquidIL
       LiquidIL::ErrorMarker.new(e.message, location)
     end
 
+    # Fast filter call — filter name pre-validated at compile time.
+    # Skips name lookup in Filters.apply. Used for filters known to exist.
+    def self.call_filter_fast(name, input, args, scope, current_file = nil, line = 1)
+      LiquidIL::Filters.apply_fast(name, input, args, scope)
+    rescue LiquidIL::FilterError
+      nil
+    rescue LiquidIL::FilterRuntimeError => e
+      location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+      LiquidIL::ErrorMarker.new(e.message, location)
+    end
+
     def self.compare(left, right, op, output = nil, current_file = nil)
       left = left.to_liquid_value if left.respond_to?(:to_liquid_value)
       right = right.to_liquid_value if right.respond_to?(:to_liquid_value)
@@ -422,6 +433,7 @@ module LiquidIL
       alias_method :lp, :lookup_prop
       alias_method :oa, :output_append
       alias_method :cf, :call_filter
+      alias_method :cff, :call_filter_fast
       alias_method :cmp, :compare
       alias_method :ct, :contains
       alias_method :ti, :to_iterable

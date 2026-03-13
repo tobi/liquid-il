@@ -70,6 +70,26 @@ module LiquidIL
         @context = nil
       end
 
+      # Fast dispatch — caller has already validated the filter name exists.
+      # Skips valid_filter_methods lookup and name.to_s conversion.
+      # Used by structured compiler for filters known at compile time.
+      def apply_fast(name, input, args, context)
+        @context = context
+        case args.length
+        when 0 then send(name, input)
+        when 1 then send(name, input, args[0])
+        when 2 then send(name, input, args[0], args[1])
+        else send(name, input, *args)
+        end
+      rescue ArgumentError => e
+        raise context.strict_errors ? e : FilterRuntimeError.new(e.message)
+      rescue => e
+        raise e if context.strict_errors || e.is_a?(FilterRuntimeError)
+        raise FilterRuntimeError.new("internal")
+      ensure
+        @context = nil
+      end
+
       private
 
       def args_to_s(input, *args)
