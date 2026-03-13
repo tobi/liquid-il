@@ -138,11 +138,20 @@ module LiquidIL
       end
 
       def emit(opcode, *args)
-        if args.empty?
-          @instructions << [opcode]
-        else
-          @instructions << [opcode, *args]
-        end
+        @instructions << (args.empty? ? [opcode] : [opcode, *args])
+        @spans << @current_span
+        self
+      end
+
+      # Specialized emitters for common arities (avoid *args splat overhead)
+      def emit1(opcode, a)
+        @instructions << [opcode, a]
+        @spans << @current_span
+        self
+      end
+
+      def emit2(opcode, a, b)
+        @instructions << [opcode, a, b]
         @spans << @current_span
         self
       end
@@ -162,7 +171,7 @@ module LiquidIL
 
       # Convenience methods
       def write_raw(str)
-        emit(WRITE_RAW, str)
+        emit1(WRITE_RAW, str)
       end
 
       def write_value
@@ -182,19 +191,19 @@ module LiquidIL
       end
 
       def const_int(val)
-        emit(CONST_INT, val)
+        emit1(CONST_INT, val)
       end
 
       def const_float(val)
-        emit(CONST_FLOAT, val)
+        emit1(CONST_FLOAT, val)
       end
 
       def const_string(val)
-        emit(CONST_STRING, val)
+        emit1(CONST_STRING, val)
       end
 
       def const_range(start_val, end_val)
-        emit(CONST_RANGE, start_val, end_val)
+        emit2(CONST_RANGE, start_val, end_val)
       end
 
       def const_empty
@@ -206,11 +215,11 @@ module LiquidIL
       end
 
       def find_var(name)
-        emit(FIND_VAR, name)
+        emit1(FIND_VAR, name)
       end
 
       def find_var_path(name, path)
-        emit(FIND_VAR_PATH, name, path)
+        emit2(FIND_VAR_PATH, name, path)
       end
 
       def find_var_dynamic
@@ -222,15 +231,15 @@ module LiquidIL
       end
 
       def lookup_const_key(name)
-        emit(LOOKUP_CONST_KEY, name)
+        emit1(LOOKUP_CONST_KEY, name)
       end
 
       def lookup_const_path(path)
-        emit(LOOKUP_CONST_PATH, path)
+        emit1(LOOKUP_CONST_PATH, path)
       end
 
       def lookup_command(name)
-        emit(LOOKUP_COMMAND, name)
+        emit1(LOOKUP_COMMAND, name)
       end
 
       def push_capture
@@ -246,23 +255,23 @@ module LiquidIL
       end
 
       def jump(label_id)
-        emit(JUMP, label_id)
+        emit1(JUMP, label_id)
       end
 
       def jump_if_false(label_id)
-        emit(JUMP_IF_FALSE, label_id)
+        emit1(JUMP_IF_FALSE, label_id)
       end
 
       def jump_if_true(label_id)
-        emit(JUMP_IF_TRUE, label_id)
+        emit1(JUMP_IF_TRUE, label_id)
       end
 
       def jump_if_empty(label_id)
-        emit(JUMP_IF_EMPTY, label_id)
+        emit1(JUMP_IF_EMPTY, label_id)
       end
 
       def jump_if_interrupt(label_id)
-        emit(JUMP_IF_INTERRUPT, label_id)
+        emit1(JUMP_IF_INTERRUPT, label_id)
       end
 
       def halt
@@ -270,7 +279,7 @@ module LiquidIL
       end
 
       def compare(op)
-        emit(COMPARE, op)
+        emit1(COMPARE, op)
       end
 
       def case_compare
@@ -298,11 +307,11 @@ module LiquidIL
       end
 
       def assign(name)
-        emit(ASSIGN, name)
+        emit1(ASSIGN, name)
       end
 
       def assign_local(name)
-        emit(ASSIGN_LOCAL, name)
+        emit1(ASSIGN_LOCAL, name)
       end
 
       def new_range
@@ -310,7 +319,7 @@ module LiquidIL
       end
 
       def call_filter(name, argc)
-        emit(CALL_FILTER, name, argc)
+        emit2(CALL_FILTER, name, argc)
       end
 
       def for_init(var_name, loop_name, has_limit = false, has_offset = false, offset_continue = false, reversed = false, recovery_label = nil)
@@ -318,7 +327,7 @@ module LiquidIL
       end
 
       def for_next(label_continue, label_break)
-        emit(FOR_NEXT, label_continue, label_break)
+        emit2(FOR_NEXT, label_continue, label_break)
       end
 
       def for_end
@@ -334,7 +343,7 @@ module LiquidIL
       end
 
       def push_interrupt(type)
-        emit(PUSH_INTERRUPT, type)
+        emit1(PUSH_INTERRUPT, type)
       end
 
       def pop_interrupt
@@ -342,35 +351,35 @@ module LiquidIL
       end
 
       def increment(name)
-        emit(INCREMENT, name)
+        emit1(INCREMENT, name)
       end
 
       def decrement(name)
-        emit(DECREMENT, name)
+        emit1(DECREMENT, name)
       end
 
       def cycle_step(identity, values)
-        emit(CYCLE_STEP, identity, values)
+        emit2(CYCLE_STEP, identity, values)
       end
 
       def cycle_step_var(var_name, values)
-        emit(CYCLE_STEP_VAR, var_name, values)
+        emit2(CYCLE_STEP_VAR, var_name, values)
       end
 
       def render_partial(name, args)
-        emit(RENDER_PARTIAL, name, args)
+        emit2(RENDER_PARTIAL, name, args)
       end
 
       def include_partial(name, args)
-        emit(INCLUDE_PARTIAL, name, args)
+        emit2(INCLUDE_PARTIAL, name, args)
       end
 
       def const_render(name, args)
-        emit(CONST_RENDER, name, args)
+        emit2(CONST_RENDER, name, args)
       end
 
       def const_include(name, args)
-        emit(CONST_INCLUDE, name, args)
+        emit2(CONST_INCLUDE, name, args)
       end
 
       def tablerow_init(var_name, loop_name, has_limit, has_offset, cols)
@@ -378,7 +387,7 @@ module LiquidIL
       end
 
       def tablerow_next(label_continue, label_break)
-        emit(TABLEROW_NEXT, label_continue, label_break)
+        emit2(TABLEROW_NEXT, label_continue, label_break)
       end
 
       def tablerow_end
@@ -386,7 +395,7 @@ module LiquidIL
       end
 
       def ifchanged_check(tag_id)
-        emit(IFCHANGED_CHECK, tag_id)
+        emit1(IFCHANGED_CHECK, tag_id)
       end
 
       def dup
@@ -398,15 +407,15 @@ module LiquidIL
       end
 
       def build_hash(count)
-        emit(BUILD_HASH, count)
+        emit1(BUILD_HASH, count)
       end
 
       def store_temp(index)
-        emit(STORE_TEMP, index)
+        emit1(STORE_TEMP, index)
       end
 
       def load_temp(index)
-        emit(LOAD_TEMP, index)
+        emit1(LOAD_TEMP, index)
       end
 
       def noop
