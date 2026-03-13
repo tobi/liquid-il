@@ -2052,6 +2052,17 @@ module LiquidIL
                          body_code.include?("_S.lookup('forloop')") ||
                          body_code.include?("_S.lookup(#{item_var.inspect})")
       needs_forloop = body_code.include?(forloop_var) || needs_scope_sync
+      needs_catch = body_code.include?(":loop_break_#{depth}") || body_code.include?("throw(:loop_break")
+
+      # Fast path: simple loops use each_iter helper (saves ~8 lines of generated code)
+      if !needs_forloop && !needs_scope_sync && !needs_catch && !needs_error_handling &&
+         !reversed && !needs_slicing && !offset_continue && else_code.empty?
+        code << "#{prefix}_H.each_iter(#{coll_ruby}, #{loop_name.inspect}, _S) do |#{item_var_internal}|\n"
+        code << body_code
+        code << "#{prefix}end\n"
+        @loop_depth -= 1
+        return code
+      end
 
       code << "#{inner_prefix}if !#{coll_var}.empty?\n"
       if needs_forloop
@@ -2062,8 +2073,6 @@ module LiquidIL
         code << "#{inner_prefix}  _pfl#{depth}__ = _S.lookup('forloop')\n"
       end
       code << "#{inner_prefix}  _pi#{depth}__ = _S.lookup(#{item_var.inspect})\n" if needs_scope_sync
-      # Only wrap with catch if body uses break/continue (throw/catch has overhead)
-      needs_catch = body_code.include?(":loop_break_#{depth}") || body_code.include?("throw(:loop_break")
       code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n" if needs_catch
       if needs_forloop
         code << "#{inner_prefix}    #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"

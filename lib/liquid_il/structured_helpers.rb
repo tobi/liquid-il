@@ -387,6 +387,15 @@ module LiquidIL
       end
     end
 
+    # Simple for-loop helper — handles collection prep and offset tracking.
+    # Used for loops without ForloopDrop, offset, or limit.
+    def self.each_iter(collection, loop_name, scope)
+      coll = collection.is_a?(Array) ? collection : to_iterable(collection)
+      return if coll.empty?
+      coll.each { |item| yield item }
+      scope.set_for_offset(loop_name, coll.length)
+    end
+
     # Build paginate object — extracted from generated code to reduce code size
     def self.build_paginate(collection, page_size, current_page)
       total = collection.length
