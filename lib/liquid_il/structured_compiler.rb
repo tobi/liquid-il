@@ -241,15 +241,15 @@ module LiquidIL
 
       code = String.new
       code << "# frozen_string_literal: true\n"
-      code << "proc do |_S, __spans__, __template_source__|\n"
+      code << "proc do |_S, _sp, _ts|\n"
       code << "  _H = LiquidIL::StructuredHelpers\n"
       code << "  _U = LiquidIL::Utils\n"
       code << generate_partial_lambdas
       code << "  _O = String.new(capacity: #{OUTPUT_CAPACITY})\n"
       code << "  _F = nil\n"
-      code << "  __cycle_state__ = {}\n" if @uses_cycles
-      code << "  __capture_stack__ = []\n" if @uses_captures || @uses_ifchanged
-      code << "  __ifchanged_state__ = {}\n" if @uses_ifchanged
+      code << "  _cs = {}\n" if @uses_cycles
+      code << "  _cst = []\n" if @uses_captures || @uses_ifchanged
+      code << "  _ics = {}\n" if @uses_ifchanged
       code << "\n"
       code << generate_body
       code << "\n  _O\n"
@@ -300,13 +300,13 @@ module LiquidIL
         code << "      end\n"
         code << "      __partial_scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
         code << "      assigns.each { |k, v| __partial_scope__.assign(k, v) }\n"
-        code << "      __spans__ = #{info[:spans].inspect}\n"
-        code << "      __template_source__ = #{info[:source].inspect}\n"
+        code << "      _sp = #{info[:spans].inspect}\n"
+        code << "      _ts = #{info[:source].inspect}\n"
         code << "      _F = #{name.inspect}\n"
         # Share cycle state for includes (non-isolated), fresh for renders
-        code << "      __cycle_state__ = isolated ? {} : (parent_cycle_state || {})\n"
-        code << "      __capture_stack__ = []\n"
-        code << "      __ifchanged_state__ = {}\n"
+        code << "      _cs = isolated ? {} : (parent_cycle_state || {})\n"
+        code << "      _cst = []\n"
+        code << "      _ics = {}\n"
         code << indent_partial_body(info[:compiled_body], 6)
         code << "    rescue LiquidIL::RuntimeError => e\n"
         code << "      raise unless __parent_scope__.render_errors\n"
@@ -475,7 +475,7 @@ module LiquidIL
 
       when IL::PUSH_CAPTURE
         @pc += 1
-        "#{prefix}__capture_stack__ << _O; _O = String.new\n"
+        "#{prefix}_cst << _O; _O = String.new\n"
 
       when IL::POP_CAPTURE
         @pc += 1
@@ -484,21 +484,21 @@ module LiquidIL
         if @instructions[@pc]&.[](0) == IL::ASSIGN
           var = @instructions[@pc][1]
           @pc += 1
-          "#{prefix}__captured__ = _O; _O = __capture_stack__.pop; _S.assign(#{var.inspect}, __captured__)\n"
+          "#{prefix}__captured__ = _O; _O = _cst.pop; _S.assign(#{var.inspect}, __captured__)\n"
         elsif @instructions[@pc]&.[](0) == IL::IFCHANGED_CHECK
           tag_id = @instructions[@pc][1]
           @pc += 1
           # ifchanged: output captured content only if it differs from previous
           code = String.new
-          code << "#{prefix}__captured__ = _O; _O = __capture_stack__.pop\n"
-          code << "#{prefix}if __captured__ != __ifchanged_state__[#{tag_id.inspect}]\n"
-          code << "#{prefix}  __ifchanged_state__[#{tag_id.inspect}] = __captured__\n"
+          code << "#{prefix}__captured__ = _O; _O = _cst.pop\n"
+          code << "#{prefix}if __captured__ != _ics[#{tag_id.inspect}]\n"
+          code << "#{prefix}  _ics[#{tag_id.inspect}] = __captured__\n"
           code << "#{prefix}  _O << __captured__\n"
           code << "#{prefix}end\n"
           code
         else
           # Fallback - just restore output (captured value is lost)
-          "#{prefix}_O = __capture_stack__.pop\n"
+          "#{prefix}_O = _cst.pop\n"
         end
 
       when IL::CYCLE_STEP
@@ -524,9 +524,9 @@ module LiquidIL
         # Use __cycle_idx__ to avoid conflict with _x_ in for loops
         # Handle empty values: cycle with 0 choices outputs nothing (empty string)
         if raw_values.empty?
-          "#{prefix}__cycle_state__[#{identity.inspect}] = (__cycle_state__[#{identity.inspect}] || 0) + 1\n"
+          "#{prefix}_cs[#{identity.inspect}] = (_cs[#{identity.inspect}] || 0) + 1\n"
         else
-          "#{prefix}__cycle_idx__ = __cycle_state__[#{identity.inspect}] ||= 0; _O << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[#{identity.inspect}] = __cycle_idx__ + 1\n"
+          "#{prefix}__cycle_idx__ = _cs[#{identity.inspect}] ||= 0; _O << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; _cs[#{identity.inspect}] = __cycle_idx__ + 1\n"
         end
 
       when IL::CYCLE_STEP_VAR
@@ -550,9 +550,9 @@ module LiquidIL
         # Identity is a variable - look it up at runtime
         # Handle empty values: cycle with 0 choices outputs nothing (empty string)
         if raw_values.empty?
-          "#{prefix}__cycle_key__ = _S.lookup(#{var_name.inspect}); __cycle_state__[__cycle_key__] = (__cycle_state__[__cycle_key__] || 0) + 1\n"
+          "#{prefix}__cycle_key__ = _S.lookup(#{var_name.inspect}); _cs[__cycle_key__] = (_cs[__cycle_key__] || 0) + 1\n"
         else
-          "#{prefix}__cycle_key__ = _S.lookup(#{var_name.inspect}); __cycle_idx__ = __cycle_state__[__cycle_key__] ||= 0; _O << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; __cycle_state__[__cycle_key__] = __cycle_idx__ + 1\n"
+          "#{prefix}__cycle_key__ = _S.lookup(#{var_name.inspect}); __cycle_idx__ = _cs[__cycle_key__] ||= 0; _O << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; _cs[__cycle_key__] = __cycle_idx__ + 1\n"
         end
 
       when IL::PUSH_INTERRUPT
@@ -573,10 +573,10 @@ module LiquidIL
           @pc += 2 # Consume POP_CAPTURE and ASSIGN
           if @loop_depth > 0
             # Inside loop: complete the capture assignment before breaking
-            code << "#{prefix}__captured__ = _O; _O = __capture_stack__.pop; _S.assign(#{var.inspect}, __captured__)\n"
+            code << "#{prefix}__captured__ = _O; _O = _cst.pop; _S.assign(#{var.inspect}, __captured__)\n"
           else
             # Outside loop: just restore output, discard captured content
-            code << "#{prefix}_O = __capture_stack__.pop\n"
+            code << "#{prefix}_O = _cst.pop\n"
           end
         end
 
@@ -628,22 +628,22 @@ module LiquidIL
         lookup = "_S.lookup(#{parts[0].inspect})"
         parts[1..].each { |p| lookup = "_H.lookup(#{lookup}, #{p.inspect})" }
         code = String.new
-        code << "#{prefix}__pg_coll__ = #{lookup}\n"
-        code << "#{prefix}__pg_coll__ = __pg_coll__.respond_to?(:to_a) ? __pg_coll__.to_a : Array(__pg_coll__) unless __pg_coll__.is_a?(Array)\n"
-        code << "#{prefix}__pg_size__ = #{page_size}\n"
-        code << "#{prefix}__pg_page__ = (_S.lookup('current_page') || 1).to_i\n"
-        code << "#{prefix}__pg_total__ = __pg_coll__.length\n"
-        code << "#{prefix}__pg_pages__ = (__pg_total__ + __pg_size__ - 1) / __pg_size__\n"
-        code << "#{prefix}__pg_pages__ = 1 if __pg_pages__ < 1\n"
-        code << "#{prefix}__pg_page__ = [[__pg_page__, 1].max, __pg_pages__].min\n"
-        code << "#{prefix}__pg_offset__ = (__pg_page__ - 1) * __pg_size__\n"
-        code << "#{prefix}__pg_items__ = __pg_coll__[__pg_offset__, __pg_size__] || []\n"
+        code << "#{prefix}_pc = #{lookup}\n"
+        code << "#{prefix}_pc = _pc.respond_to?(:to_a) ? _pc.to_a : Array(_pc) unless _pc.is_a?(Array)\n"
+        code << "#{prefix}_ps = #{page_size}\n"
+        code << "#{prefix}_pp = (_S.lookup('current_page') || 1).to_i\n"
+        code << "#{prefix}_pt = _pc.length\n"
+        code << "#{prefix}_pgs = (_pt + _ps - 1) / _ps\n"
+        code << "#{prefix}_pgs = 1 if _pgs < 1\n"
+        code << "#{prefix}_pp = [[_pp, 1].max, _pgs].min\n"
+        code << "#{prefix}_po = (_pp - 1) * _ps\n"
+        code << "#{prefix}_pi2 = _pc[_po, _ps] || []\n"
         # Build paginate object
-        code << "#{prefix}__pg_parts__ = (1..__pg_pages__).map { |p| { 'title' => p.to_s, 'url' => \"?page=\#{p}\", 'is_link' => p != __pg_page__ } }\n"
-        code << "#{prefix}__paginate__ = { 'page_size' => __pg_size__, 'current_page' => __pg_page__, 'current_offset' => __pg_offset__, 'pages' => __pg_pages__, 'items' => __pg_items__, 'parts' => __pg_parts__, 'previous' => __pg_page__ > 1 ? { 'title' => '&laquo; Previous', 'url' => \"?page=\#{__pg_page__ - 1}\", 'is_link' => true } : nil, 'next' => __pg_page__ < __pg_pages__ ? { 'title' => 'Next &raquo;', 'url' => \"?page=\#{__pg_page__ + 1}\", 'is_link' => true } : nil, 'collection_size' => __pg_total__ }\n"
-        code << "#{prefix}_S.assign('paginate', __paginate__)\n"
+        code << "#{prefix}_pp2 = (1.._pgs).map { |p| { 'title' => p.to_s, 'url' => \"?page=\#{p}\", 'is_link' => p != _pp } }\n"
+        code << "#{prefix}_pg = { 'page_size' => _ps, 'current_page' => _pp, 'current_offset' => _po, 'pages' => _pgs, 'items' => _pi2, 'parts' => _pp2, 'previous' => _pp > 1 ? { 'title' => '&laquo; Previous', 'url' => \"?page=\#{_pp - 1}\", 'is_link' => true } : nil, 'next' => _pp < _pgs ? { 'title' => 'Next &raquo;', 'url' => \"?page=\#{_pp + 1}\", 'is_link' => true } : nil, 'collection_size' => _pt }\n"
+        code << "#{prefix}_S.assign('paginate', _pg)\n"
         # Replace the collection variable with the sliced page
-        code << "#{prefix}_S.assign(#{parts.last.inspect}, __pg_items__)\n" if parts.length == 1
+        code << "#{prefix}_S.assign(#{parts.last.inspect}, _pi2)\n" if parts.length == 1
         code
 
       when :PAGINATE_TEARDOWN
@@ -817,7 +817,7 @@ module LiquidIL
         if isolated
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = _x_ }\n"
         end
-        code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+        code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: _cs)\n"
         # Break out of include-for iteration if partial set interrupt
         unless isolated
           code << "#{prefix}    break if _S.has_interrupt?\n"
@@ -830,7 +830,7 @@ module LiquidIL
           code << "#{prefix}  __items__.each_with_index do |_i_, _x_|\n"
           code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = _x_ }\n"
-          code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+          code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: _cs)\n"
           code << "#{prefix}  end\n"
           # Also handle other enumerables for render
           code << "#{prefix}elsif !__for_coll__.is_a?(Hash) && !__for_coll__.is_a?(String) && __for_coll__.respond_to?(:each) && __for_coll__.respond_to?(:to_a)\n"
@@ -838,14 +838,14 @@ module LiquidIL
           code << "#{prefix}  __items__.each_with_index do |_i_, _x_|\n"
           code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = _x_ }\n"
-          code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+          code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: _cs)\n"
           code << "#{prefix}  end\n"
         end
         code << "#{prefix}elsif __for_coll__.nil?\n"
-        code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+        code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: _cs)\n"
         code << "#{prefix}else\n"
         code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __for_coll__\n"
-        code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+        code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: _cs)\n"
         code << "#{prefix}end\n"
       elsif with_expr
         # Render with a specific value
@@ -854,22 +854,22 @@ module LiquidIL
           expr = generate_var_lookup(with_expr)
           code << "#{prefix}__with_val__ = #{expr}\n"
           code << "#{prefix}__partial_args__[#{item_var.inspect}] = __with_val__ unless __with_val__.nil?\n"
-          code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+          code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: _cs)\n"
         else
           # For include, __with_val__ was already looked up BEFORE keyword args modified scope
           code << "#{prefix}if __with_val__.is_a?(Array)\n"
           code << "#{prefix}  __with_val__.each do |_i_|\n"
           code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
-          code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+          code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: _cs)\n"
           code << "#{prefix}  end\n"
           code << "#{prefix}else\n"
           code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __with_val__\n"
-          code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+          code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: _cs)\n"
           code << "#{prefix}end\n"
         end
       else
         # Simple render
-        code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: __cycle_state__)\n"
+        code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}, parent_cycle_state: _cs)\n"
       end
 
       # After include: propagate interrupts (break/continue) from partial to caller's loop
