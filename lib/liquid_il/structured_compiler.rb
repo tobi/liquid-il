@@ -33,6 +33,9 @@ module LiquidIL
     # Comparison operator mapping
     COMPARE_OPS = { eq: "==", ne: "!=", lt: "<", le: "<=", gt: ">", ge: ">=" }.freeze
 
+    # Cached indent strings to avoid repeated "  " * n allocations
+    INDENT = Array.new(20) { |i| ("  " * i).freeze }.freeze
+
     def initialize(instructions, spans: nil, template_source: nil, context: nil, partials: nil, partial_names_in_progress: nil)
       @instructions = instructions
       @spans = spans || []
@@ -357,7 +360,7 @@ module LiquidIL
       inst = @instructions[@pc]
       return nil if inst.nil?
 
-      prefix = "  " * indent
+      prefix = INDENT[indent]
 
       case inst[0]
       when IL::HALT
@@ -623,7 +626,7 @@ module LiquidIL
         @pc += 1
         coll_path = inst[1]
         page_size = inst[2]
-        prefix = "  " * indent
+        prefix = INDENT[indent]
         # Generate runtime paginate setup
         parts = coll_path.split(".")
         lookup = "_S.lookup(#{parts[0].inspect})"
@@ -659,7 +662,7 @@ module LiquidIL
     # Build expression until we hit STORE_TEMP
     # Generate an expression statement (expression followed by WRITE_VALUE or ASSIGN)
     def generate_expression_statement(indent)
-      prefix = "  " * indent
+      prefix = INDENT[indent]
 
       # Clear temp assignments before building expression
       @temp_assignments = nil
@@ -708,7 +711,7 @@ module LiquidIL
     # Generate a partial call (render or include)
     def generate_partial_call(inst, pc, indent, isolated:)
       @pc += 1
-      prefix = "  " * indent
+      prefix = INDENT[indent]
       name = inst[1]
       args = inst[2] || {}
       tag_type = isolated ? "render" : "include"
@@ -895,7 +898,7 @@ module LiquidIL
 
     # Generate code for dynamic partial (name from variable)
     def generate_dynamic_partial(inst, pc, indent, isolated:)
-      prefix = "  " * indent
+      prefix = INDENT[indent]
       args = inst[2] || {}
       tag_type = isolated ? "render" : "include"
       line_num = line_for_pc(pc)
@@ -1772,7 +1775,7 @@ module LiquidIL
 
     # Generate a for loop
     def generate_for_loop(indent)
-      prefix = "  " * indent
+      prefix = INDENT[indent]
 
       # Build collection expression (handles FIND_VAR, ranges, filter chains, etc.)
       coll_expr, _ = build_expression
@@ -1794,7 +1797,7 @@ module LiquidIL
 
     # Generate for loop body with expression
     def generate_for_loop_body_with_expr(coll_expr, end_pc, indent)
-      prefix = "  " * indent
+      prefix = INDENT[indent]
       pre_loop_code = String.new
 
       # First, look ahead to find FOR_INIT and determine offset/limit presence
@@ -2129,7 +2132,7 @@ module LiquidIL
 
     # Generate a tablerow loop (called when FIND_VAR starts a tablerow sequence)
     def generate_tablerow(indent)
-      prefix = "  " * indent
+      prefix = INDENT[indent]
 
       # Scan forward to find TABLEROW_INIT and determine what params it has
       tablerow_init_idx = @pc
@@ -2203,7 +2206,7 @@ module LiquidIL
 
     # Generate tablerow body (called when expressions already built or at TABLEROW_INIT)
     def generate_tablerow_body(coll_expr, limit_expr, offset_expr, cols_expr, cols, has_limit, has_offset, item_var, loop_name, indent)
-      prefix = "  " * indent
+      prefix = INDENT[indent]
 
       # If called directly from TABLEROW_INIT, get params from instruction
       if coll_expr.nil?
@@ -2424,7 +2427,7 @@ module LiquidIL
 
     # Generate an if statement
     def generate_if_statement(indent)
-      prefix = "  " * indent
+      prefix = INDENT[indent]
 
       # Build condition expression
       @temp_assignments = nil
@@ -2539,7 +2542,7 @@ module LiquidIL
 
     # Generate case/when with OR conditions (when 1, 2, 3 or when 1 or 2 or 3)
     def generate_case_when_or(first_cond, success_target, indent)
-      prefix = "  " * indent
+      prefix = INDENT[indent]
       conditions = [first_cond]
 
       # Collect remaining OR conditions that jump to the same target
