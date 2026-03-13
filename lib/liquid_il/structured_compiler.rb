@@ -1986,36 +1986,47 @@ module LiquidIL
       # - for loops inside tablerows (depth > 0 but no _fl{depth-1}__ exists)
       parent_forloop = "_S.lookup('forloop')"
 
-      # Wrap validation and loop in begin/rescue for inline error handling
+      # Check what the loop body actually needs
+      needs_scope_sync = body_code.include?("__partial_") ||
+                         body_code.include?("execute_dynamic_partial") ||
+                         body_code.include?("ForloopDrop.new") ||
+                         body_code.include?("_S.lookup('forloop')") ||
+                         body_code.include?("_S.lookup(#{item_var.inspect})")
+      needs_forloop = body_code.include?(forloop_var) || needs_scope_sync
+      needs_catch = body_code.include?(":loop_break_#{depth}") || body_code.include?("throw(:loop_break")
       needs_error_handling = has_offset || has_limit
+      needs_slicing = limit_expr || offset_expr || offset_continue
+
+      # Fast path: simple loops use each_iter helper — no collection prep boilerplate
+      if !needs_forloop && !needs_scope_sync && !needs_catch && !needs_error_handling &&
+         !reversed && !needs_slicing && !offset_continue && else_code.empty?
+        code << "#{prefix}_H.each_iter(#{coll_ruby}, #{loop_name.inspect}, _S) do |#{item_var_internal}|\n"
+        code << body_code
+        code << "#{prefix}end\n"
+        @loop_depth -= 1
+        return code
+      end
+
+      # Complex path: full collection prep with offset/limit/slicing support
       code << "#{prefix}# for #{item_var}\n"
       code << "#{prefix}begin\n" if needs_error_handling
       inner_prefix = needs_error_handling ? "#{prefix}  " : prefix
 
-      # Store original collection to check if it's a string (strings ignore offset/limit)
-      # Only needed when we have offset/limit/offset_continue
-      needs_slicing = limit_expr || offset_expr || offset_continue
       if needs_slicing || has_offset || has_limit
         code << "#{inner_prefix}_oc#{depth}__ = #{coll_ruby}\n"
         code << "#{inner_prefix}_is#{depth}__ = _oc#{depth}__.is_a?(String)\n"
-        # Check if collection is nil/false (skip validation for nil/false)
         code << "#{inner_prefix}_in#{depth}__ = _oc#{depth}__.nil? || _oc#{depth}__ == false\n"
-        # Inline to_iterable: fast path for Array (most common), fallback for others
         code << "#{inner_prefix}#{coll_var} = _oc#{depth}__.is_a?(Array) ? _oc#{depth}__ : _H.ti(_oc#{depth}__)\n"
       else
-        # No offset/limit: skip string/nil checks, directly convert to iterable
         code << "#{inner_prefix}#{coll_var} = #{coll_ruby}\n"
         code << "#{inner_prefix}#{coll_var} = _H.ti(#{coll_var}) unless #{coll_var}.is_a?(Array)\n"
       end
 
-      # Calculate starting offset for offset:continue or explicit offset
       offset_var = "_so#{depth}__"
       if offset_continue
-        # offset:continue uses stored offset from previous loop with same name
         code << "#{inner_prefix}#{offset_var} = _S.for_offset(#{loop_name.inspect})\n"
       elsif offset_expr
         offset_ruby = expr_to_ruby(offset_expr)
-        # Validate offset is a valid integer (unless collection is nil/false)
         if has_offset
           code << "#{inner_prefix}_ov#{depth}__ = #{offset_ruby}\n"
           code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.vi(_ov#{depth}__)\n"
@@ -2027,13 +2038,9 @@ module LiquidIL
         code << "#{inner_prefix}#{offset_var} = 0\n"
       end
 
-      # Slice collection using Liquid's algorithm (to = from + limit)
-      # Strings ignore offset and limit
-      # Skip slicing entirely when no offset/limit needed (avoids array copy)
       needs_slicing = limit_expr || offset_expr || offset_continue
       if limit_expr
         limit_ruby = expr_to_ruby(limit_expr)
-        # Validate limit is a valid integer (unless collection is nil/false)
         if has_limit
           code << "#{inner_prefix}_lv#{depth}__ = #{limit_ruby}\n"
           code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.vi(_lv#{depth}__)\n"
@@ -2043,31 +2050,10 @@ module LiquidIL
         end
         code << "#{inner_prefix}#{coll_var} = _H.sc(#{coll_var}, #{offset_var}, _to#{depth}__) unless _is#{depth}__\n"
       elsif needs_slicing
-        # Has offset but no limit - apply offset using slice
         code << "#{inner_prefix}#{coll_var} = _H.sc(#{coll_var}, #{offset_var}, nil) unless _is#{depth}__\n"
       end
-      # else: no offset, no limit, no offset:continue — skip slicing entirely
 
       code << "#{inner_prefix}#{coll_var} = #{coll_var}.reverse\n" if reversed
-
-      # Check what the loop body actually needs
-      needs_scope_sync = body_code.include?("__partial_") ||
-                         body_code.include?("execute_dynamic_partial") ||
-                         body_code.include?("ForloopDrop.new") ||
-                         body_code.include?("_S.lookup('forloop')") ||
-                         body_code.include?("_S.lookup(#{item_var.inspect})")
-      needs_forloop = body_code.include?(forloop_var) || needs_scope_sync
-      needs_catch = body_code.include?(":loop_break_#{depth}") || body_code.include?("throw(:loop_break")
-
-      # Fast path: simple loops use each_iter helper (saves ~8 lines of generated code)
-      if !needs_forloop && !needs_scope_sync && !needs_catch && !needs_error_handling &&
-         !reversed && !needs_slicing && !offset_continue && else_code.empty?
-        code << "#{prefix}_H.each_iter(#{coll_ruby}, #{loop_name.inspect}, _S) do |#{item_var_internal}|\n"
-        code << body_code
-        code << "#{prefix}end\n"
-        @loop_depth -= 1
-        return code
-      end
 
       code << "#{inner_prefix}if !#{coll_var}.empty?\n"
       if needs_forloop
