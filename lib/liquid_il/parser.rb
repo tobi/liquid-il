@@ -11,6 +11,10 @@ module LiquidIL
     }.freeze
     WHITESPACE_ONLY = /\A[ \t\r\n]*\z/
 
+    # Built-in tags for nesting tracker
+    NESTING_OPEN_TAGS = Set.new(%w[if unless case for tablerow capture comment]).freeze
+    NESTING_CLOSE_TAGS = Set.new(%w[endif endunless endcase endfor endtablerow endcapture endcomment]).freeze
+
     def initialize(source)
       @source = source
       @template_lexer = TemplateLexer.new(source)
@@ -141,10 +145,9 @@ module LiquidIL
         if current_template_type == TemplateLexer::TAG
           tag_name = @template_lexer.tag_name
           # Track nesting for tags that can nest
-          case tag_name
-          when 'if', 'unless', 'case', 'for', 'tablerow', 'capture', 'comment'
+          if NESTING_OPEN_TAGS.include?(tag_name) || Tags.registered?(tag_name)
             depth += 1
-          when 'endif', 'endunless', 'endcase', 'endfor', 'endtablerow', 'endcapture', 'endcomment'
+          elsif NESTING_CLOSE_TAGS.include?(tag_name) || Tags.end_tag?(tag_name)
             if tag_name == end_tag_name && depth == 1
               advance_template
               return
@@ -268,10 +271,35 @@ module LiquidIL
         advance_template
         true
       else
-        # Unknown tag - skip for now
-        advance_template
-        false
+        # Check registered custom tags
+        if (tag_def = Tags[tag_name])
+          advance_template
+          parse_registered_tag(tag_def, tag_args)
+        else
+          # Unknown tag - skip
+          advance_template
+          false
+        end
       end.tap { @builder.clear_span }
+    end
+
+    def parse_registered_tag(tag_def, tag_args)
+      case tag_def.mode
+      when :passthrough
+        tag_def.setup&.call(tag_args, @builder)
+        parse_block_body([tag_def.end_tag])
+        tag_def.teardown&.call(tag_args, @builder)
+        advance_template
+      when :discard
+        skip_to_end_tag(tag_def.end_tag)
+      when :raw
+        result = @template_lexer.scan_raw_body
+        if result
+          content, _trim_left, _trim_right = result
+          @builder.write_raw(content) unless content.empty?
+        end
+      end
+      true
     end
 
     def emit_raw(content)
