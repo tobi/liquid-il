@@ -48,6 +48,9 @@ module LiquidIL
       # Maps Liquid variable names to Ruby local variable names inside for loops
       # e.g. "i" => "_i0__", "forloop" => "_fl0__"
       @loop_var_aliases = {}
+      # Frozen array constants for filter args: { "[\"large\"]" => "_fa0__" }
+      @frozen_arrays = {}
+      @frozen_array_counter = 0
     end
 
     # Check if template uses break/continue
@@ -114,7 +117,7 @@ module LiquidIL
       instructions = result[:instructions]
       spans = result[:spans]
 
-      # Recursively compile to structured Ruby (sharing partials cache)
+      # Recursively compile to structured Ruby (sharing partials cache + frozen arrays)
       structured_compiler = StructuredCompiler.new(
         instructions,
         spans: spans,
@@ -123,6 +126,9 @@ module LiquidIL
         partials: @partials,
         partial_names_in_progress: @partial_names_in_progress
       )
+      # Share frozen array registry so partial constants are declared in the parent proc
+      structured_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
+      structured_compiler.instance_variable_set(:@frozen_array_counter, @frozen_array_counter)
 
       # Check if this partial can be compiled
       unless structured_compiler.send(:can_compile?)
@@ -136,6 +142,8 @@ module LiquidIL
       # Generate code for this partial's body
       structured_compiler.instance_variable_set(:@pc, 0)
       partial_body = structured_compiler.send(:generate_body)
+      # Sync frozen array counter back (the hash is shared by reference, but counter is an int)
+      @frozen_array_counter = structured_compiler.instance_variable_get(:@frozen_array_counter)
 
       @partials[name] = {
         source: source,
@@ -243,19 +251,26 @@ module LiquidIL
       # Ensure shared helpers are initialized (once, at first use)
       StructuredHelpers.init
 
+      # Generate partials + body first so frozen array constants are registered
+      partial_code = generate_partial_lambdas
+      body_code = generate_body
+
       code = String.new
       code << "# frozen_string_literal: true\n"
       code << "proc do |_S, _sp, _ts|\n"
       code << "  _H = LiquidIL::StructuredHelpers\n"
       code << "  _U = LiquidIL::Utils\n"
-      code << generate_partial_lambdas
+      # Frozen array constants must be declared before partial lambdas
+      # (lambdas are closures that capture these variables)
+      code << generate_frozen_array_constants
+      code << partial_code
       code << "  _O = +\"\"\n"
       code << "  _F = nil\n"
       code << "  _cs = {}\n" if @uses_cycles
       code << "  _cst = []\n" if @uses_captures || @uses_ifchanged
       code << "  _ics = {}\n" if @uses_ifchanged
       code << "\n"
-      code << generate_body
+      code << body_code
       code << "\n  _O\n"
       code << "end\n"
       code
@@ -1628,6 +1643,11 @@ module LiquidIL
           dispatcher = LiquidIL::Filters.valid_filter_methods[expr.value] ? "cff" : "cf"
           if args.empty?
             "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{filter_line})"
+          elsif args.all? { |a| a.match?(/\A(?:-?\d+(?:\.\d+)?|"[^"]*")\z/) }
+            # All args are compile-time constants — register a frozen array constant
+            # to avoid allocation per call in hot loops
+            frozen_name = register_frozen_array(args)
+            "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, #{frozen_name}, _S, _F, #{filter_line})"
           else
             "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{filter_line})"
           end
@@ -2602,6 +2622,28 @@ module LiquidIL
 
     # Inline simple filters to avoid Filters.apply dispatch (respond_to? + send)
     # Returns nil if the filter can't be inlined.
+    # Register a frozen array constant for compile-time-known filter args.
+    # Returns the variable name to use in generated code.
+    # Deduplicates: same arg list → same constant.
+    def register_frozen_array(args)
+      key = "[#{args.join(', ')}]"
+      @frozen_arrays[key] ||= begin
+        name = "_fa#{@frozen_array_counter}__"
+        @frozen_array_counter += 1
+        name
+      end
+    end
+
+    # Generate frozen array constant declarations for top of proc
+    def generate_frozen_array_constants
+      return "" if @frozen_arrays.empty?
+      code = String.new
+      @frozen_arrays.each do |literal, name|
+        code << "  #{name} = #{literal}.freeze\n"
+      end
+      code
+    end
+
     def inline_filter(name, input, args)
       case name
       when "upcase"
