@@ -107,6 +107,34 @@ module LiquidIL
     # No-op (for comments, etc.)
     NOOP = :NOOP                     # [:NOOP]
 
+    # Pre-frozen zero-arg instruction arrays
+    I_WRITE_VALUE = [WRITE_VALUE].freeze
+    I_PUSH_CAPTURE = [PUSH_CAPTURE].freeze
+    I_POP_CAPTURE = [POP_CAPTURE].freeze
+    I_HALT = [HALT].freeze
+    I_CASE_COMPARE = [CASE_COMPARE].freeze
+    I_CONTAINS = [CONTAINS].freeze
+    I_BOOL_NOT = [BOOL_NOT].freeze
+    I_IS_TRUTHY = [IS_TRUTHY].freeze
+    I_PUSH_SCOPE = [PUSH_SCOPE].freeze
+    I_POP_SCOPE = [POP_SCOPE].freeze
+    I_NEW_RANGE = [NEW_RANGE].freeze
+    I_FOR_END = [FOR_END].freeze
+    I_PUSH_FORLOOP = [PUSH_FORLOOP].freeze
+    I_POP_FORLOOP = [POP_FORLOOP].freeze
+    I_POP_INTERRUPT = [POP_INTERRUPT].freeze
+    I_TABLEROW_END = [TABLEROW_END].freeze
+    I_DUP = [DUP].freeze
+    I_POP = [POP].freeze
+    I_NOOP = [NOOP].freeze
+    I_CONST_NIL = [CONST_NIL].freeze
+    I_CONST_TRUE = [CONST_TRUE].freeze
+    I_CONST_FALSE = [CONST_FALSE].freeze
+    I_CONST_EMPTY = [CONST_EMPTY].freeze
+    I_CONST_BLANK = [CONST_BLANK].freeze
+    I_FIND_VAR_DYNAMIC = [FIND_VAR_DYNAMIC].freeze
+    I_LOOKUP_KEY = [LOOKUP_KEY].freeze
+
     # Instruction builder - creates instructions with minimal allocation
     class Builder
       attr_reader :spans
@@ -175,19 +203,19 @@ module LiquidIL
       end
 
       def write_value
-        emit(WRITE_VALUE)
+        @instructions << I_WRITE_VALUE; @spans << @current_span; self
       end
 
       def const_nil
-        emit(CONST_NIL)
+        @instructions << I_CONST_NIL; @spans << @current_span; self
       end
 
       def const_true
-        emit(CONST_TRUE)
+        @instructions << I_CONST_TRUE; @spans << @current_span; self
       end
 
       def const_false
-        emit(CONST_FALSE)
+        @instructions << I_CONST_FALSE; @spans << @current_span; self
       end
 
       def const_int(val)
@@ -207,11 +235,11 @@ module LiquidIL
       end
 
       def const_empty
-        emit(CONST_EMPTY)
+        @instructions << I_CONST_EMPTY; @spans << @current_span; self
       end
 
       def const_blank
-        emit(CONST_BLANK)
+        @instructions << I_CONST_BLANK; @spans << @current_span; self
       end
 
       def find_var(name)
@@ -223,11 +251,11 @@ module LiquidIL
       end
 
       def find_var_dynamic
-        emit(FIND_VAR_DYNAMIC)
+        @instructions << I_FIND_VAR_DYNAMIC; @spans << @current_span; self
       end
 
       def lookup_key
-        emit(LOOKUP_KEY)
+        @instructions << I_LOOKUP_KEY; @spans << @current_span; self
       end
 
       def lookup_const_key(name)
@@ -243,11 +271,11 @@ module LiquidIL
       end
 
       def push_capture
-        emit(PUSH_CAPTURE)
+        @instructions << I_PUSH_CAPTURE; @spans << @current_span; self
       end
 
       def pop_capture
-        emit(POP_CAPTURE)
+        @instructions << I_POP_CAPTURE; @spans << @current_span; self
       end
 
       def label(id)
@@ -275,7 +303,7 @@ module LiquidIL
       end
 
       def halt
-        emit(HALT)
+        @instructions << I_HALT; @spans << @current_span; self
       end
 
       def compare(op)
@@ -283,27 +311,27 @@ module LiquidIL
       end
 
       def case_compare
-        emit(CASE_COMPARE)
+        @instructions << I_CASE_COMPARE; @spans << @current_span; self
       end
 
       def contains
-        emit(CONTAINS)
+        @instructions << I_CONTAINS; @spans << @current_span; self
       end
 
       def bool_not
-        emit(BOOL_NOT)
+        @instructions << I_BOOL_NOT; @spans << @current_span; self
       end
 
       def is_truthy
-        emit(IS_TRUTHY)
+        @instructions << I_IS_TRUTHY; @spans << @current_span; self
       end
 
       def push_scope
-        emit(PUSH_SCOPE)
+        @instructions << I_PUSH_SCOPE; @spans << @current_span; self
       end
 
       def pop_scope
-        emit(POP_SCOPE)
+        @instructions << I_POP_SCOPE; @spans << @current_span; self
       end
 
       def assign(name)
@@ -315,7 +343,7 @@ module LiquidIL
       end
 
       def new_range
-        emit(NEW_RANGE)
+        @instructions << I_NEW_RANGE; @spans << @current_span; self
       end
 
       def call_filter(name, argc)
@@ -331,15 +359,15 @@ module LiquidIL
       end
 
       def for_end
-        emit(FOR_END)
+        @instructions << I_FOR_END; @spans << @current_span; self
       end
 
       def push_forloop
-        emit(PUSH_FORLOOP)
+        @instructions << I_PUSH_FORLOOP; @spans << @current_span; self
       end
 
       def pop_forloop
-        emit(POP_FORLOOP)
+        @instructions << I_POP_FORLOOP; @spans << @current_span; self
       end
 
       def push_interrupt(type)
@@ -347,7 +375,7 @@ module LiquidIL
       end
 
       def pop_interrupt
-        emit(POP_INTERRUPT)
+        @instructions << I_POP_INTERRUPT; @spans << @current_span; self
       end
 
       def increment(name)
@@ -391,7 +419,7 @@ module LiquidIL
       end
 
       def tablerow_end
-        emit(TABLEROW_END)
+        @instructions << I_TABLEROW_END; @spans << @current_span; self
       end
 
       def ifchanged_check(tag_id)
@@ -399,11 +427,11 @@ module LiquidIL
       end
 
       def dup
-        emit(DUP)
+        @instructions << I_DUP; @spans << @current_span; self
       end
 
       def pop
-        emit(POP)
+        @instructions << I_POP; @spans << @current_span; self
       end
 
       def build_hash(count)
@@ -419,7 +447,7 @@ module LiquidIL
       end
 
       def noop
-        emit(NOOP)
+        @instructions << I_NOOP; @spans << @current_span; self
       end
     end
 
