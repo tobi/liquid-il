@@ -44,7 +44,13 @@ ALLOCS=$(echo "$CLEAN" | grep "Allocs:")
 PARSE_ALLOCS=$(echo "$ALLOCS" | grep -oE '[0-9,]+ parse' | grep -oE '[0-9,]+' | tr -d ',')
 RENDER_ALLOCS=$(echo "$ALLOCS" | grep -oE '[0-9,]+ render' | grep -oE '[0-9,]+' | tr -d ',')
 
-echo "METRIC parse_µs=${PARSE_US}"
 echo "METRIC render_µs=${RENDER_US}"
-echo "METRIC parse_allocs=${PARSE_ALLOCS}"
+echo "METRIC parse_µs=${PARSE_US}"
 echo "METRIC render_allocs=${RENDER_ALLOCS}"
+echo "METRIC parse_allocs=${PARSE_ALLOCS}"
+
+# Supplemental metrics
+SUPP=$(RUBY_YJIT_ENABLE=1 ruby -Ilib auto/supplemental-metrics.rb 2>/dev/null) || true
+if [ -n "$SUPP" ]; then
+  echo "$SUPP"
+fi
