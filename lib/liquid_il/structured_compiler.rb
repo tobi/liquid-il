@@ -149,11 +149,27 @@ module LiquidIL
       # Sync frozen array counter back (the hash is shared by reference, but counter is an int)
       @frozen_array_counter = structured_compiler.instance_variable_get(:@frozen_array_counter)
 
+      # Detect which features this partial uses (for conditional preamble generation)
+      partial_uses_cycles = false
+      partial_uses_captures = false
+      partial_uses_ifchanged = false
+      instructions.each do |i|
+        case i[0]
+        when IL::CYCLE_STEP, IL::CYCLE_STEP_VAR then partial_uses_cycles = true
+        when IL::PUSH_CAPTURE then partial_uses_captures = true
+        when IL::IFCHANGED_CHECK then partial_uses_ifchanged = true
+        when IL::INCLUDE_PARTIAL, IL::RENDER_PARTIAL, IL::CONST_INCLUDE, IL::CONST_RENDER then partial_uses_cycles = true
+        end
+      end
+
       @partials[name] = {
         source: source,
         instructions: instructions,
         spans: spans,
-        compiled_body: partial_body
+        compiled_body: partial_body,
+        uses_cycles: partial_uses_cycles,
+        uses_captures: partial_uses_captures || partial_uses_ifchanged,
+        uses_ifchanged: partial_uses_ifchanged
       }
 
       @partial_names_in_progress.delete(name)
@@ -340,10 +356,16 @@ module LiquidIL
         code << "      _sp = #{spans_const}\n"
         code << "      _ts = #{source_const}\n"
         code << "      _F = #{name.inspect}\n"
-        # Share cycle state for includes (non-isolated), fresh for renders
-        code << "      _cs = isolated ? {} : (parent_cycle_state || {})\n"
-        code << "      _cst = []\n"
-        code << "      _ics = {}\n"
+        # Only allocate cycle/capture/ifchanged state when the partial actually uses them
+        if info[:uses_cycles]
+          code << "      _cs = isolated ? {} : (parent_cycle_state || {})\n"
+        end
+        if info[:uses_captures]
+          code << "      _cst = []\n"
+        end
+        if info[:uses_ifchanged]
+          code << "      _ics = {}\n"
+        end
         code << indent_partial_body(info[:compiled_body], 6)
         code << "    rescue LiquidIL::RuntimeError => e\n"
         code << "      raise unless __parent_scope__.render_errors\n"

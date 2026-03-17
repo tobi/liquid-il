@@ -2,20 +2,28 @@
 
 ## Current Status
 - Baseline: 308µs render, 1128 allocs
-- Best: 282-289µs render (~8% improvement), 959-968 allocs (~15% reduction)
-- Fixed 6 pre-existing test failures (render scope isolation)
+- Best: 280-292µs render (~9% improvement), 675 allocs (-40% reduction)
+- Only 18 allocations per render of theme_product (5 String, 5 Hash, 4 ForloopDrop, 2 Array, 1 Proc, 1 Scope)
 
 ## Completed ✅
 - [x] **Freeze partial spans/source** — Hoisted as frozen constants. Saved ~80 allocs.
 - [x] **Freeze constant filter arg arrays** — `["large"].freeze` hoisted outside loops. Saved ~90 allocs.
 - [x] **Direct `_O <<` for known-String outputs** — Skip `output_append` dispatch for `upcase`/`strip`/etc.
 - [x] **Fix render scope isolation** — Dup `@static_environments` so `{% assign %}` doesn't leak into `{% render %}`.
+- [x] **Eliminate per-render partial span/source allocs** — Pass via `_pc` hash arg. Saved ~40 Array allocs.
+- [x] **Inline handle/handleize with tr! chain** — 4.5x faster, fewer allocs than gsub.
+- [x] **INT_TO_S lookup table** — Pre-built frozen strings for integers 0-999. Saved ~13 allocs.
+- [x] **Fast escape_html helper** — Skip CGI.escapeHTML when input has no special chars. Saved ~3 allocs.
+- [x] **Remove wrapper proc for _pc** — Pass partial_constants directly as 4th arg.
+- [x] **Optimize Scope#lookup** — Use `[]` first, only `key?` when nil. 5.8% render speedup.
 
 ## Tried, Not Helpful
 - IO::Buffer — slower than String for string building
 - StringIO — 30-40% slower than String `<<`
 - String.new(capacity:) — slightly slower than `+""`; Ruby's geometric growth is already good
 - Skip `_cst`/`_ics` in partials — too minor (2 allocs), noisy measurements
+- `@context` write in apply_fast — negligible overhead with YJIT
+- `ensure` block overhead — YJIT handles it well (~0ns overhead)
 
 ## Stackprof Findings (theme_product, 10K iterations)
 - **GC/sweeping: ~20%** — reducing allocations is the #1 lever
