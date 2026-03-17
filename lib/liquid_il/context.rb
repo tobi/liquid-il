@@ -219,12 +219,14 @@ module LiquidIL
     def lookup(key)
       key = key.to_s unless key.is_a?(String)
       # Fast path: check top scope first (most common for loop vars, assigns)
+      # Use [] first, only call key? when nil (avoids double hash lookup for non-nil values)
       top = @top_scope
-      if top.key?(key)
+      v = top[key]
+      if !v.nil? || top.key?(key)
         # Ultra-fast path: no counters active (most common case)
-        return top[key] unless @has_counters
+        return v unless @has_counters
         # But assigned vars take precedence over counters, check that
-        return top[key] if (@assigned_vars && @assigned_vars[key]) || !@counters.key?(key)
+        return v if (@assigned_vars && @assigned_vars[key]) || !@counters.key?(key)
       end
       # Check if this was explicitly assigned - assigned vars take precedence over counters
       if @has_counters && @assigned_vars && @assigned_vars[key]
