@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Run liquid-il code with YJIT dev mode to inspect generated machine code.
+# Usage:
+#   bin/yjit-disasm                    # default: disasm the render method of a simple template
+#   bin/yjit-disasm script.rb          # run a custom script with YJIT dev
+#   bin/yjit-disasm -e 'ruby code'     # inline ruby with YJIT dev
+RUBY="$HOME/.rubies/ruby-4.0.2-yjit-dev/bin/ruby"
+
+if [ ! -x "$RUBY" ]; then
+  echo "YJIT dev Ruby not found at $RUBY"
+  echo "Build it: cd ~/src/ruby-yjit-dev && ./configure --enable-yjit=dev --prefix=\$HOME/.rubies/ruby-4.0.2-yjit-dev && make -j && make install"
+  exit 1
+fi
+
+if [ $# -eq 0 ]; then
+  exec "$RUBY" --yjit -Ilib -e '
+require "liquid_il"
+
+# Compile a simple template
+source = "{% for i in (1..10) %}{{ i | plus: 1 }}{% endfor %}"
+template = LiquidIL::Compiler::Structured.compile(source)
+
+# Create context and warm up
+ctx = LiquidIL::Context.new
+50.times { template.render(ctx) }
+
+# Show disassembly of the render method
+puts "=== YJIT disasm of template render ==="
+puts RubyVM::YJIT.disasm(template.method(:render))
+puts
+puts "=== YJIT stats ==="
+stats = RubyVM::YJIT.runtime_stats
+stats.sort_by { |k,v| k.to_s }.each do |k, v|
+  next if v == 0 || v.nil?
+  next if k.to_s.start_with?("send_") || k.to_s.start_with?("invokesuper") || k.to_s.start_with?("getivar")
+  puts "  #{k}: #{v}"
+end
+'
+else
+  exec "$RUBY" --yjit -Ilib "$@"
+fi
