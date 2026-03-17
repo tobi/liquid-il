@@ -1,1 +1,2 @@
 {"type":"config","name":"LiquidIL render speed optimization with YJIT disasm guidance","metricName":"render_µs","metricUnit":"µs","bestDirection":"lower"}
+{"run":1,"commit":"5607543","metric":308,"metrics":{"parse_µs":3419,"render_allocs":1128,"parse_allocs":16305},"status":"keep","description":"Baseline: render 308µs, parse 3419µs, 1128 render allocs","timestamp":1773767079326,"segment":0}

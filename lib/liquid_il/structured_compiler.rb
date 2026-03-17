@@ -294,6 +294,12 @@ module LiquidIL
       @partials.each do |name, info|
         next if info[:recursive] || info[:syntax_error]  # Handled at runtime
         lambda_name = partial_lambda_name(name)
+        # Hoist spans and source as frozen constants — avoids re-allocating
+        # large array/string literals on every partial call
+        spans_const = "#{lambda_name}__SP__"
+        source_const = "#{lambda_name}__TS__"
+        code << "  #{spans_const} = #{info[:spans].inspect}.freeze\n"
+        code << "  #{source_const} = #{info[:source].inspect}\n"
         code << "  #{lambda_name} = ->(assigns, _O, __parent_scope__, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
         code << "    __prev_file__ = __parent_scope__.current_file\n"
         code << "    __parent_scope__.current_file = #{name.inspect}\n"
@@ -304,8 +310,8 @@ module LiquidIL
         code << "      end\n"
         code << "      __partial_scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
         code << "      assigns.each { |k, v| __partial_scope__.assign(k, v) }\n"
-        code << "      _sp = #{info[:spans].inspect}\n"
-        code << "      _ts = #{info[:source].inspect}\n"
+        code << "      _sp = #{spans_const}\n"
+        code << "      _ts = #{source_const}\n"
         code << "      _F = #{name.inspect}\n"
         # Share cycle state for includes (non-isolated), fresh for renders
         code << "      _cs = isolated ? {} : (parent_cycle_state || {})\n"

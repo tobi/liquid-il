@@ -4,9 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Quick syntax check on key files
-ruby -c lib/liquid_il/structured_compiler.rb > /dev/null 2>&1 || { echo "METRIC render_µs=0"; echo "METRIC parse_µs=0"; exit 1; }
-ruby -c lib/liquid_il/context.rb > /dev/null 2>&1 || { echo "METRIC render_µs=0"; echo "METRIC parse_µs=0"; exit 1; }
-ruby -c lib/liquid_il/structured_helpers.rb > /dev/null 2>&1 || { echo "METRIC render_µs=0"; echo "METRIC parse_µs=0"; exit 1; }
+for f in lib/liquid_il/structured_compiler.rb lib/liquid_il/context.rb lib/liquid_il/structured_helpers.rb lib/liquid_il/filters.rb; do
+  ruby -c "$f" > /dev/null 2>&1 || { echo "SYNTAX ERROR in $f" >&2; echo "METRIC render_µs=0"; echo "METRIC parse_µs=0"; exit 1; }
+done
 
 # Run benchmark with YJIT
 RESULTS=$(RUBY_YJIT_ENABLE=1 bundle exec liquid-spec run spec/liquid_il_structured.rb -s benchmarks --bench 2>&1)
@@ -49,3 +49,10 @@ echo "METRIC render_µs=${RENDER_US}"
 echo "METRIC parse_µs=${PARSE_US}"
 echo "METRIC render_allocs=${RENDER_ALLOCS}"
 echo "METRIC parse_allocs=${PARSE_ALLOCS}"
+
+# Supplemental metrics: code size, ISeq compile time, YJIT stats
+# Runs quickly (~2s) after the main benchmark
+SUPP=$(RUBY_YJIT_ENABLE=1 ruby -Ilib auto/supplemental-metrics.rb 2>/dev/null) || true
+if [ -n "$SUPP" ]; then
+  echo "$SUPP"
+fi
