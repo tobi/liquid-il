@@ -2705,6 +2705,17 @@ module LiquidIL
       when "floor"
         return nil unless args.empty?
         "LiquidIL::Filters.send(:floor, #{input})"
+      when "handle", "handleize"
+        return nil unless args.empty?
+        # Inline handleize: to_s → downcase → replace non-alnum with hyphen → strip hyphens
+        "_U.to_s(#{input}).downcase.gsub(/[^a-z0-9]+/, \"-\").gsub(/\\A-|-\\z/, \"\")"
+      when "truncate"
+        return nil unless args.length >= 1
+        if args.length == 1
+          "LiquidIL::Filters.send(:truncate, #{input}, #{args[0]})"
+        else
+          "LiquidIL::Filters.send(:truncate, #{input}, #{args[0]}, #{args[1]})"
+        end
       else
         # General case: any filter (including externally-supplied ones).
         # Check at compile time if the filter is known, and if so, generate a
