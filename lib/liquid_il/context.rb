@@ -60,6 +60,12 @@ module LiquidIL
       scope
     end
 
+    def isolated_with(assigns)
+      scope = RenderScope.new(@static_environments, @file_system, @depth, strict_errors: @strict_errors, render_errors: @render_errors, locals: assigns)
+      scope.current_file = @current_file
+      scope
+    end
+
     # Legacy registers accessor for compatibility
     def registers
       @registers ||= {
@@ -414,6 +420,12 @@ module LiquidIL
 
     def isolated
       scope = RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors, render_errors: @render_errors)
+      scope.current_file = @current_file
+      scope
+    end
+
+    def isolated_with(assigns)
+      scope = RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors, render_errors: @render_errors, locals: assigns)
       scope.current_file = @current_file
       scope
     end
