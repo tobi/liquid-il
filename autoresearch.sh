@@ -48,3 +48,9 @@ echo "METRIC parse_µs=${PARSE_US}"
 echo "METRIC render_µs=${RENDER_US}"
 echo "METRIC parse_allocs=${PARSE_ALLOCS}"
 echo "METRIC render_allocs=${RENDER_ALLOCS}"
+
+# Parse pipeline breakdown (adds ~3s)
+PIPELINE=$(RUBY_YJIT_ENABLE=1 ruby -Ilib auto/parse-pipeline-metrics.rb 2>/dev/null) || true
+if [ -n "$PIPELINE" ]; then
+  echo "$PIPELINE"
+fi
