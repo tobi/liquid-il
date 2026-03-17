@@ -1651,8 +1651,12 @@ module LiquidIL
         if left_simple && right_simple && (op == :eq || op == :ne)
           ruby_op = op == :eq ? "==" : "!="
           "(#{left} #{ruby_op} #{right})"
+        elsif left_simple && right_simple && [:lt, :le, :gt, :ge].include?(op)
+          # Fast path: check if both sides are Numeric and compare directly.
+          # Falls back to full compare for non-numeric (preserves error messages).
+          ruby_op = COMPARE_OPS[op]
+          "((_cl = #{left}; _cr = #{right}; (_cl.is_a?(Numeric) && _cr.is_a?(Numeric)) ? (_cl #{ruby_op} _cr) : _H.cmp(_cl, _cr, #{op.inspect}, _O, _F)))"
         else
-          # lt/le/gt/ge need full compare for error message formatting on type mismatches
           "_H.cmp(#{left}, #{right}, #{op.inspect}, _O, _F)"
         end
       when :contains
