@@ -2730,11 +2730,25 @@ module LiquidIL
 
     # Generate inline output conversion (avoids __output_string__ lambda call)
     # Returns code that appends the expression value to _O
+    # Patterns known to always return String — safe to skip output_append type dispatch
+    STRING_RETURN_SUFFIXES = /\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|reverse|gsub|sub|tr|squeeze|delete|chomp|chop|encode|freeze)\z/
+    STRING_RETURN_PATTERNS = /\A(?:\+?""|_U\.to_s\(|CGI\.escapeHTML\(|\("[^"]*"\s*\+\s*)/
+
     def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
+      # When expression is known to return a String, skip the oa type dispatch
+      direct = expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS)
       if guard_interrupt
-        "#{prefix}_H.oa(_O, #{expr_ruby}) unless _S.has_interrupt?\n"
+        if direct
+          "#{prefix}_O << (#{expr_ruby}) unless _S.has_interrupt?\n"
+        else
+          "#{prefix}_H.oa(_O, #{expr_ruby}) unless _S.has_interrupt?\n"
+        end
       else
-        "#{prefix}_H.oa(_O, #{expr_ruby})\n"
+        if direct
+          "#{prefix}_O << (#{expr_ruby})\n"
+        else
+          "#{prefix}_H.oa(_O, #{expr_ruby})\n"
+        end
       end
     end
 
