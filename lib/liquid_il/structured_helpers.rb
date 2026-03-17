@@ -389,7 +389,12 @@ module LiquidIL
         child_scope.file_system = fs
         child_scope.render_errors = scope.render_errors
         # Execute the compiled proc directly with the child scope
-        result = compiled.instance_variable_get(:@compiled_proc).call(child_scope, compiled.spans, compiled.source)
+        pc = compiled.instance_variable_get(:@partial_constants)
+        result = if pc
+          compiled.instance_variable_get(:@compiled_proc).call(child_scope, compiled.spans, compiled.source, pc)
+        else
+          compiled.instance_variable_get(:@compiled_proc).call(child_scope, compiled.spans, compiled.source)
+        end
         output << result
       rescue LiquidIL::RuntimeError => e
         raise unless scope.render_errors

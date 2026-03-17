@@ -9,13 +9,14 @@ module LiquidIL
     OUTPUT_CAPACITY = 8192
 
     class CompilationResult
-      attr_reader :proc, :source, :can_compile, :partials
+      attr_reader :proc, :source, :can_compile, :partials, :partial_constants
 
-      def initialize(proc:, source:, can_compile:, partials: {})
+      def initialize(proc:, source:, can_compile:, partials: {}, partial_constants: nil)
         @proc = proc
         @source = source
         @can_compile = can_compile
         @partials = partials
+        @partial_constants = partial_constants
       end
     end
 
@@ -75,18 +76,11 @@ module LiquidIL
       compiled_proc = eval_ruby(code)
       raise "Failed to eval generated Ruby code" unless compiled_proc
 
-      # If we have partial constants, wrap the proc to inject them
-      if @partial_constants.empty?
-        final_proc = compiled_proc
-      else
-        pc = @partial_constants.freeze
-        final_proc = proc { |s, sp, ts| compiled_proc.call(s, sp, ts, pc) }
-      end
-
       CompilationResult.new(
-        proc: final_proc,
+        proc: compiled_proc,
         source: code,
-        can_compile: true
+        can_compile: true,
+        partial_constants: @partial_constants.empty? ? nil : @partial_constants.freeze
       )
     end
 
