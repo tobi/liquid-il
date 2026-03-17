@@ -1643,7 +1643,22 @@ module LiquidIL
       when :compare
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "_H.cmp(#{left}, #{right}, #{expr.value.inspect}, _O, _F)"
+        op = expr.value
+        # Fast path: when both sides are simple values (not empty/blank/range),
+        # use direct Ruby comparison to avoid the full compare dispatch
+        left_simple = simple_compare_expr?(expr.children[0])
+        right_simple = simple_compare_expr?(expr.children[1])
+        if left_simple && right_simple && (op == :eq || op == :ne)
+          ruby_op = op == :eq ? "==" : "!="
+          "(#{left} #{ruby_op} #{right})"
+        elsif left_simple && right_simple && [:lt, :le, :gt, :ge].include?(op)
+          # For ordering comparisons with simple values, use direct comparison
+          # with nil guard (Liquid returns false for nil comparisons)
+          ruby_op = COMPARE_OPS[op]
+          "((_cl = #{left}; _cr = #{right}; !_cl.nil? && !_cr.nil? && _cl #{ruby_op} _cr) rescue false)"
+        else
+          "_H.cmp(#{left}, #{right}, #{op.inspect}, _O, _F)"
+        end
       when :contains
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
@@ -2676,6 +2691,22 @@ module LiquidIL
         code << "  #{name} = #{literal}.freeze\n"
       end
       code
+    end
+
+    # Check if an expression is "simple" for comparison purposes —
+    # i.e., it won't be an empty/blank literal, range, or other special type
+    # that needs the full compare() dispatch.
+    def simple_compare_expr?(expr)
+      case expr.type
+      when :const_int, :const_float, :const_string, :const_bool
+        true
+      when :lookup, :prop_lookup
+        true  # Variable lookups are almost always simple values
+      when :filter
+        true  # Filter results are always simple values
+      else
+        false
+      end
     end
 
     def inline_filter(name, input, args)
