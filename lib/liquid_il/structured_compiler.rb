@@ -2784,6 +2784,42 @@ module LiquidIL
         else
           "LiquidIL::Filters.send(:truncate, #{input}, #{args[0]}, #{args[1]})"
         end
+      when "url_encode"
+        return nil unless args.empty?
+        "URI.encode_www_form_component(_U.to_s(#{input}))"
+      when "url_decode"
+        return nil unless args.empty?
+        "URI.decode_www_form_component(_U.to_s(#{input}))"
+      when "strip_html"
+        return nil unless args.empty?
+        "((_fsh = _U.to_s(#{input})); _fsh.gsub(LiquidIL::Filters::STRIP_HTML_BLOCKS, \"\").gsub(LiquidIL::Filters::STRIP_HTML_TAGS, \"\"))"
+      when "strip_newlines"
+        return nil unless args.empty?
+        "_U.to_s(#{input}).gsub(/\\r?\\n/, \"\")"
+      when "newline_to_br"
+        return nil unless args.empty?
+        "_U.to_s(#{input}).gsub(/\\r?\\n/, \"<br />\\n\")"
+      when "first"
+        return nil unless args.empty?
+        "((_ffi = #{input}); _ffi.is_a?(String) ? _ffi[0] : _ffi.is_a?(Array) ? _ffi.first : _ffi.respond_to?(:first) ? _ffi.first : nil)"
+      when "last"
+        return nil unless args.empty?
+        "((_fla = #{input}); _fla.is_a?(String) ? _fla[-1] : _fla.is_a?(Array) ? _fla.last : _fla.respond_to?(:last) ? _fla.last : nil)"
+      when "flatten"
+        return nil unless args.empty?
+        "((_ff = #{input}); _ff.is_a?(Array) ? _ff.flatten : [_ff])"
+      when "modulo"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:modulo, #{input}, #{args[0]})"
+      when "abs"
+        return nil unless args.empty?
+        "LiquidIL::Filters.send(:abs, #{input})"
+      when "at_least"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:at_least, #{input}, #{args[0]})"
+      when "at_most"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:at_most, #{input}, #{args[0]})"
       else
         # General case: any filter (including externally-supplied ones).
         # Check at compile time if the filter is known, and if so, generate a
