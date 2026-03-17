@@ -1,51 +1,28 @@
-# Autoresearch Ideas — YJIT Render Optimization
+# Autoresearch Ideas — Parse Speed Optimization
 
-## Current Status
-- Baseline: 308µs render, 1128 allocs
-- Best: 280-292µs render (~9% improvement), 675 allocs (-40% reduction)
-- Only 18 allocations per render of theme_product (5 String, 5 Hash, 4 ForloopDrop, 2 Array, 1 Proc, 1 Scope)
+## Pipeline Breakdown (49% lex/parse/IL, 43% structured compile, 8% ISeq load)
 
-## Completed ✅
-- [x] **Freeze partial spans/source** — Hoisted as frozen constants. Saved ~80 allocs.
-- [x] **Freeze constant filter arg arrays** — `["large"].freeze` hoisted outside loops. Saved ~90 allocs.
-- [x] **Direct `_O <<` for known-String outputs** — Skip `output_append` dispatch for `upcase`/`strip`/etc.
-- [x] **Fix render scope isolation** — Dup `@static_environments` so `{% assign %}` doesn't leak into `{% render %}`.
-- [x] **Eliminate per-render partial span/source allocs** — Pass via `_pc` hash arg. Saved ~40 Array allocs.
-- [x] **Inline handle/handleize with tr! chain** — 4.5x faster, fewer allocs than gsub.
-- [x] **INT_TO_S lookup table** — Pre-built frozen strings for integers 0-999. Saved ~13 allocs.
-- [x] **Fast escape_html helper** — Skip CGI.escapeHTML when input has no special chars. Saved ~3 allocs.
-- [x] **Remove wrapper proc for _pc** — Pass partial_constants directly as 4th arg.
-- [x] **Optimize Scope#lookup** — Use `[]` first, only `key?` when nil. 5.8% render speedup.
+## Ready to Re-apply (proven in prior session, lost to auto-reverts)
+- [ ] **Reuse ExpressionLexer** — `reset_source()` instead of `new()`. Saves ~24 object allocs. ~7% speedup.
+- [ ] **Frozen zero-arg IL instruction arrays** — Pre-freeze `[WRITE_VALUE].freeze` etc. Saves ~200+ array allocs.
+- [ ] **Assign tag: String#index instead of regex** — Minor alloc savings.
 
-## Tried, Not Helpful
-- IO::Buffer — slower than String for string building
-- StringIO — 30-40% slower than String `<<`
-- String.new(capacity:) — slightly slower than `+""`; Ruby's geometric growth is already good
-- Skip `_cst`/`_ics` in partials — too minor (2 allocs), noisy measurements
-- `@context` write in apply_fast — negligible overhead with YJIT
-- `ensure` block overhead — YJIT handles it well (~0ns overhead)
+## High Priority — Structured Compiler (43% of parse)
+- [ ] **Replace Expr Data class with lighter encoding** — 971 Expr allocations per biggest template. Could use arrays `[type, value, children]` or flat encoding.
+- [ ] **Reduce string allocations in code generation** — 626 String allocs in structured_compiler. Use `String.new(capacity:)` + `<<` instead of interpolation where hot.
+- [ ] **Cache structured compilation** — If IL instructions are identical (same template), cache the Ruby source string. Skip entire structured compile on cache hit.
 
-## Stackprof Findings (theme_product, 10K iterations)
-- **GC/sweeping: ~20%** — reducing allocations is the #1 lever
-- **lookup_prop_fast: 8.2%** — already JIT'd (37 blocks), hard to improve
-- **String#gsub: 8.4%** — all from `handle` filter
-- **compiled template body: 13.5%** — the generated code itself
-- **Filters.apply_fast: 2.4%** — filter dispatch overhead
-- **each_with_index: 2.0%** — for loop iteration
+## High Priority — Parser/Lexer (49% of parse, but includes optimizer passes)
+- [ ] **Eliminate for-tag regex** — `parse_for_tag` uses 4+ regex ops + gsub. Replace with single-pass lexer-based parsing.
+- [ ] **Eliminate tablerow-tag regex** — Same pattern, 6+ regex ops.
+- [ ] **Avoid token_content string extraction** — `parse_raw` calls `token_content` (byteslice + strip). Could check whitespace via bytes.
+- [ ] **Pre-freeze common instruction arrays for 1-arg opcodes** — e.g., `[FIND_VAR, "product"]` for common variable names.
 
-## Remaining Ideas
+## Medium Priority
+- [ ] **Profile optimization passes** — Some passes may cost more time than they save. Selectively disable expensive ones.
+- [ ] **Reduce `with_span` array allocations** — `[start_pos, end_pos]` allocated per emit. Could use flat pair encoding in spans array.
+- [ ] **Avoid MatchData allocation in when-clause** — `split(/\s*(?:,|\bor\b)\s*/)` in parse_when_clause allocates array + strings.
 
-### High Impact (target GC overhead)
-- [ ] **Reuse `__partial_args__` hash** — Allocated per partial call (`{}`). For no-arg renders, use `EMPTY_HASH`. For single-arg, could pass directly.
-- [ ] **Inline `handle` filter** — `String#gsub` is 8.4% of time. Inlining `downcase.gsub(regex, "-")` avoids filter dispatch AND uses YJIT-friendly code.
-- [ ] **Inline `money` filter** — Called 8 times in product template. `format("$%.2f", v / 100.0)` is simple and avoids dispatch.
-- [ ] **Inline `escape` with nil guard** — Currently goes through `oa` for nil handling. Could do `(v = expr; _O << CGI.escapeHTML(v) if v)`.
-
-### Medium Impact
-- [ ] **Reduce ForloopDrop per-iteration cost** — Pool/reuse the Drop object across iterations (just reset index0)
-- [ ] **Inline `assigns.each` in partials** — For 1-2 args, generate `scope.assign(k1, v1); scope.assign(k2, v2)` directly
-- [ ] **Eliminate `@context` write in apply_fast** — `@context = context` / `@context = nil` on every filter call is unnecessary overhead if context is passed as parameter
-
-### Lower Impact
-- [ ] **Use `EMPTY_HASH` for `_cs` when no cycles** — Saves 1 hash alloc per partial
-- [ ] **Pass `_H`/`_U` as proc parameters** — Avoid `opt_getconstant_path` per proc invocation
+## Lower Priority
+- [ ] **Reuse Parser instance** across templates (if context allows)
+- [ ] **Pre-size @instructions array** based on source length heuristic

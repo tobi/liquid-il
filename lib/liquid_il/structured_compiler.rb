@@ -2698,12 +2698,15 @@ module LiquidIL
     # that needs the full compare() dispatch.
     def simple_compare_expr?(expr)
       case expr.type
-      when :const_int, :const_float, :const_string, :const_bool
-        true
-      when :lookup, :prop_lookup
+      when :literal
+        # nil literals need full compare (nil comparisons have special semantics)
+        !expr.value.nil?
+      when :var, :var_path, :lookup, :bracket_lookup, :command
         true  # Variable lookups are almost always simple values
       when :filter
         true  # Filter results are always simple values
+      when :dynamic_range, :range, :empty, :blank
+        false  # These need full compare dispatch
       else
         false
       end

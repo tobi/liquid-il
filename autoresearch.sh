@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Quick syntax check on key files
+# Quick syntax check on key files (<0.5s total)
 for f in lib/liquid_il/lexer.rb lib/liquid_il/parser.rb lib/liquid_il/il.rb lib/liquid_il/structured_compiler.rb lib/liquid_il/compiler.rb lib/liquid_il/passes.rb; do
   ruby -c "$f" > /dev/null 2>&1 || { echo "SYNTAX ERROR in $f" >&2; echo "METRIC parse_µs=0"; echo "METRIC render_µs=0"; exit 1; }
 done
@@ -44,13 +44,7 @@ ALLOCS=$(echo "$CLEAN" | grep "Allocs:")
 PARSE_ALLOCS=$(echo "$ALLOCS" | grep -oE '[0-9,]+ parse' | grep -oE '[0-9,]+' | tr -d ',')
 RENDER_ALLOCS=$(echo "$ALLOCS" | grep -oE '[0-9,]+ render' | grep -oE '[0-9,]+' | tr -d ',')
 
-echo "METRIC render_µs=${RENDER_US}"
 echo "METRIC parse_µs=${PARSE_US}"
-echo "METRIC render_allocs=${RENDER_ALLOCS}"
+echo "METRIC render_µs=${RENDER_US}"
 echo "METRIC parse_allocs=${PARSE_ALLOCS}"
-
-# Supplemental metrics
-SUPP=$(RUBY_YJIT_ENABLE=1 ruby -Ilib auto/supplemental-metrics.rb 2>/dev/null) || true
-if [ -n "$SUPP" ]; then
-  echo "$SUPP"
-fi
+echo "METRIC render_allocs=${RENDER_ALLOCS}"
