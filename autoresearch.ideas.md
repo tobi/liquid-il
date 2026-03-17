@@ -1,43 +1,43 @@
 # Autoresearch Ideas — YJIT Render Optimization
 
-## Key Findings from YJIT Disasm Analysis (theme_product benchmark)
+## Current Status
+- Baseline: 308µs render, 1128 allocs
+- Best: 282-289µs render (~8% improvement), 959-968 allocs (~15% reduction)
+- Fixed 6 pre-existing test failures (render scope isolation)
 
-### Allocation Hotspots (337 total render allocs)
-- **120 allocs**: `_sp = [...]` spans array literal in partial template — massive array created every partial call. Should be a frozen constant.
-- **52 allocs**: `money` filter — string formatting
-- **48 allocs**: `product_img_url` filter — string interpolation/sub
-- **31 allocs**: `output_append` (`oa`) — `value.to_s` creates strings
-- **132 Array objects total** — many from filter arg arrays like `["large"]` created per call
-- **5 ForloopDrop objects** — one per for loop
+## Completed ✅
+- [x] **Freeze partial spans/source** — Hoisted as frozen constants. Saved ~80 allocs.
+- [x] **Freeze constant filter arg arrays** — `["large"].freeze` hoisted outside loops. Saved ~90 allocs.
+- [x] **Direct `_O <<` for known-String outputs** — Skip `output_append` dispatch for `upcase`/`strip`/etc.
+- [x] **Fix render scope isolation** — Dup `@static_environments` so `{% assign %}` doesn't leak into `{% render %}`.
 
-### YJIT JIT Status
-- ✅ Compiled template proc: 398 blocks, 123KB machine code
-- ✅ `lookup_prop_fast` (lf): 37 blocks — hot and JIT'd
-- ✅ `output_append` (oa): 20 blocks — JIT'd
-- ✅ `Scope#lookup`: 28 blocks — JIT'd
-- ❌ `Filters.apply`: NOT JIT'd (but `cff` bypasses it)
+## Tried, Not Helpful
+- IO::Buffer — slower than String for string building
+- StringIO — 30-40% slower than String `<<`
+- String.new(capacity:) — slightly slower than `+""`; Ruby's geometric growth is already good
+- Skip `_cst`/`_ics` in partials — too minor (2 allocs), noisy measurements
 
-### Generated Code Patterns (18KB, 284 lines)
-- 54x `_H.lf` (lookup_prop_fast) — most common call
-- 41x `_S.lookup` — scope variable lookups
-- 35x `_H.oa` (output_append) — output buffering
-- 11x `_H.cff` (call_filter_fast) — filter calls
-- 8x `_S.assign_local` — loop variable assignments
+## Stackprof Findings (theme_product, 10K iterations)
+- **GC/sweeping: ~20%** — reducing allocations is the #1 lever
+- **lookup_prop_fast: 8.2%** — already JIT'd (37 blocks), hard to improve
+- **String#gsub: 8.4%** — all from `handle` filter
+- **compiled template body: 13.5%** — the generated code itself
+- **Filters.apply_fast: 2.4%** — filter dispatch overhead
+- **each_with_index: 2.0%** — for loop iteration
 
-## Optimization Ideas
+## Remaining Ideas
 
-### High Impact
-- [ ] **Freeze partial spans arrays** — Generate `_sp = PARTIAL_SPANS_CONST` referencing a frozen constant instead of an array literal. Saves 120 allocs (35% of total).
-- [ ] **Freeze filter arg arrays** — `duparray ["large"]` allocates every time. For constant filter args, generate frozen constants. Could save 20-30 allocs.
-- [ ] **Inline simple filters** — `escape`, `money`, `upcase`, `downcase`, `strip` could be inlined as direct Ruby calls instead of going through `cff` dispatch. Saves method call + arg array overhead.
-- [ ] **Skip `to_s` in output_append when type is known** — If the compiler knows the expression is already a string (e.g., from a string filter), skip the type dispatch in `oa`.
+### High Impact (target GC overhead)
+- [ ] **Reuse `__partial_args__` hash** — Allocated per partial call (`{}`). For no-arg renders, use `EMPTY_HASH`. For single-arg, could pass directly.
+- [ ] **Inline `handle` filter** — `String#gsub` is 8.4% of time. Inlining `downcase.gsub(regex, "-")` avoids filter dispatch AND uses YJIT-friendly code.
+- [ ] **Inline `money` filter** — Called 8 times in product template. `format("$%.2f", v / 100.0)` is simple and avoids dispatch.
+- [ ] **Inline `escape` with nil guard** — Currently goes through `oa` for nil handling. Could do `(v = expr; _O << CGI.escapeHTML(v) if v)`.
 
 ### Medium Impact
-- [ ] **Reduce ForloopDrop allocations** — Can forloop.index/length be tracked as plain integers instead of Drop objects?
-- [ ] **Pool/reuse Scope objects** — The Scope allocates on every render. Could it be reset-and-reused?
-- [ ] **Avoid `assigns.each` in partials** — Line 18: `assigns.each { |k, v| __partial_scope__.assign(k, v) }` iterates a hash. Could be a direct merge.
+- [ ] **Reduce ForloopDrop per-iteration cost** — Pool/reuse the Drop object across iterations (just reset index0)
+- [ ] **Inline `assigns.each` in partials** — For 1-2 args, generate `scope.assign(k1, v1); scope.assign(k2, v2)` directly
+- [ ] **Eliminate `@context` write in apply_fast** — `@context = context` / `@context = nil` on every filter call is unnecessary overhead if context is passed as parameter
 
-### Lower Impact / Exploratory
-- [ ] **Remove `_cs` hash allocation** — Line 22: `_cs = isolated ? {} : ...` — cycle state hash allocated even when no cycles used
-- [ ] **String capacity hints** — `_O = +""` could be `String.new(capacity: N)` based on estimated output size
-- [ ] **Avoid `opt_getconstant_path`** — YJIT handles constant lookups well, but `_H = LiquidIL::StructuredHelpers` at the top of every proc could be passed as a parameter instead
+### Lower Impact
+- [ ] **Use `EMPTY_HASH` for `_cs` when no cycles** — Saves 1 hash alloc per partial
+- [ ] **Pass `_H`/`_U` as proc parameters** — Avoid `opt_getconstant_path` per proc invocation
