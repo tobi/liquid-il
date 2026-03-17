@@ -1651,12 +1651,8 @@ module LiquidIL
         if left_simple && right_simple && (op == :eq || op == :ne)
           ruby_op = op == :eq ? "==" : "!="
           "(#{left} #{ruby_op} #{right})"
-        elsif left_simple && right_simple && [:lt, :le, :gt, :ge].include?(op)
-          # For ordering comparisons with simple values, use direct comparison
-          # with nil guard (Liquid returns false for nil comparisons)
-          ruby_op = COMPARE_OPS[op]
-          "((_cl = #{left}; _cr = #{right}; !_cl.nil? && !_cr.nil? && _cl #{ruby_op} _cr) rescue false)"
         else
+          # lt/le/gt/ge need full compare for error message formatting on type mismatches
           "_H.cmp(#{left}, #{right}, #{op.inspect}, _O, _F)"
         end
       when :contains
