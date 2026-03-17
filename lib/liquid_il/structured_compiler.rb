@@ -51,6 +51,8 @@ module LiquidIL
       # Frozen array constants for filter args: { "[\"large\"]" => "_fa0__" }
       @frozen_arrays = {}
       @frozen_array_counter = 0
+      # Pre-built partial spans/source objects — injected via binding at eval time
+      @partial_constants = {}
     end
 
     # Check if template uses break/continue
@@ -73,8 +75,16 @@ module LiquidIL
       compiled_proc = eval_ruby(code)
       raise "Failed to eval generated Ruby code" unless compiled_proc
 
+      # If we have partial constants, wrap the proc to inject them
+      if @partial_constants.empty?
+        final_proc = compiled_proc
+      else
+        pc = @partial_constants.freeze
+        final_proc = proc { |s, sp, ts| compiled_proc.call(s, sp, ts, pc) }
+      end
+
       CompilationResult.new(
-        proc: compiled_proc,
+        proc: final_proc,
         source: code,
         can_compile: true
       )
@@ -256,8 +266,13 @@ module LiquidIL
       body_code = generate_body
 
       code = String.new
+      has_pc = !@partial_constants.empty?
       code << "# frozen_string_literal: true\n"
-      code << "proc do |_S, _sp, _ts|\n"
+      if has_pc
+        code << "proc do |_S, _sp, _ts, _pc|\n"
+      else
+        code << "proc do |_S, _sp, _ts|\n"
+      end
       code << "  _H = LiquidIL::StructuredHelpers\n"
       code << "  _U = LiquidIL::Utils\n"
       # Frozen array constants must be declared before partial lambdas
@@ -309,12 +324,15 @@ module LiquidIL
       @partials.each do |name, info|
         next if info[:recursive] || info[:syntax_error]  # Handled at runtime
         lambda_name = partial_lambda_name(name)
-        # Hoist spans and source as frozen constants — avoids re-allocating
-        # large array/string literals on every partial call
-        spans_const = "#{lambda_name}__SP__"
-        source_const = "#{lambda_name}__TS__"
-        code << "  #{spans_const} = #{info[:spans].inspect}.freeze\n"
-        code << "  #{source_const} = #{info[:source].inspect}\n"
+        # Store spans/source as pre-built frozen objects in @partial_constants hash.
+        # The proc receives _pc (partial constants) and reads from it — zero per-render allocation.
+        spans_key = "#{lambda_name}__SP__"
+        source_key = "#{lambda_name}__TS__"
+        @partial_constants[spans_key] = info[:spans].freeze
+        @partial_constants[source_key] = info[:source].freeze
+        # Read from _pc hash (set once at compile time, frozen)
+        spans_const = "_pc[#{spans_key.inspect}]"
+        source_const = "_pc[#{source_key.inspect}]"
         code << "  #{lambda_name} = ->(assigns, _O, __parent_scope__, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
         code << "    __prev_file__ = __parent_scope__.current_file\n"
         code << "    __parent_scope__.current_file = #{name.inspect}\n"
@@ -2783,7 +2801,7 @@ module LiquidIL
     ISEQ_CACHE_MAX = 1000
     @@iseq_cache = {}
 
-    def eval_ruby(source)
+    def eval_ruby(source, partial_constants = nil)
       key = source.hash
       if (bin = @@iseq_cache[key])
         RubyVM::InstructionSequence.load_from_binary(bin).eval
