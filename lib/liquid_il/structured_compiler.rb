@@ -2684,7 +2684,7 @@ module LiquidIL
         "_U.to_s(#{input}).rstrip"
       when "escape"
         return nil unless args.empty?
-        "((_fi = #{input}); _fi.nil? ? nil : _fi.is_a?(String) ? CGI.escapeHTML(_fi) : CGI.escapeHTML(_U.to_s(_fi)))"
+        "_H.eh(#{input})"
       when "size"
         return nil unless args.empty?
         "((_fi = #{input}); _fi.respond_to?(:size) ? _fi.size : 0)"
