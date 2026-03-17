@@ -7,9 +7,9 @@ module LiquidIL
     attr_accessor :file_system, :render_errors, :current_file
     attr_reader :strict_errors
 
-    def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true)
+    def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true, locals: nil)
       @static_environments = static_environments
-      @locals = {}  # Always needed (assigns happen immediately)
+      @locals = locals || {}
       @file_system = file_system
       @depth = depth
       @strict_errors = strict_errors
