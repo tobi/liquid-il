@@ -45,10 +45,11 @@ module LiquidIL
       @cycle_counter = 0 # For unique cycle identities
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
       @error_mode = error_mode  # :lax, :warn, :strict
-      @warnings = warnings || []  # Collect non-fatal warnings
+      @warnings = warnings  # nil until first warning (lazy)
     end
 
-    attr_reader :warnings
+    EMPTY_WARNINGS = [].freeze
+    def warnings; @warnings || EMPTY_WARNINGS; end
 
     def parse
       @template_lexer.reset
@@ -391,7 +392,7 @@ module LiquidIL
               source: @source
             )
           when :warn
-            @warnings << "Unknown tag '#{tag_name}'"
+            (@warnings ||= []) << "Unknown tag '#{tag_name}'"
             advance_template
             false
           else # :lax
