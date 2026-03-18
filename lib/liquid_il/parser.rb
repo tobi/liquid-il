@@ -1086,9 +1086,11 @@ module LiquidIL
       limit_expr, offset_expr, offset_continue, reversed, coll_off, coll_len =
         _parse_for_options(src, in_pos + 4, limit_off)
 
-      # Build loop name from interned collection string
+      # Build loop name — use object_id pair as key (both strings are interned/frozen)
       collection_str = coll_len > 0 ? _intern_from(src, coll_off, coll_len) : ""
-      loop_name = "#{var_name}-#{collection_str}"
+      # Since both are frozen interned strings, object_id is stable
+      lnk = (var_name.object_id << 32) | collection_str.object_id
+      loop_name = @intern_table[lnk] || (@intern_table[lnk] = "#{var_name}-#{collection_str}".freeze)
 
       # Labels
       label_loop = @builder.new_label
@@ -1196,8 +1198,9 @@ module LiquidIL
         _parse_tablerow_options(src, in_pos + 4, limit_off)
 
       collection_str = coll_len > 0 ? _intern_from(src, coll_off, coll_len) : ""
-      # Generate loop name
-      loop_name = "#{var_name}-#{collection_str}"
+      # Generate loop name — use object_id pair for zero-alloc cache lookup
+      lnk = (var_name.object_id << 32) | collection_str.object_id
+      loop_name = @intern_table[lnk] || (@intern_table[lnk] = "#{var_name}-#{collection_str}".freeze)
 
       # Labels
       label_loop = @builder.new_label
