@@ -288,9 +288,21 @@ module LiquidIL
         @template_lexer.content_end - @template_lexer.content_start
       )
 
+      inst_before = @builder.instructions.size
       parse_expression(expr_lexer)
-      parse_filters(expr_lexer)
-      @builder.write_value
+
+      # Fuse simple FIND_VAR + WRITE_VALUE → WRITE_VAR at parse time
+      # Saves one instruction array allocation for the common {{ var }} case
+      if expr_lexer.current != ExpressionLexer::PIPE &&
+         @builder.instructions.size == inst_before + 1 &&
+         @builder.instructions.last[0] == IL::FIND_VAR
+        # Simple variable with no filters — emit WRITE_VAR directly
+        var_name = @builder.instructions.last[1]
+        @builder.instructions[-1] = [IL::WRITE_VAR, var_name]
+      else
+        parse_filters(expr_lexer)
+        @builder.write_value
+      end
 
       @builder.clear_span
       expect_eos(expr_lexer)
