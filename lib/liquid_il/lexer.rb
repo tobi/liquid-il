@@ -23,13 +23,6 @@ module LiquidIL
     VAR = :VAR
     EOF = :EOF
 
-    # Regex patterns - pre-compiled for performance
-    TAG_END = /-?%\}/
-    VAR_END = /-?\}\}/
-
-    # Pattern to find endraw (with optional whitespace and trim)
-    ENDRAW_PATTERN = /\{%-?\s*endraw\s*-?%\}/
-
     # Token state — read these instead of indexing into arrays
     attr_reader :token_type, :token_start, :token_end, :trim_left, :trim_right
     # Content region within the token (excludes delimiters, not yet stripped)
@@ -422,7 +415,6 @@ module LiquidIL
         else
           @trim_left = false
         end
-        end_pattern = VAR_END
       else  # {% tag
         type = TAG
         if src.getbyte(pos) == 45  # '-'
@@ -441,7 +433,6 @@ module LiquidIL
         else
           @trim_left = false
         end
-        end_pattern = TAG_END
       end
 
       content_start = pos
