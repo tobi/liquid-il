@@ -192,7 +192,9 @@ module LiquidIL
         return true  # Blank output
       end
 
-      content = current_template_content
+      # Unstripped — ExpressionLexer handles whitespace internally.
+      # Saves 1 alloc (no .strip) per variable token.
+      content = @template_lexer.token_content_unstripped
       expr_lexer = expr_lexer_for(content)
 
       parse_expression(expr_lexer)

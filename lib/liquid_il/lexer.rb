@@ -65,6 +65,13 @@ module LiquidIL
       end
     end
 
+    # Unstripped content — single byteslice, no strip allocation.
+    # Use when the consumer handles whitespace itself (ExpressionLexer skips
+    # leading/trailing whitespace internally). Saves 1 alloc vs token_content.
+    def token_content_unstripped
+      @source.byteslice(@content_start, @content_end - @content_start)
+    end
+
     # Zero-copy view of token content — no strip, no allocation.
     # Use when the consumer will do its own byte scanning (e.g., ExpressionLexer).
     def token_content_view
