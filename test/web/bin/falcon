@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-cd "$(dirname "$0")/.."
-
-PORT="${PORT:-9292}"
-exec bundle exec falcon serve --bind "http://0.0.0.0:${PORT}" config.ru
