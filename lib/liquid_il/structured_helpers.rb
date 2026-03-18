@@ -405,6 +405,41 @@ module LiquidIL
     VALID_INTEGER = method(:valid_integer)
     BRACKET_LOOKUP = method(:bracket_lookup)
 
+    # Read a partial source using Liquid-compatible file system APIs.
+    # Supports:
+    # - read_template_file(name)
+    # - read_template_file(name, context)
+    # - read(name) (legacy)
+    def self.read_partial_source(file_system, name, context = nil)
+      return nil unless file_system
+
+      if file_system.respond_to?(:read_template_file)
+        begin
+          arity = file_system.method(:read_template_file).arity
+          if arity == 1
+            file_system.read_template_file(name)
+          else
+            file_system.read_template_file(name, context)
+          end
+        rescue NameError
+          # Some proxies don't expose #method cleanly; fall back to trial call.
+          begin
+            file_system.read_template_file(name, context)
+          rescue ArgumentError
+            file_system.read_template_file(name)
+          end
+        rescue StandardError
+          nil
+        end
+      elsif file_system.respond_to?(:read)
+        begin
+          file_system.read(name)
+        rescue StandardError
+          nil
+        end
+      end
+    end
+
     # Runtime dynamic partial execution — used when partial name is a variable.
     # Compiles and runs the partial on-the-fly.
     def self.execute_dynamic_partial(name, assigns, output, scope, isolated:, tag_type: "include", caller_line: 1, parent_cycle_state: nil)
@@ -423,7 +458,7 @@ module LiquidIL
       end
 
       # Load source
-      source = fs.respond_to?(:read_template_file) ? (fs.read_template_file(name) rescue nil) : fs.read(name)
+      source = read_partial_source(fs, name, scope)
       unless source
         location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
         output << "Liquid error (#{location}): Could not find partial '#{name}'"

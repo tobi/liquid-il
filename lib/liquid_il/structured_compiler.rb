@@ -98,11 +98,7 @@ module LiquidIL
 
       # Load the partial source
       fs = @context&.file_system
-      source = if fs.respond_to?(:read_template_file)
-                 fs.read_template_file(name) rescue nil
-               elsif fs.respond_to?(:read)
-                 fs.read(name)
-               end
+      source = StructuredHelpers.read_partial_source(fs, name, @context)
 
       unless source
         @partial_names_in_progress.delete(name)
@@ -220,11 +216,7 @@ module LiquidIL
       fs = @context&.file_system
       return false unless fs
 
-      source = if fs.respond_to?(:read_template_file)
-                 fs.read_template_file(name) rescue nil
-               elsif fs.respond_to?(:read)
-                 fs.read(name)
-               end
+      source = StructuredHelpers.read_partial_source(fs, name, @context)
 
       return false unless source
 
