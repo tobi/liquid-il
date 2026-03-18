@@ -1,33 +1,37 @@
 # Autoresearch Ideas — Parse Allocs & Speed Optimization
 
-## Current State (21 experiments)
-- **parse_allocs**: 10,570 (down **11.4%** from 11,933 baseline)
-- **parse_µs**: ~2,930 (down **~10%** from 3,268 baseline)
+## Current State (27 experiments)
+- **parse_allocs**: 10,460 (down **12.3%** from 11,933 baseline)
+- **parse_µs**: ~2,800 (down **~14%** from 3,268 baseline)
 - **render_µs**: ~183 (down **~4%** from 190 baseline)
 - **string_allocs**: 0 (maintained from prior phase)
+- **Total allocs since project start**: 13,273 → 10,460 (**21.2% reduction**)
 
 ## Key Wins This Phase
-1. **Spans as integers** (-302 allocs): Only start_pos stored, end_pos was never read
-2. **Flat blank_raw tracking** (-174 allocs): Packed integer ranges instead of Array-per-block
-3. **FIND_VAR_PATH inline at parse time** (-431 allocs): Build path arrays directly in parse_variable_lookup instead of N separate LOOKUP_CONST_KEY instructions
-4. **WRITE_VAR/WRITE_VAR_PATH parse-time fusion** (-85/-312 allocs): In-place opcode swap eliminates WRITE_VALUE instruction
-5. **byteindex for token scanning** (~10% speed): memchr-based search for `{`, `}}`, `%}` instead of byte-by-byte or regex
-6. **Path array interning**: FNV-1a hash with object_ids, ~204 cache hits per pass
+1. ✅ Spans as integers (-302 allocs)
+2. ✅ Flat blank_raw tracking (-174 allocs)
+3. ✅ FIND_VAR_PATH inline fusion (-431 allocs)
+4. ✅ WRITE_VAR/WRITE_VAR_PATH parse-time fusion (-85/-312 allocs)
+5. ✅ Path array interning (~-204 on warm cache)
+6. ✅ byteindex for raw + liquid token scanning (~15% speed)
+7. ✅ Eliminate StringScanner (-13 allocs)
+8. ✅ Fast-path parse_expression for identifiers (-96 allocs, ~5% speed)
 
-## Remaining Budget (~10,570 allocs)
-- ~1,241 emit1 instruction arrays — fundamental IL architecture
-- ~579 StringView::Strict — RAW content (replaced String allocs)
-- ~523 emit2 instruction arrays — fundamental IL
-- ~367 emit_label arrays — fundamental IL
-- ~317 path arrays (now interned on warm cache)
-- ~266 per-parse objects — Parser, Builder, Lexer, Scanner
-- ~7,250 Ruby internals (T_IMEMO, T_DATA etc.)
+## Remaining Budget (~10,460 allocs)
+- ~2,131 IL instruction arrays — fundamental architecture
+- ~579 StringView::Strict — RAW content
+- ~367 LABEL arrays — fundamental (mutable, can't pool)
+- ~317 path arrays — interned on warm cache
+- ~190 per-parse objects — Parser, Builder, ExpressionLexer, TemplateLexer
+- ~6,876 Ruby internals (T_IMEMO etc.)
+
+## Possible Future Work (diminishing returns)
+- **Flat bytecode encoding**: Eliminate ~2,131 instruction array allocs. Major architecture change.
+- **Label-free IL**: Side-table positions, skip LABEL instructions. Saves ~367 allocs but breaks compiler passes.
+- **IS_TRUTHY elimination**: 82 redundant IS_TRUTHY instructions could be skipped. Requires structured_compiler changes (off-limits).
+- **More expression fast paths**: STRING, NUMBER, keyword literals. Marginal benefit.
 
 ## What Didn't Work
-- **Pooling Builder/Lexer/Scanner at class level**: Breaks nested parsing (partials create new Parsers while parent is still running). FrozenError from shared instruction arrays.
-- **Fusing var paths via slice!+append**: O(n) array reindexing cost outweighs savings when called in every expression context.
-
-## Possible Future Work
-- **Flat bytecode encoding**: Replace array-of-arrays with packed integer array. Eliminates ~2,131 instruction array allocs. Major architecture change.
-- **Eliminate StringScanner**: Replace with plain @pos variable. Saves 38 allocs/parse. Most scanning already uses manual byte ops.
-- **Label-free IL**: Store label positions in side-table, skip LABEL instruction emission. Saves ~367 allocs.
+- **Pooling Builder/Lexer**: Breaks nested parsing (partials)
+- **Fusing var paths via slice!**: O(n) cost outweighs savings
+- **Array pool for blank_raw_indices**: Use-after-free in nested blocks

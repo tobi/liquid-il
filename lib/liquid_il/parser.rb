@@ -512,21 +512,31 @@ module LiquidIL
     # --- Expression parsing ---
 
     def parse_expression(lexer)
-      # Fast path: identifier (most common expression type)
-      # Skip 3 method calls (logical → comparison → primary) for the common case
-      if lexer.current == ExpressionLexer::IDENTIFIER
+      # Fast paths: skip 3 method call levels for common expression types
+      case lexer.current
+      when ExpressionLexer::IDENTIFIER
         parse_variable_lookup(lexer)
-        # Check if this simple var is followed by a logical/comparison operator
-        case lexer.current
-        when ExpressionLexer::AND, ExpressionLexer::OR
-          _parse_logical_tail(lexer)
-        when ExpressionLexer::EQ, ExpressionLexer::NE, ExpressionLexer::LT,
-             ExpressionLexer::GT, ExpressionLexer::LE, ExpressionLexer::GE,
-             ExpressionLexer::CONTAINS
-          _parse_comparison_tail(lexer)
-        end
+        _parse_comparison_or_logical_tail(lexer)
+      when ExpressionLexer::STRING
+        @builder.const_string(lexer.value)
+        lexer.advance
+        _parse_comparison_or_logical_tail(lexer)
+      when ExpressionLexer::NUMBER
+        parse_number(lexer)
+        _parse_comparison_or_logical_tail(lexer)
       else
         parse_logical_expression(lexer)
+      end
+    end
+
+    def _parse_comparison_or_logical_tail(lexer)
+      case lexer.current
+      when ExpressionLexer::AND, ExpressionLexer::OR
+        _parse_logical_tail(lexer)
+      when ExpressionLexer::EQ, ExpressionLexer::NE, ExpressionLexer::LT,
+           ExpressionLexer::GT, ExpressionLexer::LE, ExpressionLexer::GE,
+           ExpressionLexer::CONTAINS
+        _parse_comparison_tail(lexer)
       end
     end
 
