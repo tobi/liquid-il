@@ -292,37 +292,15 @@ module LiquidIL
       parse_expression(expr_lexer)
 
       # Fuse common patterns at parse time — saves instruction array allocations
-      inst_count = @builder.instructions.size - inst_before
       if expr_lexer.current != ExpressionLexer::PIPE
-        if inst_count == 1 && @builder.instructions.last[0] == IL::FIND_VAR
-          # {{ var }} → WRITE_VAR
-          var_name = @builder.instructions.last[1]
-          @builder.instructions[-1] = [IL::WRITE_VAR, var_name]
-        elsif inst_count >= 2 && @builder.instructions[inst_before][0] == IL::FIND_VAR
-          # Check if all remaining instructions are LOOKUP_CONST_KEY
-          all_const_keys = true
-          i = inst_before + 1
-          while i < @builder.instructions.size
-            unless @builder.instructions[i][0] == IL::LOOKUP_CONST_KEY
-              all_const_keys = false
-              break
-            end
-            i += 1
-          end
-          if all_const_keys
-            # {{ var.a.b }} → WRITE_VAR_PATH
-            var_name = @builder.instructions[inst_before][1]
-            path = []
-            j = inst_before + 1
-            while j < @builder.instructions.size
-              path << @builder.instructions[j][1]
-              j += 1
-            end
-            # Replace all instructions with single WRITE_VAR_PATH
-            @builder.instructions.slice!(inst_before, inst_count)
-            @builder.spans.slice!(inst_before, inst_count)
-            @builder.instructions << [IL::WRITE_VAR_PATH, var_name, path]
-            @builder.spans << @builder.instance_variable_get(:@current_span)
+        last = @builder.instructions.last
+        if last && @builder.instructions.size == inst_before + 1
+          if last[0] == IL::FIND_VAR
+            # {{ var }} → WRITE_VAR (replace opcode in-place)
+            last[0] = IL::WRITE_VAR
+          elsif last[0] == IL::FIND_VAR_PATH
+            # {{ var.a.b }} → WRITE_VAR_PATH (replace opcode in-place)
+            last[0] = IL::WRITE_VAR_PATH
           else
             @builder.write_value
           end
@@ -669,15 +647,38 @@ module LiquidIL
       name = lexer.value
       lexer.advance
 
-      # Check for command optimizations
-      if COMMAND_PROPS.include?(name) && lexer.current != ExpressionLexer::DOT && lexer.current != ExpressionLexer::LBRACKET
-        # This is a variable, not a command
-        @builder.find_var(name)
+      # Try to build a FIND_VAR_PATH directly for dotted const paths
+      # Emits one instruction instead of N+1 (FIND_VAR + N × LOOKUP_CONST_KEY)
+      if lexer.current == ExpressionLexer::DOT
+        path = nil
+        loop do
+          if lexer.current == ExpressionLexer::DOT
+            lexer.advance
+            raise SyntaxError, "Expected property name after '.'" unless lexer.current == ExpressionLexer::IDENTIFIER
+            (path ||= []) << lexer.value
+            lexer.advance
+          elsif lexer.current == ExpressionLexer::LBRACKET || lexer.current == ExpressionLexer::FAT_ARROW
+            # Dynamic access — emit what we have so far, then handle brackets
+            if path
+              @builder.find_var_path(name, path)
+            else
+              @builder.find_var(name)
+            end
+            parse_property_chain(lexer)
+            return
+          else
+            break
+          end
+        end
+        if path
+          @builder.find_var_path(name, path)
+        else
+          @builder.find_var(name)
+        end
       else
         @builder.find_var(name)
+        parse_property_chain(lexer) if lexer.current == ExpressionLexer::LBRACKET || lexer.current == ExpressionLexer::FAT_ARROW
       end
-
-      parse_property_chain(lexer)
     end
 
     def parse_property_chain(lexer)
