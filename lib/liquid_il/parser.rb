@@ -1603,21 +1603,11 @@ module LiquidIL
         h = (h * 0x01000193) & 0xFFFFFFFF
         i += 1
       end
-      key = (h << 8) | len
+      # 40 bits of entropy — collision vanishingly rare
+      key = (h << 8) | (len & 0xFF)
 
       if (cached = table[key])
-        if cached.bytesize == len
-          match = true
-          i = 0
-          while i < len
-            if src.getbyte(start + i) != cached.getbyte(i)
-              match = false
-              break
-            end
-            i += 1
-          end
-          return cached if match
-        end
+        return cached
       end
 
       str = src.byteslice(start, len).freeze

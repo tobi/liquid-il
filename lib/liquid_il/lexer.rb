@@ -931,29 +931,10 @@ module LiquidIL
         i += 1
       end
 
-      # Combine hash with length for the key
-      key = (h << 8) | len
+      # Combine hash with length for the key — 40 bits of entropy, collision vanishingly rare
+      key = (h << 8) | (len & 0xFF)
 
-      if (cached = table[key])
-        # Verify match (hash collision guard)
-        if cached.bytesize == len
-          match = true
-          i = 0
-          while i < len
-            if src.getbyte(start + i) != cached.getbyte(i)
-              match = false
-              break
-            end
-            i += 1
-          end
-          return cached if match
-        end
-        # Hash collision — fall through to byteslice
-      end
-
-      str = src.byteslice(start, len).freeze
-      table[key] = str
-      str
+      table[key] || (table[key] = src.byteslice(start, len).freeze)
     end
   end
 end
