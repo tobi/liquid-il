@@ -211,15 +211,40 @@ module LiquidIL
     end
 
     def parse_raw
-      content = current_template_content
-      # Apply pending trim if previous element had trim_right
-      if @pending_trim_left
-        content = content.lstrip
+      # Build zero-copy StringView for RAW content instead of byteslice.
+      # Materialization deferred to structured compiler.
+      cs = @template_lexer.content_start
+      ce = @template_lexer.content_end
+
+      # Apply trim from lexer or parser — adjust view bounds, no alloc
+      if @pending_trim_left || @template_lexer.instance_variable_get(:@_needs_lstrip)
         @pending_trim_left = false
+        src = @source
+        while cs < ce
+          b = src.getbyte(cs)
+          break unless b == 32 || b == 9 || b == 10 || b == 13
+          cs += 1
+        end
       end
-      emit_raw(content) unless content.empty?
+
+      len = ce - cs
+      if len > 0
+        view = StringView.new(@source, cs, len)
+        emit_raw(view)
+      end
       advance_template
-      content.empty? || content.match?(WHITESPACE_ONLY)
+      len == 0 || _ws_only?(cs, ce)
+    end
+
+    # Zero-alloc whitespace check on a source region
+    def _ws_only?(from, to)
+      src = @source
+      while from < to
+        b = src.getbyte(from)
+        return false unless b == 32 || b == 9 || b == 10 || b == 13
+        from += 1
+      end
+      true
     end
 
     def parse_variable_output
@@ -391,16 +416,30 @@ module LiquidIL
 
     def emit_raw(content)
       @builder.write_raw(content)
-      return unless current_blank_raw_indices && content.match?(WHITESPACE_ONLY)
+      return unless current_blank_raw_indices
 
-      current_blank_raw_indices << (@builder.instructions.length - 1)
+      # Zero-alloc whitespace check for StringView
+      blank = if content.is_a?(StringView)
+        i = 0; sz = content.bytesize; ok = true
+        while i < sz
+          b = content.getbyte(i)
+          unless b == 32 || b == 9 || b == 10 || b == 13; ok = false; break; end
+          i += 1
+        end
+        ok
+      else
+        content.match?(WHITESPACE_ONLY)
+      end
+      current_blank_raw_indices << (@builder.instructions.length - 1) if blank
     end
 
     def trim_previous_raw
       last = @builder.instructions.last
       return unless last && last[0] == IL::WRITE_RAW
 
-      trimmed = last[1].rstrip
+      raw = last[1]
+      # Both String and StringView support rstrip (StringView materializes)
+      trimmed = raw.rstrip
       if trimmed.empty?
         @builder.instructions[-1] = [IL::NOOP]
       else

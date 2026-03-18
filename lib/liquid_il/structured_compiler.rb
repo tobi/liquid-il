@@ -434,10 +434,11 @@ module LiquidIL
 
       when IL::WRITE_RAW
         @pc += 1
+        raw_str = inst[1].is_a?(StringView) ? inst[1].to_s : inst[1]
         if @uses_interrupts
-          "#{prefix}_O << #{inst[1].inspect} unless _S.has_interrupt?\n"
+          "#{prefix}_O << #{raw_str.inspect} unless _S.has_interrupt?\n"
         else
-          "#{prefix}_O << #{inst[1].inspect}\n"
+          "#{prefix}_O << #{raw_str.inspect}\n"
         end
 
       when IL::WRITE_VAR
