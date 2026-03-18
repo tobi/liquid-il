@@ -34,7 +34,8 @@ module LiquidIL
 
     def initialize(source, error_mode: :lax, warnings: nil)
       @source = source
-      @template_lexer = TemplateLexer.new(source)
+      @template_lexer = (@@shared_template_lexer ||= TemplateLexer.new(source))
+      @template_lexer.reset_source(source)
       @builder = IL::Builder.new
       @current_token = nil
       # @loop_stack removed — was dead code (pushed/popped but never read)
@@ -42,7 +43,7 @@ module LiquidIL
       @blank_raw_flat = (@@blank_raw_flat_pool ||= []).clear
       @blank_raw_marks = (@@blank_raw_marks_pool ||= []).clear
       @intern_table = (@@shared_intern_table ||= {})  # Class-level intern table for dedup across parses
-      @expr_lexer = ExpressionLexer.new("", intern_table: @intern_table)
+      @expr_lexer = (@@shared_expr_lexer ||= ExpressionLexer.new("", intern_table: @intern_table))
       @cycle_counter = 0 # For unique cycle identities
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
       @error_mode = error_mode  # :lax, :warn, :strict

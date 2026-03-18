@@ -44,6 +44,21 @@ module LiquidIL
       @_cached_tag_name = nil
     end
 
+    def reset_source(source)
+      @source = source
+      @source_bytes = source.bytesize
+      @pos = 0
+      @trim_next = false
+      @token_type = nil
+      @token_start = 0
+      @token_end = 0
+      @trim_left = false
+      @trim_right = false
+      @content_start = 0
+      @content_end = 0
+      @_cached_tag_name = nil
+    end
+
     def reset
       @pos = 0
       @trim_next = false
