@@ -155,8 +155,8 @@ module LiquidIL
       end
 
       # Set span for subsequent emits until cleared
-      def with_span(start_pos, end_pos)
-        @current_span = [start_pos, end_pos]
+      def with_span(start_pos, _end_pos = nil)
+        @current_span = start_pos
         self
       end
 

@@ -65,9 +65,8 @@ module LiquidIL
     # Calculate line number from PC using spans
     def line_for_pc(pc)
       return 1 unless @spans && @template_source
-      span = @spans[pc]
-      return 1 unless span
-      pos = span[0]
+      pos = @spans[pc]
+      return 1 unless pos
       @template_source[0, pos].count("\n") + 1
     end
 
