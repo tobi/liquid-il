@@ -409,16 +409,25 @@ module LiquidIL
 
           SPANS = #{@spans.inspect}.freeze
           SOURCE = #{@source.inspect}.freeze
+          PARTIAL_CONSTANTS = #{@partial_constants.inspect}.freeze
 
           def render(assigns = {}, render_errors: true)
             __scope__ = LiquidIL::Scope.new(assigns)
             __scope__.render_errors = render_errors
             __spans__ = SPANS
             __template_source__ = SOURCE
+            __partial_constants__ = PARTIAL_CONSTANTS
+
+            # Match compiler-generated local names used in proc source.
+            _S = __scope__
+            _sp = __spans__
+            _ts = __template_source__
+            _PC = __partial_constants__
+            _pc = __partial_constants__
 
         #{indent_body(proc_body, 4)}
 
-            __output__
+            _O
           rescue LiquidIL::RuntimeError => e
             raise unless render_errors
             output = e.partial_output || ""
