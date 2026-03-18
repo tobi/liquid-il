@@ -598,17 +598,23 @@ module LiquidIL
       @peeked = false
     end
 
-    # Save current lexer state for backtracking
+    attr_reader :_saved_value
+    alias saved_value _saved_value
+
+    # Save current lexer state for backtracking — zero alloc via ivars
     def save_state
-      { pos: @pos, token: @current_token, value: @current_value, peeked: @peeked }
+      @_saved_pos = @pos
+      @_saved_token = @current_token
+      @_saved_value = @current_value
+      @_saved_peeked = @peeked
     end
 
-    # Restore lexer state from saved state
-    def restore_state(state)
-      @pos = state[:pos]
-      @current_token = state[:token]
-      @current_value = state[:value]
-      @peeked = state[:peeked]
+    # Restore lexer state from last save_state
+    def restore_state(_state = nil)
+      @pos = @_saved_pos
+      @current_token = @_saved_token
+      @current_value = @_saved_value
+      @peeked = @_saved_peeked
     end
 
     # Get current token type (no allocation if already peeked)

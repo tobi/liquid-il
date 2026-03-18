@@ -737,7 +737,7 @@ module LiquidIL
           if lexer.current == ExpressionLexer::COLON
             # This is a keyword argument
             lexer.advance
-            key = saved_state[:value]
+            key = lexer.saved_value
             
             # Use a temporary builder to capture instructions for keyword args
             kw_builder = IL::Builder.new
