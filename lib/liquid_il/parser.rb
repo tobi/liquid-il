@@ -302,16 +302,16 @@ module LiquidIL
         parse_tablerow_tag(materialize_tag_args)
       when 'assign'
         advance_template
-        parse_assign_tag(materialize_tag_args)
+        parse_assign_tag
       when 'capture'
         advance_template
         parse_capture_tag
       when 'increment'
         advance_template
-        parse_increment_tag(materialize_tag_args)
+        parse_increment_tag
       when 'decrement'
         advance_template
-        parse_decrement_tag(materialize_tag_args)
+        parse_decrement_tag
       when 'cycle'
         advance_template
         parse_cycle_tag
@@ -1309,10 +1309,49 @@ module LiquidIL
       body_blank
     end
 
-    def parse_assign_tag(tag_args)
+    def parse_assign_tag(tag_args = nil)
+      if tag_args
+        # Called from liquid tag with a string arg
+        _parse_assign_from_string(tag_args)
+      else
+        # Called from parse_tag — scan directly in @source using cached region
+        _parse_assign_from_region
+      end
+    end
+
+    def _parse_assign_from_region
+      src = @source
+      off = @_targ_off
+      limit = @_targ_off + @_targ_len
+
+      # Find '=' in region
+      eq_pos = off
+      while eq_pos < limit
+        break if src.getbyte(eq_pos) == 61  # '='
+        eq_pos += 1
+      end
+      raise SyntaxError, 'Invalid assign syntax' if eq_pos >= limit
+
+      # var_name: bytes before '=', stripped, interned
+      vs = off; ve = eq_pos
+      while vs < ve && (b = src.getbyte(vs)) && (b == 32 || b == 9); vs += 1; end
+      while ve > vs && (b = src.getbyte(ve - 1)) && (b == 32 || b == 9); ve -= 1; end
+      var_name = _intern_from(src, vs, ve - vs)
+
+      # value_expr: region after '=', leading whitespace skipped by ExpressionLexer
+      val_start = eq_pos + 1
+      expr_lexer = expr_lexer_for_region(val_start, limit - val_start)
+      parse_expression(expr_lexer)
+      parse_filters(expr_lexer)
+
+      @builder.assign(var_name)
+      true
+    end
+
+    def _parse_assign_from_string(tag_args)
       eq_pos = tag_args.index('=')
       raise SyntaxError, 'Invalid assign syntax' unless eq_pos
-      var_name = tag_args.byteslice(0, eq_pos).strip
+      var_name = _intern_from(tag_args, 0, eq_pos).strip
       value_expr = tag_args.byteslice(eq_pos + 1, tag_args.bytesize - eq_pos - 1).strip
 
       expr_lexer = expr_lexer_for(value_expr)
@@ -1321,6 +1360,46 @@ module LiquidIL
 
       @builder.assign(var_name)
       true
+    end
+
+    # Return the tag args region as a stripped, interned string — zero alloc for repeats.
+    def _stripped_interned_tag_arg
+      _intern_from(@source, @_targ_off, @_targ_len)
+    end
+
+    # Intern a substring of a given source string using the shared intern table.
+    # Returns a cached frozen string for repeated content, or a new frozen string.
+    def _intern_from(src, start, len)
+      return "" if len <= 0
+
+      table = @intern_table
+      h = 0x811c9dc5
+      i = 0
+      while i < len
+        h ^= src.getbyte(start + i)
+        h = (h * 0x01000193) & 0xFFFFFFFF
+        i += 1
+      end
+      key = (h << 8) | len
+
+      if (cached = table[key])
+        if cached.bytesize == len
+          match = true
+          i = 0
+          while i < len
+            if src.getbyte(start + i) != cached.getbyte(i)
+              match = false
+              break
+            end
+            i += 1
+          end
+          return cached if match
+        end
+      end
+
+      str = src.byteslice(start, len).freeze
+      table[key] = str
+      str
     end
 
     def parse_capture_tag(tag_args = nil)
@@ -1363,15 +1442,15 @@ module LiquidIL
       false
     end
 
-    def parse_increment_tag(tag_args)
-      var_name = tag_args.strip
+    def parse_increment_tag(tag_args = nil)
+      var_name = tag_args ? tag_args.strip : _stripped_interned_tag_arg
       @builder.increment(var_name)
       @builder.write_value
       false
     end
 
-    def parse_decrement_tag(tag_args)
-      var_name = tag_args.strip
+    def parse_decrement_tag(tag_args = nil)
+      var_name = tag_args ? tag_args.strip : _stripped_interned_tag_arg
       @builder.decrement(var_name)
       @builder.write_value
       false
