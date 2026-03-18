@@ -75,10 +75,10 @@ module LiquidIL
           break unless b == 32 || b == 9 || b == 10 || b == 13
           pos += 1
         end
-        pos < limit ? StringView.new(@source, pos, limit - pos) : nil
+        pos < limit ? StringView::Strict.new(@source, pos, limit - pos) : nil
       else
         len = @content_end - @content_start
-        len > 0 ? StringView.new(@source, @content_start, len) : nil
+        len > 0 ? StringView::Strict.new(@source, @content_start, len) : nil
       end
     end
 

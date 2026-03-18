@@ -13,6 +13,13 @@ GIT
     liquid-spec (0.9.1)
       super_diff (~> 0.18)
 
+GIT
+  remote: https://github.com/Shopify/string_view
+  revision: aeb3a21f74c7748fa43c8e267ec24fed21c03168
+  branch: zero-copy-transforms-and-strict
+  specs:
+    string_view (0.1.0)
+
 GEM
   remote: https://rubygems.org/
   specs:
@@ -27,8 +34,6 @@ GEM
       optimist (~> 3.0)
     prism (1.7.0)
     rake (13.3.1)
-    string_view (0.1.0)
-    string_view (0.1.0-arm64-darwin)
     strscan (3.1.6)
     super_diff (0.18.0)
       attr_extras (>= 6.2.4)
@@ -45,7 +50,7 @@ DEPENDENCIES
   liquid-spec!
   minitest
   rake
-  string_view (~> 0.1.0)
+  string_view!
 
 BUNDLED WITH
    2.6.2

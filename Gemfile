@@ -12,4 +12,4 @@ gem "minitest"
 local_gemfile = File.join(__dir__, "Gemfile.local")
 eval_gemfile(local_gemfile) if File.exist?(local_gemfile)
 
-gem "string_view", "~> 0.1.0"
+gem "string_view", git: "https://github.com/Shopify/string_view", branch: "zero-copy-transforms-and-strict"

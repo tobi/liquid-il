@@ -250,7 +250,7 @@ module LiquidIL
 
       len = ce - cs
       if len > 0
-        view = StringView.new(@source, cs, len)
+        view = StringView::Strict.new(@source, cs, len)
         emit_raw(view)
       end
       advance_template
@@ -442,17 +442,12 @@ module LiquidIL
       @builder.write_raw(content)
       return unless current_blank_raw_indices
 
-      # Zero-alloc whitespace check for StringView
-      blank = if content.is_a?(StringView)
-        i = 0; sz = content.bytesize; ok = true
-        while i < sz
-          b = content.getbyte(i)
-          unless b == 32 || b == 9 || b == 10 || b == 13; ok = false; break; end
-          i += 1
-        end
-        ok
-      else
-        content.match?(WHITESPACE_ONLY)
+      # Zero-alloc whitespace check — works for both String and StringView::Strict
+      i = 0; sz = content.bytesize; blank = true
+      while i < sz
+        b = content.getbyte(i)
+        unless b == 32 || b == 9 || b == 10 || b == 13; blank = false; break; end
+        i += 1
       end
       current_blank_raw_indices << (@builder.instructions.length - 1) if blank
     end
