@@ -479,10 +479,13 @@ module LiquidIL
       return unless last && last[0] == IL::WRITE_RAW
 
       raw = last[1]
-      # Both String and StringView support rstrip (StringView materializes)
+      # Check last byte first — skip rstrip if no trailing whitespace
+      last_byte = raw.getbyte(raw.bytesize - 1)
+      return if last_byte && last_byte != 32 && last_byte != 10 && last_byte != 13 && last_byte != 9
+
       trimmed = raw.rstrip
       if trimmed.empty?
-        @builder.instructions[-1] = [IL::NOOP]
+        @builder.instructions[-1] = IL::I_NOOP
       else
         last[1] = trimmed
       end
