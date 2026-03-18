@@ -1733,11 +1733,11 @@ module LiquidIL
           j += 1
         end
 
-        @builder.emit(:PAGINATE_SETUP, coll_path, page_size)
+        @builder.emit2(:PAGINATE_SETUP, coll_path, page_size)
       end
 
       parse_block_body(ET_ENDPAGINATE)
-      @builder.emit(:PAGINATE_TEARDOWN) if by_pos
+      @builder.emit0(:PAGINATE_TEARDOWN) if by_pos
       advance_template
       true
     end

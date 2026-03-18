@@ -171,6 +171,12 @@ module LiquidIL
         self
       end
 
+      def emit0(opcode)
+        @instructions << [opcode]
+        @spans << @current_span
+        self
+      end
+
       # Specialized emitters for common arities (avoid *args splat overhead)
       def emit1(opcode, a)
         @instructions << [opcode, a]
@@ -351,7 +357,9 @@ module LiquidIL
       end
 
       def for_init(var_name, loop_name, has_limit = false, has_offset = false, offset_continue = false, reversed = false, recovery_label = nil)
-        emit(FOR_INIT, var_name, loop_name, has_limit, has_offset, offset_continue, reversed, recovery_label)
+        @instructions << [FOR_INIT, var_name, loop_name, has_limit, has_offset, offset_continue, reversed, recovery_label]
+        @spans << @current_span
+        self
       end
 
       def for_next(label_continue, label_break)
@@ -411,7 +419,9 @@ module LiquidIL
       end
 
       def tablerow_init(var_name, loop_name, has_limit, has_offset, cols)
-        emit(TABLEROW_INIT, var_name, loop_name, has_limit, has_offset, cols)
+        @instructions << [TABLEROW_INIT, var_name, loop_name, has_limit, has_offset, cols]
+        @spans << @current_span
+        self
       end
 
       def tablerow_next(label_continue, label_break)
