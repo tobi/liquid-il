@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "strscan"
+require "string_view"
 
 module LiquidIL
   # High-performance template tokenizer
@@ -50,17 +51,38 @@ module LiquidIL
       @token_type = nil
     end
 
-    # Extract token content as string — only call when you need the actual text.
-    # For RAW tokens: the raw text (with trim applied if needed)
-    # For TAG/VAR tokens: the markup between delimiters (stripped)
+    # Extract token content as StringView — zero-copy view into source.
+    # For RAW tokens: the raw text (materialized with trim applied if needed)
+    # For TAG/VAR tokens: the markup between delimiters (stripped — must materialize)
     def token_content
-      s = @source.byteslice(@content_start, @content_end - @content_start)
       if @token_type == RAW
+        s = @source.byteslice(@content_start, @content_end - @content_start)
         # Apply trim from previous token
         @_needs_lstrip ? s.lstrip : s
       else
-        s.strip
+        # TAG/VAR content needs strip — must materialize
+        @source.byteslice(@content_start, @content_end - @content_start).strip
       end
+    end
+
+    # Zero-copy view of token content — no strip, no allocation.
+    # Use when the consumer will do its own byte scanning (e.g., ExpressionLexer).
+    def token_content_view
+      StringView.new(@source, @content_start, @content_end - @content_start)
+    end
+
+    # Check if content region is all whitespace — zero allocation.
+    # Replaces `token_content.strip.empty?` which allocates 2 strings.
+    def content_blank?
+      pos = @content_start
+      limit = @content_end
+      src = @source
+      while pos < limit
+        b = src.getbyte(pos)
+        return false unless b == 32 || b == 9 || b == 10 || b == 13
+        pos += 1
+      end
+      true
     end
 
     # Extract just the tag name from a TAG token — no content string allocation.
@@ -93,10 +115,132 @@ module LiquidIL
 
       return nil if pos == name_start
 
-      # Extract and downcase the tag name
-      # For common tags (all already lowercase), COMMON_TAGS lookup returns frozen string (no extra alloc)
-      name = src.byteslice(name_start, pos - name_start)
-      COMMON_TAGS[name] || name.downcase
+      len = pos - name_start
+      # Fast path: check common tags by length + first byte, avoiding allocation
+      # All common tags are lowercase ASCII, so we can match bytes directly
+      first_byte = src.getbyte(name_start) | 32  # downcase
+      tag = _match_common_tag(src, name_start, len, first_byte)
+      return tag if tag
+
+      # Slow path: extract and downcase (unknown tags only — very rare)
+      name = src.byteslice(name_start, len)
+      name.downcase
+    end
+
+    # Match common tag names by byte comparison — zero allocation.
+    # Returns frozen string from COMMON_TAGS or nil.
+    def _match_common_tag(src, start, len, first_byte) # :nodoc:
+      case len
+      when 2
+        # if
+        return "if" if first_byte == 105 && (src.getbyte(start + 1) | 32) == 102
+        # do — not a tag, but handle "or" length match
+      when 3
+        case first_byte
+        when 102 # for
+          return "for" if (src.getbyte(start + 1) | 32) == 111 && (src.getbyte(start + 2) | 32) == 114
+        when 114 # raw
+          return "raw" if (src.getbyte(start + 1) | 32) == 97 && (src.getbyte(start + 2) | 32) == 119
+        end
+      when 4
+        case first_byte
+        when 99  # case
+          return "case" if (src.getbyte(start + 1) | 32) == 97 && (src.getbyte(start + 2) | 32) == 115 && (src.getbyte(start + 3) | 32) == 101
+        when 101 # echo, else
+          b1 = src.getbyte(start + 1) | 32
+          if b1 == 99 # echo
+            return "echo" if (src.getbyte(start + 2) | 32) == 104 && (src.getbyte(start + 3) | 32) == 111
+          elsif b1 == 108 # else
+            return "else" if (src.getbyte(start + 2) | 32) == 115 && (src.getbyte(start + 3) | 32) == 101
+          end
+        when 119 # when
+          return "when" if (src.getbyte(start + 1) | 32) == 104 && (src.getbyte(start + 2) | 32) == 101 && (src.getbyte(start + 3) | 32) == 110
+        end
+      when 5
+        case first_byte
+        when 101 # endif
+          if (src.getbyte(start + 1) | 32) == 110
+            return "endif" if (src.getbyte(start + 2) | 32) == 100 && (src.getbyte(start + 3) | 32) == 105 && (src.getbyte(start + 4) | 32) == 102
+          end
+        when 99  # cycle
+          return "cycle" if (src.getbyte(start + 1) | 32) == 121 && (src.getbyte(start + 2) | 32) == 99 && (src.getbyte(start + 3) | 32) == 108 && (src.getbyte(start + 4) | 32) == 101
+        end
+      when 6
+        case first_byte
+        when 97  # assign
+          return "assign" if _bytes_match_ci?(src, start, "assign")
+        when 101 # endfor, endraw, elsif
+          b1 = src.getbyte(start + 1) | 32
+          if b1 == 110 # endfor, endraw
+            return "endfor" if _bytes_match_ci?(src, start, "endfor")
+          elsif b1 == 108 # elsif
+            return "elsif" if _bytes_match_ci?(src, start, "elsif")
+          end
+        when 114 # render
+          return "render" if _bytes_match_ci?(src, start, "render")
+        when 108 # liquid
+          return "liquid" if _bytes_match_ci?(src, start, "liquid")
+        end
+      when 7
+        case first_byte
+        when 99  # capture, comment
+          b1 = src.getbyte(start + 1) | 32
+          if b1 == 97 # capture
+            return "capture" if _bytes_match_ci?(src, start, "capture")
+          elsif b1 == 111 # comment
+            return "comment" if _bytes_match_ci?(src, start, "comment")
+          end
+        when 101 # endcase
+          return "endcase" if _bytes_match_ci?(src, start, "endcase")
+        when 105 # include, ifchanged — wait, ifchanged is 9
+          return "include" if _bytes_match_ci?(src, start, "include")
+        when 117 # unless
+          return "unless" if _bytes_match_ci?(src, start, "unless")
+        end
+      when 8
+        case first_byte
+        when 101 # endunless — no, that's 9
+          return "tablerow" if _bytes_match_ci?(src, start, "tablerow")
+        when 116 # tablerow
+          return "tablerow" if _bytes_match_ci?(src, start, "tablerow")
+        end
+      when 9
+        case first_byte
+        when 101 # endunless, increment, decrement
+          return "endunless" if _bytes_match_ci?(src, start, "endunless")
+        when 105 # increment, ifchanged
+          b1 = src.getbyte(start + 1) | 32
+          if b1 == 110 # increment
+            return "increment" if _bytes_match_ci?(src, start, "increment")
+          elsif b1 == 102 # ifchanged
+            return "ifchanged" if _bytes_match_ci?(src, start, "ifchanged")
+          end
+        when 100 # decrement
+          return "decrement" if _bytes_match_ci?(src, start, "decrement")
+        end
+      when 10
+        case first_byte
+        when 101 # endcapture, endcomment, endtablerow — endcomment is 10
+          return "endcomment" if _bytes_match_ci?(src, start, "endcomment")
+          return "endcapture" if _bytes_match_ci?(src, start, "endcapture")
+        end
+      when 11
+        # endtablerow
+        return "endtablerow" if first_byte == 101 && _bytes_match_ci?(src, start, "endtablerow")
+        # ifchanged is 9, endifchanged — nope
+      end
+      nil
+    end
+
+    # Case-insensitive byte comparison against a known lowercase word.
+    # Zero allocation.
+    def _bytes_match_ci?(src, start, word) # :nodoc:
+      i = 1 # first byte already checked by caller
+      while i < word.bytesize
+        return false unless (src.getbyte(start + i) | 32) == word.getbyte(i)
+        i += 1
+      end
+      true
     end
 
     # Scan raw content until {% endraw %}

@@ -1,1 +1,2 @@
 {"type":"config","name":"StringView — Eliminate Parse Allocations","metricName":"parse_allocs","metricUnit":"","bestDirection":"lower"}
+{"run":1,"commit":"ce920fd","metric":14349,"metrics":{"parse_µs":3059,"render_µs":197,"render_allocs":672},"status":"keep","description":"Baseline: 14349 parse_allocs, 3059µs parse, 197µs render, 672 render_allocs","timestamp":1773804221987,"segment":0}

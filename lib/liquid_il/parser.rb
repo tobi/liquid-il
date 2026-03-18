@@ -183,16 +183,16 @@ module LiquidIL
     end
 
     def parse_variable_output
-      content = current_template_content
       @builder.with_span(current_template_start_pos, current_template_end_pos)
 
-      # Handle empty variable `{{}}`
-      if content.strip.empty?
+      # Handle empty variable `{{}}` — zero-alloc byte check
+      if @template_lexer.content_blank?
         @builder.clear_span
         advance_template
         return true  # Blank output
       end
 
+      content = current_template_content
       expr_lexer = expr_lexer_for(content)
 
       parse_expression(expr_lexer)
