@@ -535,10 +535,13 @@ module LiquidIL
       end
     end
 
+    @@link_label_positions = {}
+
     # Link labels to instruction indices
     def self.link(instructions)
       # First pass: find all label positions
-      label_positions = {}
+      label_positions = @@link_label_positions
+      label_positions.clear
       instructions.each_with_index do |inst, idx|
         if inst[0] == LABEL
           label_positions[inst[1]] = idx
