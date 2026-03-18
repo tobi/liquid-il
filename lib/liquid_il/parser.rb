@@ -1821,9 +1821,16 @@ module LiquidIL
       # Check if any values are variables (need runtime lookup)
       has_var_values = values.any? { |v| v[0] == :var }
 
-      # Build identity from original values (variable names stay as-is, not resolved)
-      identity_parts = values.map { |v| v[1].to_s }
-      base_identity = identity_parts.join(',')
+      # Build identity from original values — use object_id-based key for zero-alloc cache
+      ik = values.size
+      values.each { |v| ik = (ik << 16) ^ v[1].hash }
+      ik = (ik << 4) | 3  # tag to distinguish from other intern keys
+      base_identity = @intern_table[ik]
+      unless base_identity
+        identity_parts = values.map { |v| v[1].to_s }
+        base_identity = identity_parts.join(',').freeze
+        @intern_table[ik] = base_identity
+      end
 
       # When there are variable lookups and no explicit group, add unique counter
       # This ensures identical cycle tags at different positions have separate counters
