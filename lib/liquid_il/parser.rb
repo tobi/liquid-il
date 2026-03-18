@@ -938,42 +938,54 @@ module LiquidIL
 
     def parse_for_tag(tag_args)
       # Parse: var_name in collection [limit:N] [offset:N] [reversed]
-      match = tag_args.match(/(\w+)\s+in\s+(.+)/)
-      raise SyntaxError, 'Invalid for tag syntax' unless match
+      # Single-pass parsing — no regex, no gsub, no MatchData allocations
+      in_pos = tag_args.index(' in ')
+      raise SyntaxError, 'Invalid for tag syntax' unless in_pos
 
-      var_name = match[1]
-      rest = match[2]
+      var_name = tag_args.byteslice(0, in_pos).strip
+      rest = tag_args.byteslice(in_pos + 4, tag_args.bytesize - in_pos - 4)
 
-      # Parse options
       limit_expr = nil
       offset_expr = nil
       offset_continue = false
       reversed = false
+      collection_parts = []
 
-      # Check for reversed
-      if rest =~ /\breversed\b/
-        reversed = true
-        rest = rest.gsub(/\breversed\b/, '')
+      # Tokenize rest by whitespace, extract options in one pass
+      tokens = rest.split
+      i = 0
+      while i < tokens.length
+        tok = tokens[i]
+        # Strip trailing comma for keyword matching (e.g. "reversed," or "limit:3,")
+        clean = tok.end_with?(',') ? tok.chomp(',') : tok
+        if clean == 'reversed'
+          reversed = true
+        elsif clean == 'limit' || clean.start_with?('limit:')
+          val = clean.bytesize > 6 ? clean.byteslice(6, clean.bytesize - 6) : nil
+          if val.nil? || val.empty?
+            i += 1
+            val = tokens[i].chomp(',') if i < tokens.length
+          end
+          limit_expr = val
+        elsif clean == 'offset' || clean.start_with?('offset:')
+          val = clean.bytesize > 7 ? clean.byteslice(7, clean.bytesize - 7) : nil
+          if val.nil? || val.empty?
+            i += 1
+            val = tokens[i].chomp(',') if i < tokens.length
+          end
+          if val == 'continue'
+            offset_continue = true
+          else
+            offset_expr = val
+            offset_continue = false
+          end
+        else
+          collection_parts << clean
+        end
+        i += 1
       end
 
-      # Check for limit
-      if rest =~ /\blimit\s*:\s*([^,\s]+)/
-        limit_expr = Regexp.last_match(1)
-        rest = rest.gsub(/\blimit\s*:\s*[^,\s]+/, '')
-      end
-
-      # Check for offset
-      if rest =~ /\boffset\s*:\s*continue\b/
-        offset_continue = true
-        rest = rest.gsub(/\boffset\s*:\s*continue\b/, '')
-      end
-      if rest =~ /\boffset\s*:\s*([^,\s]+)/
-        offset_expr = Regexp.last_match(1)
-        offset_continue = false
-        rest = rest.gsub(/\boffset\s*:\s*[^,\s]+/, '')
-      end
-
-      collection_expr = rest.tr(',', ' ').strip
+      collection_expr = collection_parts.join(' ')
 
       # Generate loop name for offset:continue
       loop_name = "#{var_name}-#{collection_expr}"
@@ -1055,43 +1067,58 @@ module LiquidIL
 
     def parse_tablerow_tag(tag_args)
       # Parse: var_name in collection [cols:N] [limit:N] [offset:N]
-      match = tag_args.match(/(\w+)\s+in\s+(.+)/)
-      raise SyntaxError, 'Invalid tablerow tag syntax' unless match
+      # Single-pass parsing — no regex, no gsub, no MatchData allocations
+      in_pos = tag_args.index(' in ')
+      raise SyntaxError, 'Invalid tablerow tag syntax' unless in_pos
 
-      var_name = match[1]
-      rest = match[2]
+      var_name = tag_args.byteslice(0, in_pos).strip
+      rest = tag_args.byteslice(in_pos + 4, tag_args.bytesize - in_pos - 4)
 
-      # Parse options
       limit_expr = nil
       offset_expr = nil
-      cols = nil # default: all in one row
-      cols_expr = nil # expression for cols (if variable)
+      cols = nil
+      cols_expr = nil
+      collection_parts = []
 
-      # Check for cols (handle numeric, nil, and variable cases)
-      if rest =~ /\bcols\s*:\s*nil\b/i
-        cols = :explicit_nil  # Explicitly set to nil - col_last is always false
-        rest = rest.gsub(/\bcols\s*:\s*nil\b/i, '')
-      elsif rest =~ /\bcols\s*:\s*(\d+)/
-        cols = Regexp.last_match(1).to_i
-        rest = rest.gsub(/\bcols\s*:\s*\d+/, '')
-      elsif rest =~ /\bcols\s*:\s*([a-zA-Z_][a-zA-Z0-9_.\[\]'"]*)/
-        cols_expr = Regexp.last_match(1)
-        rest = rest.gsub(/\bcols\s*:\s*[a-zA-Z_][a-zA-Z0-9_.\[\]'"]*/, '')
+      tokens = rest.split
+      i = 0
+      while i < tokens.length
+        tok = tokens[i]
+        clean = tok.end_with?(',') ? tok.chomp(',') : tok
+        if clean == 'cols' || clean.start_with?('cols:')
+          val = clean.bytesize > 5 ? clean.byteslice(5, clean.bytesize - 5) : nil
+          if val.nil? || val.empty?
+            i += 1
+            val = tokens[i].chomp(',') if i < tokens.length
+          end
+          if val && val.downcase == 'nil'
+            cols = :explicit_nil
+          elsif val && val.match?(/\A\d+\z/)
+            cols = val.to_i
+          elsif val
+            cols_expr = val
+          end
+        elsif clean == 'limit' || clean.start_with?('limit:')
+          val = clean.bytesize > 6 ? clean.byteslice(6, clean.bytesize - 6) : nil
+          if val.nil? || val.empty?
+            i += 1
+            val = tokens[i].chomp(',') if i < tokens.length
+          end
+          limit_expr = val
+        elsif clean == 'offset' || clean.start_with?('offset:')
+          val = clean.bytesize > 7 ? clean.byteslice(7, clean.bytesize - 7) : nil
+          if val.nil? || val.empty?
+            i += 1
+            val = tokens[i].chomp(',') if i < tokens.length
+          end
+          offset_expr = val
+        else
+          collection_parts << clean
+        end
+        i += 1
       end
 
-      # Check for limit
-      if rest =~ /\blimit\s*:\s*([^,\s]+)/
-        limit_expr = Regexp.last_match(1)
-        rest = rest.gsub(/\blimit\s*:\s*[^,\s]+/, '')
-      end
-
-      # Check for offset
-      if rest =~ /\boffset\s*:\s*([^,\s]+)/
-        offset_expr = Regexp.last_match(1)
-        rest = rest.gsub(/\boffset\s*:\s*[^,\s]+/, '')
-      end
-
-      collection_expr = rest.tr(',', ' ').strip
+      collection_expr = collection_parts.join(' ')
 
       # Generate loop name
       loop_name = "#{var_name}-#{collection_expr}"
