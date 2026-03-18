@@ -1,0 +1,159 @@
+<div class="template-product">
+  <div class="container">
+    <nav class="breadcrumbs" aria-label="Breadcrumbs">
+      <ol class="breadcrumbs__list">
+        <li class="breadcrumbs__item"><a href="/">Home</a></li>
+        {% if collection %}
+          <li class="breadcrumbs__item"><a href="{{ collection.url }}">{{ collection.title }}</a></li>
+        {% endif %}
+        <li class="breadcrumbs__item"><span aria-current="page">{{ product.title }}</span></li>
+      </ol>
+    </nav>
+
+    <div class="product">
+      <div class="product__media">
+        <div class="product__gallery">
+          <div class="product__main-image">
+            <img src="{{ product.featured_image | product_img_url: 'large' }}" alt="{{ product.title | escape }}">
+          </div>
+          <div class="product__thumbnails">
+            {% for image in product.images %}
+              <button class="product__thumbnail-item" data-image-index="{{ forloop.index }}">
+                <img src="{{ image | product_img_url: 'small' }}" alt="{{ product.title | escape }} - {{ forloop.index }}">
+              </button>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="product__details">
+        <h1 class="product__title">{{ product.title }}</h1>
+
+        <div class="product__pricing">
+          {% if product.compare_at_price > product.price %}
+            <span class="product__price product__price--sale">{{ product.price | money }}</span>
+            <span class="product__price product__price--compare">{{ product.compare_at_price | money }}</span>
+            <span class="product__badge">Sale</span>
+          {% else %}
+            <span class="product__price">{{ product.price | money }}</span>
+          {% endif %}
+        </div>
+
+        <div class="product__description">
+          {{ product.description }}
+        </div>
+
+        <form method="post" action="/cart/add" id="product-form" class="product-form">
+          {% if product.has_only_default_variant %}
+            <input type="hidden" name="id" value="{{ product.variants.first.id }}">
+          {% else %}
+            <div class="product-form__variants">
+              <select name="id" id="ProductSelect" class="product-form__select">
+                {% for variant in product.variants %}
+                  <option value="{{ variant.id }}" {% if variant.available == false %}disabled{% endif %}>
+                    {{ variant.title }} - {{ variant.price | money }}{% if variant.available == false %} - Sold out{% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+          {% endif %}
+
+          <div class="product-form__quantity">
+            <label for="Quantity">Quantity</label>
+            <input type="number" id="Quantity" name="quantity" value="1" min="1" class="product-form__input">
+          </div>
+
+          <div class="product-form__submit">
+            <button type="submit" name="add" class="button button--primary button--full product-form__add-to-cart">
+              {% if product.available %}
+                Add to Cart
+              {% else %}
+                Sold Out
+              {% endif %}
+            </button>
+          </div>
+        </form>
+
+        <div class="product__meta">
+          {% if product.vendor %}
+            <div class="product__vendor">Vendor: {{ product.vendor }}</div>
+          {% endif %}
+          {% if product.type %}
+            <div class="product__type">Type: {{ product.type }}</div>
+          {% endif %}
+        </div>
+
+        <div class="product__tags">
+          <h3>Tags:</h3>
+          <ul class="tag-list">
+            {% for tag in product.tags %}
+              <li class="tag-list__item">
+                <a href="/collections/all/{{ tag | handle }}" class="tag">{{ tag }}</a>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="product-tabs">
+      <div class="tabs">
+        <button class="tab-button active" data-tab="description">Description</button>
+        <button class="tab-button" data-tab="details">Details</button>
+        <button class="tab-button" data-tab="shipping">Shipping</button>
+      </div>
+      <div class="tab-content">
+        <div id="description" class="tab-panel active">
+          {{ product.description }}
+        </div>
+        <div id="details" class="tab-panel">
+          <table class="product-details-table">
+            <tbody>
+              {% for option in product.options_with_values %}
+                <tr>
+                  <th>{{ option.name }}</th>
+                  <td>
+                    {% for value in option.values %}
+                      {{ value }}{% unless forloop.last %}, {% endunless %}
+                    {% endfor %}
+                  </td>
+                </tr>
+              {% endfor %}
+              {% if product.vendor %}
+                <tr>
+                  <th>Vendor</th>
+                  <td>{{ product.vendor }}</td>
+                </tr>
+              {% endif %}
+              {% if product.type %}
+                <tr>
+                  <th>Type</th>
+                  <td>{{ product.type }}</td>
+                </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+        <div id="shipping" class="tab-panel">
+          <p>We ship worldwide. Standard shipping takes 3-7 business days. Express shipping is available.</p>
+          <p>Free shipping on orders over $100.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section__header">
+        <h2 class="section__title">You Might Also Like</h2>
+      </div>
+      <div class="product-grid">
+        {% assign current_product_handle = product.handle %}
+        {% for related_product in collections.all.products limit: 4 %}
+          {% if related_product.handle != current_product_handle %}
+            {% assign product = related_product %}
+            {% include 'product-card' %}
+          {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>

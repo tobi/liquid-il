@@ -1,0 +1,60 @@
+<div class="template-collection">
+  <div class="collection-header">
+    <div class="container">
+      <h1 class="collection-header__title">{{ collection.title }}</h1>
+      {% if collection.description != blank %}
+        <div class="collection-header__description">
+          {{ collection.description }}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="collection-toolbar">
+      <div class="collection-toolbar__count">
+        {% if collection.products_count > 0 %}
+          {{ collection.products_count }} products
+        {% else %}
+          No products found
+        {% endif %}
+      </div>
+      <div class="collection-toolbar__sort">
+        <label for="SortBy">Sort by:</label>
+        <select id="SortBy" class="collection-toolbar__select">
+          <option value="manual">Featured</option>
+          <option value="best-selling">Best Selling</option>
+          <option value="title-ascending">Alphabetically, A-Z</option>
+          <option value="title-descending">Alphabetically, Z-A</option>
+          <option value="price-ascending">Price, low to high</option>
+          <option value="price-descending">Price, high to low</option>
+          <option value="created-descending">Date, new to old</option>
+          <option value="created-ascending">Date, old to new</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="collection-products">
+      {% assign _products = collection.products %}
+      {% paginate _products by 12 %}
+        {% if _products.size > 0 %}
+          <div class="product-grid">
+            {% for product in _products %}
+              {% include 'product-card' %}
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="collection-empty">
+            <p>No products found in this collection</p>
+          </div>
+        {% endif %}
+
+        {% if paginate.pages > 1 %}
+          <div class="pagination">
+            {{ paginate | default_pagination }}
+          </div>
+        {% endif %}
+      {% endpaginate %}
+    </div>
+  </div>
+</div>
