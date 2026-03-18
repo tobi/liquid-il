@@ -2778,12 +2778,9 @@ module LiquidIL
         # Inline handleize using tr! chain (4.5x faster, 25% fewer allocs vs gsub)
         "((_fh = _U.to_s(#{input}).downcase); _fh.tr!(\"^a-z0-9\", \"-\"); _fh.squeeze!(\"-\"); _fh.delete_prefix!(\"-\"); _fh.delete_suffix!(\"-\"); _fh)"
       when "truncate"
-        return nil unless args.length >= 1
-        if args.length == 1
-          "LiquidIL::Filters.send(:truncate, #{input}, #{args[0]})"
-        else
-          "LiquidIL::Filters.send(:truncate, #{input}, #{args[0]}, #{args[1]})"
-        end
+        # Not inlined — truncate can raise FilterRuntimeError (e.g. float args),
+        # needs cff error handling for correct line numbers in error messages.
+        return nil
       when "url_encode"
         return nil unless args.empty?
         "URI.encode_www_form_component(_U.to_s(#{input}))"
