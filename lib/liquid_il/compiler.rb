@@ -402,7 +402,11 @@ module LiquidIL
           name = inst[1].to_s
           argc = inst[2]
           prev_op = i > 0 ? instructions[i - 1][0] : nil
-          if SAFE_FOLD_FILTERS.include?(name) && (CONST_OPCODE_SET[prev_op] || prev_op == IL::BUILD_HASH)
+          # Quick pre-check: last arg must be const, AND the input (argc+1 instructions back) must also be const.
+          # This avoids allocating collect_const_values buffers when folding will certainly fail.
+          input_idx = i - 1 - argc
+          input_op = input_idx >= 0 ? instructions[input_idx][0] : nil
+          if SAFE_FOLD_FILTERS.include?(name) && (CONST_OPCODE_SET[prev_op] || prev_op == IL::BUILD_HASH) && (CONST_OPCODE_SET[input_op] || input_op == IL::BUILD_HASH)
             collected = collect_const_values(instructions, i - 1, argc + 1)
             if collected
               values, start_idx = collected
