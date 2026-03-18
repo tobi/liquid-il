@@ -48,6 +48,27 @@ Total parse allocs: ~9,507 per pass (38 benchmark templates)
 | 74 | lexer.rb:636 | string literal scanning |
 | 65 | lexer.rb:598 | number literal scanning |
 
-## What's Been Tried
-(updated as experiments run)
+## Results
+- **Baseline**: 2,378 string allocs
+- **Final**: 663 string allocs (**-72.1%**)
+- parse_µs: ~3100→~3260 (slight overhead from intern hash, within acceptable range)
+- render_µs: unchanged
+- All liquid-spec checks pass
+
+## What Was Done
+1. **ExpressionLexer `reset_region`** — scan original source by position, no substring extraction
+2. **VAR region scanning** — parse_variable_output uses reset_region, eliminates token_content byteslice+strip
+3. **Tag args region scanning** — if/unless/case/echo/cycle/capture/render/include/elsif use expr_lexer_for_region
+4. **Identifier string interning** — FNV-1a hash dedup table shared per-parser, repeat identifiers return cached frozen strings
+5. **String/number literal interning** — extend intern table to cover all token values
+6. **RAW content as StringView** — write_raw stores StringView in IL, materialized in structured compiler
+7. **Assign tag region scanning** — var_name interned, value_expr via region, zero extra allocs
+8. **Increment/decrement interning** — var_name via stripped interned tag arg
+9. **For/tablerow byte scanning** — options parsed by scanning bytes (no .split), var_name interned, collection via region
+10. **Common tag fast path** — added paginate/endpaginate/doc/# to byte-matching table
+
+## What Was Tried But Didn't Help
+- **Lazy value extraction** — deferred byteslice until value read. Same alloc count (all values consumed)
+- **Packed integer keys for intern** — collision-free but no alloc improvement
+- **StringView as expression value** — Array#include? breaks with StringView (String#== doesn't know about it)
 
