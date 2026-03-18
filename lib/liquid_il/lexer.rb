@@ -196,6 +196,8 @@ module LiquidIL
           return "render" if _bytes_match_ci?(src, start, "render")
         when 108 # liquid
           return "liquid" if _bytes_match_ci?(src, start, "liquid")
+        when 117 # unless
+          return "unless" if _bytes_match_ci?(src, start, "unless")
         end
       when 7
         case first_byte
@@ -208,10 +210,8 @@ module LiquidIL
           end
         when 101 # endcase
           return "endcase" if _bytes_match_ci?(src, start, "endcase")
-        when 105 # include, ifchanged — wait, ifchanged is 9
+        when 105 # include
           return "include" if _bytes_match_ci?(src, start, "include")
-        when 117 # unless
-          return "unless" if _bytes_match_ci?(src, start, "unless")
         end
       when 8
         case first_byte
@@ -241,11 +241,11 @@ module LiquidIL
           return "endcapture" if _bytes_match_ci?(src, start, "endcapture")
         end
       when 11
-        # endtablerow
-        return "endtablerow" if first_byte == 101 && _bytes_match_ci?(src, start, "endtablerow")
-      when 13
-        # endpaginate
-        return "endpaginate" if first_byte == 101 && _bytes_match_ci?(src, start, "endpaginate")
+        # endtablerow, endpaginate (both 11 chars)
+        if first_byte == 101
+          return "endtablerow" if _bytes_match_ci?(src, start, "endtablerow")
+          return "endpaginate" if _bytes_match_ci?(src, start, "endpaginate")
+        end
       end
       nil
     end
