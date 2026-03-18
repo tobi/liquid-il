@@ -480,12 +480,25 @@ module LiquidIL
         emit1(BUILD_HASH, count)
       end
 
+      STORE_TEMP_CACHE = (0..7).map { |i| [STORE_TEMP, i].freeze }.freeze
+      LOAD_TEMP_CACHE = (0..7).map { |i| [LOAD_TEMP, i].freeze }.freeze
+
       def store_temp(index)
-        emit1(STORE_TEMP, index)
+        cached = index < 8 ? STORE_TEMP_CACHE[index] : nil
+        if cached
+          @instructions << cached; @spans << @current_span; self
+        else
+          emit1(STORE_TEMP, index)
+        end
       end
 
       def load_temp(index)
-        emit1(LOAD_TEMP, index)
+        cached = index < 8 ? LOAD_TEMP_CACHE[index] : nil
+        if cached
+          @instructions << cached; @spans << @current_span; self
+        else
+          emit1(LOAD_TEMP, index)
+        end
       end
 
       def noop
