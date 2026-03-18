@@ -844,26 +844,29 @@ module LiquidIL
     # Strip LABEL instructions after linking and adjust jump targets
     # Labels are only needed during linking - after that they're just no-ops
     # This must run AFTER IL.link since it adjusts absolute instruction indices
+    # Reusable buffers for strip_labels (class-level, cleared on use)
+    @@label_indices_buf = []
+    @@adjustment_buf = []
+
     def strip_labels(instructions, spans)
       # Build a map of old index -> new index (accounting for removed labels)
-      label_indices = []
+      label_indices = @@label_indices_buf
+      label_indices.clear
       instructions.each_with_index do |inst, idx|
         label_indices << idx if inst[0] == IL::LABEL
       end
 
       return if label_indices.empty?
 
-      # Build index adjustment map: for each original index, how many labels
-      # were removed before it (not including labels AT the index)
-      adjustment = Array.new(instructions.length, 0)
-      removed_count = 0
-      label_set = label_indices.to_set
-
+      # Build cumulative label count before each index (reuse class-level buffer)
+      # adjustment[idx] = number of labels removed before idx
+      adj = @@adjustment_buf
+      adj.clear
+      removed = 0
+      li = 0  # pointer into label_indices
       instructions.length.times do |idx|
-        adjustment[idx] = removed_count
-        if label_set.include?(idx)
-          removed_count += 1
-        end
+        adj << removed
+        removed += 1 if li < label_indices.length && label_indices[li] == idx && (li += 1)
       end
 
       # Adjust all jump targets
@@ -871,17 +874,17 @@ module LiquidIL
         case inst[0]
         when IL::JUMP, IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT
           target = inst[1]
-          inst[1] = target - adjustment[target] if target < adjustment.length
+          inst[1] = target - adj[target] if target < adj.length
         when IL::FOR_NEXT, IL::TABLEROW_NEXT
           target1 = inst[1]
           target2 = inst[2]
-          inst[1] = target1 - adjustment[target1] if target1 < adjustment.length
-          inst[2] = target2 - adjustment[target2] if target2 < adjustment.length
+          inst[1] = target1 - adj[target1] if target1 < adj.length
+          inst[2] = target2 - adj[target2] if target2 < adj.length
         end
       end
 
       # Remove label instructions (in reverse order to maintain indices)
-      label_indices.reverse.each do |idx|
+      label_indices.reverse_each do |idx|
         instructions.delete_at(idx)
         spans.delete_at(idx)
       end
