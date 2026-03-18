@@ -15,7 +15,7 @@ module LiquidIL
     NESTING_OPEN_TAGS = Set.new(%w[if unless case for tablerow capture comment]).freeze
     NESTING_CLOSE_TAGS = Set.new(%w[endif endunless endcase endfor endtablerow endcapture endcomment]).freeze
 
-    def initialize(source, error_mode: :lax, warnings: nil)
+    def initialize(source, error_mode: :lax, warnings: nil, parse_context: nil)
       @source = source
       @template_lexer = TemplateLexer.new(source)
       @builder = IL::Builder.new
@@ -27,6 +27,7 @@ module LiquidIL
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
       @error_mode = error_mode  # :lax, :warn, :strict
       @warnings = warnings || []  # Collect non-fatal warnings
+      @parse_context = parse_context || {}  # Passed to on_parse callbacks
     end
 
     attr_reader :warnings
@@ -150,7 +151,11 @@ module LiquidIL
     end
 
     # Skip to a specific end tag without emitting IL (for error recovery)
-    def skip_to_end_tag(end_tag_name)
+    # Skip tokens until the matching end tag is found.
+    # When capture_body: true, returns the raw source text between the opening
+    # tag and the end tag (used for on_parse callbacks on :discard tags).
+    def skip_to_end_tag(end_tag_name, capture_body: false)
+      body_start = capture_body ? current_template_start_pos : nil
       depth = 1
       while !template_eos? && depth > 0
         if current_template_type == TemplateLexer::TAG
@@ -160,6 +165,11 @@ module LiquidIL
             depth += 1
           elsif NESTING_CLOSE_TAGS.include?(tag_name) || Tags.end_tag?(tag_name)
             if tag_name == end_tag_name && depth == 1
+              if capture_body
+                body_end = current_template_start_pos
+                advance_template
+                return @source.byteslice(body_start, body_end - body_start)
+              end
               advance_template
               return
             end
@@ -168,6 +178,7 @@ module LiquidIL
         end
         advance_template
       end
+      nil
     end
 
     def parse_raw
@@ -314,7 +325,14 @@ module LiquidIL
         tag_def.teardown&.call(tag_args, @builder)
         advance_template
       when :discard
-        skip_to_end_tag(tag_def.end_tag)
+        if tag_def.on_parse
+          raw_body = skip_to_end_tag(tag_def.end_tag, capture_body: true)
+          tag_def.on_parse.call(raw_body, @parse_context)
+        else
+          skip_to_end_tag(tag_def.end_tag)
+        end
+      when :custom
+        parse_custom_tag(tag_def, tag_args)
       when :raw
         # For custom raw tags, scan for the specific end tag
         @pending_trim_left = false
@@ -340,6 +358,67 @@ module LiquidIL
         content
       else
         nil
+      end
+    end
+
+    # Parse a :custom mode tag. Calls parse_args to extract argument expressions,
+    # compiles eager args to IL, passes lazy procs through as constants, and
+    # emits CUSTOM_TAG_BEFORE/AFTER (block tags) or CUSTOM_TAG_RENDER (non-block).
+    def parse_custom_tag(tag_def, tag_args)
+      handler = tag_def.handler
+      is_block = !!tag_def.end_tag
+
+      # Extract arguments via parse_args callback.
+      # Default: if no parse_args, treat the whole markup as a single expression (if non-empty).
+      if tag_def.parse_args
+        raw_args = tag_def.parse_args.call(tag_args)
+      elsif tag_args && !tag_args.empty?
+        raw_args = [tag_args]
+      else
+        raw_args = []
+      end
+
+      # Separate eager (string expressions to compile) from lazy (procs to pass through)
+      eager_count = 0
+      lazy_args = {}  # { index => proc }
+
+      raw_args.each_with_index do |arg, i|
+        case arg
+        when String
+          # Compile this expression string to IL instructions
+          expr_lexer = expr_lexer_for(arg)
+          parse_expression(expr_lexer)
+          eager_count += 1
+        when Proc
+          # Lazy argument — store as constant, pass through at runtime
+          lazy_args[i] = arg
+        when Integer, Float
+          @builder.const_int(arg) if arg.is_a?(Integer)
+          @builder.const_float(arg) if arg.is_a?(Float)
+          eager_count += 1
+        when true
+          @builder.const_true
+          eager_count += 1
+        when false
+          @builder.const_false
+          eager_count += 1
+        when nil
+          @builder.const_nil
+          eager_count += 1
+        else
+          # Unknown arg type — push nil
+          @builder.const_nil
+          eager_count += 1
+        end
+      end
+
+      if is_block
+        @builder.custom_tag_before(handler, eager_count, lazy_args.empty? ? nil : lazy_args)
+        parse_block_body([tag_def.end_tag])
+        @builder.custom_tag_after(handler)
+        advance_template
+      else
+        @builder.custom_tag_render(handler, eager_count, lazy_args.empty? ? nil : lazy_args)
       end
     end
 

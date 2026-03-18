@@ -12,6 +12,7 @@ require_relative "liquid_il/drops"
 require_relative "liquid_il/filters"
 require_relative "liquid_il/pretty_printer"
 require_relative "liquid_il/ruby_compiler"
+require_relative "liquid_il/strainer_template"
 
 module LiquidIL
   EMPTY_ARRAY = [].freeze
@@ -96,7 +97,11 @@ module LiquidIL
       # Seed custom filters from global registry; per-context register_filter can override
       global = LiquidIL::Filters.global_registry
       @custom_filters = global.empty? ? {} : global.dup
+      # Strainer class for filter dispatch — filter modules are included into this
+      @strainer_class = Class.new(LiquidIL::StrainerTemplate)
     end
+
+    attr_reader :strainer_class
 
     # Register custom filter methods from a module.
     #
@@ -112,6 +117,8 @@ module LiquidIL
       else
         raise ArgumentError, "register_filter expects a Module, got #{mod.class}"
       end
+
+      @strainer_class.add_filter(mod)
 
       methods.each do |name|
         name_s = name.to_s
@@ -146,9 +153,11 @@ module LiquidIL
     # This registers on the global Tags registry (tags affect parsing, which
     # is global). For per-context isolation, use separate processes.
     #
-    def register_tag(name, end_tag: nil, mode: :passthrough, setup: nil, teardown: nil)
-      end_tag ||= "end#{name}"
-      Tags.register(name, end_tag: end_tag, mode: mode, setup: setup, teardown: teardown)
+    def register_tag(name, end_tag: nil, mode: :passthrough, setup: nil, teardown: nil,
+                     on_parse: nil, handler: nil, parse_args: nil)
+      end_tag ||= "end#{name}" if mode != :custom || (mode == :custom && handler&.respond_to?(:before_block))
+      Tags.register(name, end_tag: end_tag, mode: mode, setup: setup, teardown: teardown,
+                    on_parse: on_parse, handler: handler, parse_args: parse_args)
       clear_cache
     end
 
@@ -201,11 +210,11 @@ module LiquidIL
     end
 
     # Returns the ISeq binary for this template's compiled proc.
-    # After normal compilation, the binary is already in StructuredCompiler's
+    # After normal compilation, the binary is already in RubyCompiler's
     # @@iseq_cache — so this is a free O(1) lookup, not a recompilation.
     # For templates created via from_cache, @iseq_binary is preset via constructor.
     def iseq_binary
-      @iseq_binary ||= StructuredCompiler.iseq_binary_for(@compiled_source)
+      @iseq_binary ||= RubyCompiler.iseq_binary_for(@compiled_source)
     end
 
     # Everything needed to reconstruct this template without recompilation.
@@ -232,7 +241,7 @@ module LiquidIL
     #
     def self.from_cache(source:, spans:, iseq_binary:, partial_constants: nil)
       compiled_proc = RubyVM::InstructionSequence.load_from_binary(iseq_binary).eval
-      result = StructuredCompiler::CompilationResult.new(
+      result = RubyCompiler::CompilationResult.new(
         proc: compiled_proc,
         source: nil,
         can_compile: true,
@@ -249,6 +258,7 @@ module LiquidIL
     #
     def render(assigns = {}, render_errors: true, registers: nil,
                strict_variables: nil, strict_filters: nil,
+               liquid_context: nil,
                **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       ctx = @context
@@ -259,7 +269,8 @@ module LiquidIL
       else
         regs = base_regs ? base_regs.dup : EMPTY_HASH
       end
-      scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false)
+      scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false,
+                        liquid_context: liquid_context)
       scope.file_system = ctx&.file_system
       scope.render_errors = render_errors
       # strict_variables: render-time overrides context-level
@@ -274,6 +285,9 @@ module LiquidIL
         global = LiquidIL::Filters.global_registry
         scope.custom_filters = global unless global.empty?
       end
+      # Build strainer instance for filter dispatch
+      strainer_class = ctx&.strainer_class || Class.new(LiquidIL::StrainerTemplate)
+      scope.strainer = strainer_class.new(scope)
       # Resource limits from context
       scope.resource_limits = ctx&.resource_limits if ctx&.resource_limits
 

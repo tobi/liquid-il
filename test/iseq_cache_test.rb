@@ -298,34 +298,34 @@ class IseqRoundtripWithPartialsTest < Minitest::Test
 end
 
 # ════════════════════════════════════════════════════════════
-# StructuredCompiler.iseq_binary_for
+# RubyCompiler.iseq_binary_for
 # ════════════════════════════════════════════════════════════
 
 class IseqBinaryForTest < Minitest::Test
   def test_returns_binary_string
     source = "proc { |x| x + 1 }"
-    bin = LiquidIL::StructuredCompiler.iseq_binary_for(source)
+    bin = LiquidIL::RubyCompiler.iseq_binary_for(source)
     assert_kind_of String, bin
     refute_empty bin
   end
 
   def test_binary_is_frozen
     source = "proc { |x| x * 2 }"
-    bin = LiquidIL::StructuredCompiler.iseq_binary_for(source)
+    bin = LiquidIL::RubyCompiler.iseq_binary_for(source)
     assert_predicate bin, :frozen?
   end
 
   def test_binary_is_loadable
     source = "proc { |x| x + 10 }"
-    bin = LiquidIL::StructuredCompiler.iseq_binary_for(source)
+    bin = LiquidIL::RubyCompiler.iseq_binary_for(source)
     result = RubyVM::InstructionSequence.load_from_binary(bin).eval
     assert_equal 15, result.call(5)
   end
 
   def test_same_source_returns_same_binary
     source = "proc { :test_stable }"
-    bin1 = LiquidIL::StructuredCompiler.iseq_binary_for(source)
-    bin2 = LiquidIL::StructuredCompiler.iseq_binary_for(source)
+    bin1 = LiquidIL::RubyCompiler.iseq_binary_for(source)
+    bin2 = LiquidIL::RubyCompiler.iseq_binary_for(source)
     assert_equal bin1, bin2
   end
 end

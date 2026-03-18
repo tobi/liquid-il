@@ -104,6 +104,11 @@ module LiquidIL
     # Context tracking for error reporting in inlined partials
     SET_CONTEXT = :SET_CONTEXT       # [:SET_CONTEXT, file_name, source] - sets current file and source
 
+    # Custom tag opcodes
+    CUSTOM_TAG_BEFORE = :CUSTOM_TAG_BEFORE  # [:CUSTOM_TAG_BEFORE, handler, argc, lazy_args]
+    CUSTOM_TAG_AFTER  = :CUSTOM_TAG_AFTER   # [:CUSTOM_TAG_AFTER, handler]
+    CUSTOM_TAG_RENDER = :CUSTOM_TAG_RENDER  # [:CUSTOM_TAG_RENDER, handler, argc, lazy_args]
+
     # No-op (for comments, etc.)
     NOOP = :NOOP                     # [:NOOP]
 
@@ -448,6 +453,18 @@ module LiquidIL
 
       def noop
         @instructions << I_NOOP; @spans << @current_span; self
+      end
+
+      def custom_tag_before(handler, argc, lazy_args = nil)
+        emit(CUSTOM_TAG_BEFORE, handler, argc, lazy_args)
+      end
+
+      def custom_tag_after(handler)
+        emit1(CUSTOM_TAG_AFTER, handler)
+      end
+
+      def custom_tag_render(handler, argc, lazy_args = nil)
+        emit(CUSTOM_TAG_RENDER, handler, argc, lazy_args)
       end
     end
 

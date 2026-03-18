@@ -7,34 +7,48 @@ module LiquidIL
   #   :passthrough — parse and evaluate body normally (like {% style %})
   #   :discard     — skip body entirely, emit nothing (like {% schema %})
   #   :raw         — capture body as raw text, no Liquid evaluation (like {% raw %})
+  #   :custom      — custom tag with handler class (before_block/after_block or render)
   #   :block       — custom block with setup/teardown procs for codegen
   #
   # Usage:
   #   LiquidIL::Tags.register("style", end_tag: "endstyle", mode: :passthrough)
-  #   LiquidIL::Tags.register("schema", end_tag: "endschema", mode: :discard)
-  #   LiquidIL::Tags.register("paginate", end_tag: "endpaginate", mode: :block,
-  #     setup: ->(args, builder) { ... },    # emit IL before body
-  #     teardown: ->(args, builder) { ... }) # emit IL after body
+  #   LiquidIL::Tags.register("schema", end_tag: "endschema", mode: :discard,
+  #     on_parse: ->(raw_body, parse_context) { ... })
+  #   LiquidIL::Tags.register("form", end_tag: "endform", mode: :custom,
+  #     handler: FormHandler,
+  #     parse_args: ->(markup) { [markup.strip] })
   #
   module Tags
-    TagDef = Struct.new(:name, :end_tag, :mode, :setup, :teardown, keyword_init: true)
+    TagDef = Struct.new(
+      :name, :end_tag, :mode, :setup, :teardown,
+      :on_parse,     # proc(raw_body, parse_context) — called at parse time for :discard tags
+      :handler,      # module/class with before_block/after_block or render — for :custom tags
+      :parse_args,   # proc(markup) → array of expression strings/procs — for :custom tags
+      keyword_init: true
+    )
 
     @registry = {}
 
     class << self
-      def register(name, end_tag:, mode: :passthrough, setup: nil, teardown: nil)
+      def register(name, end_tag: nil, mode: :passthrough, setup: nil, teardown: nil,
+                   on_parse: nil, handler: nil, parse_args: nil)
         name = name.to_s.freeze
-        end_tag = end_tag.to_s.freeze
+        end_tag = end_tag&.to_s&.freeze
         @registry[name] = TagDef.new(
           name: name,
           end_tag: end_tag,
           mode: mode,
           setup: setup,
           teardown: teardown,
+          on_parse: on_parse,
+          handler: handler,
+          parse_args: parse_args,
         )
         # Also register end tag name so the nesting tracker knows about it
-        @end_tags ||= Set.new
-        @end_tags.add(end_tag)
+        if end_tag
+          @end_tags ||= Set.new
+          @end_tags.add(end_tag)
+        end
       end
 
       def registered?(name)
