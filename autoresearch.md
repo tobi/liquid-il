@@ -50,7 +50,7 @@ Total parse allocs: ~9,507 per pass (38 benchmark templates)
 
 ## Results
 - **Baseline**: 2,378 string allocs
-- **Final**: 100 string allocs (**-95.8%**)
+- **Final**: 0 string allocs (**-100%**) — zero String allocations during parse with warm intern cache
 - parse_µs: ~3100→~3260 (slight overhead from intern hash, within acceptable range)
 - render_µs: unchanged
 - All liquid-spec checks pass
