@@ -550,13 +550,14 @@ module LiquidIL
     # Pre-compiled patterns
     WHITESPACE = /\s+/
 
-    def initialize(source = "")
+    def initialize(source = "", intern_table: nil)
       @source = source
       @source_len = source.bytesize
       @pos = 0
       @current_token = nil
       @current_value = nil
       @peeked = false
+      @intern = intern_table  # Shared string intern table for identifier dedup
     end
 
     # Reset to scan a new source substring.
@@ -898,9 +899,54 @@ module LiquidIL
         end
       end
 
-      # Not a keyword — extract as identifier
-      @current_value = src.byteslice(start, len)
+      # Not a keyword — intern for dedup (avoids repeated byteslice for same identifiers)
+      @current_value = _intern_identifier(src, start, len)
       @current_token = IDENTIFIER
+    end
+
+    private
+
+    # Intern an identifier: return a cached frozen string if the same bytes
+    # were seen before. First occurrence allocates; subsequent are free.
+    def _intern_identifier(src, start, len)
+      table = @intern
+      unless table
+        # No intern table — fallback to direct byteslice
+        return src.byteslice(start, len)
+      end
+
+      # Compute FNV-1a hash of the bytes for fast lookup
+      h = 0x811c9dc5
+      i = 0
+      while i < len
+        h ^= src.getbyte(start + i)
+        h = (h * 0x01000193) & 0xFFFFFFFF
+        i += 1
+      end
+
+      # Combine hash with length for the key
+      key = (h << 8) | len
+
+      if (cached = table[key])
+        # Verify match (hash collision guard)
+        if cached.bytesize == len
+          match = true
+          i = 0
+          while i < len
+            if src.getbyte(start + i) != cached.getbyte(i)
+              match = false
+              break
+            end
+            i += 1
+          end
+          return cached if match
+        end
+        # Hash collision — fall through to byteslice
+      end
+
+      str = src.byteslice(start, len).freeze
+      table[key] = str
+      str
     end
   end
 end

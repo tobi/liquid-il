@@ -22,7 +22,8 @@ module LiquidIL
       @current_token = nil
       @loop_stack = []
       @blank_raw_indices_stack = []
-      @expr_lexer = ExpressionLexer.new
+      @intern_table = {}  # Shared string intern table for identifier dedup
+      @expr_lexer = ExpressionLexer.new("", intern_table: @intern_table)
       @cycle_counter = 0 # For unique cycle identities
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
       @error_mode = error_mode  # :lax, :warn, :strict
