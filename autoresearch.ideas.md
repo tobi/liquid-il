@@ -1,43 +1,51 @@
 # Autoresearch Ideas — Parse Allocs & Speed Optimization
 
 ## Current State (new benchmark: 14 specs, 43 templates, 68KB)
-- **parse_allocs**: 22,966 (down **10.3%** from 25,605 baseline)
-- **parse_µs**: ~7,200 (down **~7%** from baseline)
-- **string_allocs**: 0 (maintained from prior phase)
+- **parse_allocs**: 22,168 (down **13.4%** from 25,605 baseline)
+- **parse_µs**: ~7,168 (down **~7.1%** from baseline)
+- **render_µs**: ~1,508 (down **~6.7%** from baseline)
+- **string_allocs**: 0
 
 ## Key Wins This Session
 1. ✅ Reusable path buffer for FIND_VAR_PATH (-436)
 2. ✅ Pre-frozen CONST_INT/COMPARE/PUSH_INTERRUPT/STORE_TEMP/LOAD_TEMP arrays (-267)
-3. ✅ Class-level instruction cache for emit1/emit2 (FIND_VAR, ASSIGN, CALL_FILTER, etc.) (-1,266)
-4. ✅ Cached I_NOOP in trim paths + skip-rstrip optimization (-11)
-5. ✅ Cache const_value results in compiler.rb (-377)
-6. ✅ Use instruction cache in compiler peephole passes (-1)
-7. ✅ Frozen empty array/hash for disabled inline_partials (-62)
-8. ✅ Cached skip_passes set computation (-62)
-9. ✅ Reusable buffers for strip_labels (-135)
+3. ✅ Class-level instruction cache @@inst1_cache/@@inst2_cache (-1,266)
+4. ✅ Cached I_NOOP + skip-rstrip optimization (-11)
+5. ✅ Cache const_value results in compiler (-377)
+6. ✅ Frozen empty array/hash for disabled inline_partials + cached skip_passes set (-124)
+7. ✅ Reusable buffers for strip_labels + IL.link (-166)
+8. ✅ Frozen I_LABEL — label IDs in spans array (-592)
+9. ✅ Pool TemplateLexer + ExpressionLexer at class level (-54)
+10. ✅ Fix fused_peephole self-assignment bug (-4)
+11. ✅ Pre-check const arg before collect_const_values (-104)
+12. ✅ Skip Hash.dup in lower_const_partial (-13)
 
-## Remaining Alloc Budget (~22,966)
-From liquid_il code (~5,000):
-- ~1,454 emit1 arrays (WRITE_RAW 929 + JUMPs 451 + misc) — WRITE_RAW can't cache (unique StringView), JUMPs can't cache (mutable labels)
-- ~986 StringView::Strict — RAW content (fundamental)
-- ~632 emit_label arrays — mutable (linker writes positions)
-- ~220 collect_const_values temporary arrays — recursion prevents pooling
-- ~62 Compiler objects + initialization
-- ~43 per-template Parser/Builder/Lexer objects
+## Remaining Alloc Budget (~22,168 total, ~4,600 from liquid_il)
+From liquid_il code:
+- ~1,742 emit1 arrays (WRITE_RAW 929 + JUMPs 451 + misc) — FUNDAMENTALLY UNCACHEABLE
+- ~1,193 StringView::Strict — RAW content, FUNDAMENTALLY NEEDED
+- ~103 emit2 arrays — FOR_NEXT (mutable labels) + misc
+- ~73 for_init/tablerow_init arrays — mutable recovery labels
+- ~102 collect_const_values temp arrays — recursive, can't pool
+- ~62 Builder objects + their @instructions/@spans arrays
+- ~62 Parser objects
+- ~62 return Hashes from Compiler#compile
+- ~32 merge_raw_writes allocations (Strings + Arrays from pass 9)
 
-From off-limits code (~18,000):
-- ~21,206 structured_compiler.rb
+From off-limits code (~17,600):
+- ~21,206 structured_compiler.rb (dominates!)
 - ~2,157 generated IL eval code
 - ~301 liquid_il.rb (Context etc.)
 
-## Possible Future Work (diminishing returns)
-- **Side-table label resolution**: Store jump targets in a separate Hash instead of mutating [JUMP, label_id] arrays. Would allow freezing/caching JUMPs. Requires structured_compiler to read from side-table instead of inst[1] — OFF-LIMITS.
-- **Flat bytecode encoding**: Pack instructions into a single Array/String (opcode bytes + args). Eliminates ALL per-instruction arrays (~3,000+ savings). Major architecture change affecting structured_compiler.
-- **Lazy warnings/errors in Template.new**: nil until first warning. Saves 86 allocs (2 per template). But Template is borderline off-limits.
+## Possible Future Work (severely diminishing returns)
+- **Pool Parser objects**: Reset per-compile. Saves ~42 allocs. Complex — many ivars to reset.
+- **Flat bytecode encoding**: Major architecture change, eliminates instruction arrays. Would affect structured_compiler (OFF-LIMITS).
+- **Side-table jump targets**: Store resolved positions in Hash, not inst[1]. Would allow freezing JUMPs. Requires structured_compiler change (OFF-LIMITS).
+- **Lazy Template.errors/warnings**: nil until first error. Saves ~86 allocs. Borderline off-limits.
 
 ## What Didn't Work / Low Impact
-- ✗ Pooling Builder/Lexer: breaks nested parsing (partials)
+- ✗ Pooling Builder: arrays returned to caller, can't reuse
 - ✗ Array pool for blank_raw_indices: use-after-free in nested blocks
-- ✗ Caching const_instruction_for results: fires rarely on benchmark templates
-- ✗ I_CONST_TRUE/FALSE in fold_const_ops: const folding fires rarely
+- ✗ I_CONST_TRUE/FALSE in fold_const_ops: fires rarely
 - ✗ unshift → push+reverse: speed-only, no alloc change
+- ✗ Pre-sizing arrays: Ruby Array growth reallocs aren't counted as allocs
