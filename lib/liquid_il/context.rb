@@ -47,6 +47,41 @@ module LiquidIL
 
     attr_reader :user_registers
 
+    # Build a Scope from a Liquid::Context, extracting all variable layers
+    # and wiring up the liquid_context reference. This is the single entry
+    # point for converting a LiquidContext into a Scope — used by both
+    # wrap_context (initial render) and new_isolated_subcontext.
+    def self.wrap(liquid_context)
+      assigns = {}
+
+      # Static environments (outermost layer — global drops like shop, settings)
+      if liquid_context.respond_to?(:static_environments)
+        liquid_context.static_environments.each do |env|
+          env.each { |k, v| assigns[k.to_s] = v } if env.is_a?(Hash)
+        end
+      end
+
+      # Environments (global assigns)
+      if liquid_context.respond_to?(:environments)
+        liquid_context.environments.each do |env|
+          env.each { |k, v| assigns[k.to_s] = v } if env.is_a?(Hash)
+        end
+      end
+
+      # Scopes (local assigns — innermost wins)
+      if liquid_context.respond_to?(:scopes)
+        liquid_context.scopes.reverse_each do |scope|
+          scope.each { |k, v| assigns[k.to_s] = v } if scope.is_a?(Hash)
+        end
+      end
+
+      scope = new(assigns, liquid_context: liquid_context)
+      scope.file_system = liquid_context.registers[:file_system] if liquid_context.respond_to?(:registers)
+      scope.template_name = liquid_context.template_name if liquid_context.respond_to?(:template_name)
+
+      scope
+    end
+
     def initialize(assigns = {}, registers: {}, strict_errors: false, static_environments: nil, liquid_context: nil)
       if static_environments
         @static_environments = stringify_keys(static_environments)
@@ -348,13 +383,12 @@ module LiquidIL
     def new_isolated_subcontext
       if @liquid_context && @liquid_context.respond_to?(:new_isolated_subcontext)
         new_ctx = @liquid_context.new_isolated_subcontext
-        sub_assigns = new_ctx.respond_to?(:scopes) ? (new_ctx.scopes.first || {}) : {}
-        sub_static = new_ctx.respond_to?(:static_environments) ? new_ctx.static_environments.first : nil
-        sub = Scope.new(sub_assigns, static_environments: sub_static, liquid_context: new_ctx)
+        sub = Scope.wrap(new_ctx)
         sub.file_system = @file_system
         sub.strict_variables = @strict_variables
         sub.strict_filters = @strict_filters
         sub.custom_filters = @custom_filters
+        sub.strainer = @strainer
         sub
       else
         isolated
