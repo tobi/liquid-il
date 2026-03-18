@@ -106,7 +106,10 @@ module LiquidIL
             tag_name = @template_lexer.tag_name
 
             # Check if this is an end tag we're looking for
-            return [tag_name, blank, raw_indices] if end_tags && end_tags.include?(tag_name)
+            if end_tags && end_tags.include?(tag_name)
+              @_bb_tag = tag_name; @_bb_blank = blank; @_bb_raws = raw_indices
+              return
+            end
 
             tag_blank = parse_tag
             blank = tag_blank && blank
@@ -117,7 +120,7 @@ module LiquidIL
             raise "Parser bug: infinite loop detected at position #{prev_pos}"
           end
         end
-        [nil, blank, raw_indices]
+        @_bb_tag = nil; @_bb_blank = blank; @_bb_raws = raw_indices
       ensure
         pop_blank_raw_indices
       end
@@ -775,7 +778,7 @@ module LiquidIL
       branch_raws = []
 
       # Parse body until elsif/else/endif
-      end_tag, body_blank, body_raws = parse_block_body(%w[elsif else endif])
+      parse_block_body(%w[elsif else endif]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       branch_blanks << body_blank
       branch_raws << body_raws
 
@@ -791,14 +794,14 @@ module LiquidIL
         @builder.label(label_else)
         advance_template
         # Stop at elsif/else/endif - any elsif/else after else is malformed but ignored
-        end_tag, else_blank, else_raws = parse_block_body(%w[elsif else endif])
+        parse_block_body(%w[elsif else endif]); end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
         branch_blanks << else_blank
         branch_raws << else_raws
         # Skip any remaining elsif/else until endif (discard their content)
         while end_tag == 'elsif' || end_tag == 'else'
           advance_template
           @builder.push_capture  # Capture to discard
-          end_tag, _, _ = parse_block_body(%w[elsif else endif])
+          parse_block_body(%w[elsif else endif]); end_tag = @_bb_tag; _ = @_bb_blank; _ = @_bb_raws
           @builder.pop_capture
           @builder.pop  # Discard captured content
         end
@@ -829,7 +832,7 @@ module LiquidIL
       @builder.jump_if_false(label_else)
 
       advance_template
-      end_tag, body_blank, body_raws = parse_block_body(%w[elsif else endif])
+      parse_block_body(%w[elsif else endif]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       branch_blanks << body_blank
       branch_raws << body_raws
 
@@ -844,7 +847,7 @@ module LiquidIL
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
-        _end_tag, else_blank, else_raws = parse_block_body(%w[endif])
+        parse_block_body(%w[endif]); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
         branch_blanks << else_blank
         branch_raws << else_raws
         advance_template
@@ -869,7 +872,7 @@ module LiquidIL
       branch_blanks = []
       branch_raws = []
 
-      end_tag, body_blank, body_raws = parse_block_body(%w[elsif else endunless])
+      parse_block_body(%w[elsif else endunless]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       branch_blanks << body_blank
       branch_raws << body_raws
 
@@ -884,7 +887,7 @@ module LiquidIL
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
-        _end_tag, else_blank, else_raws = parse_block_body(%w[endunless])
+        parse_block_body(%w[endunless]); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
         branch_blanks << else_blank
         branch_raws << else_raws
         advance_template
@@ -914,7 +917,7 @@ module LiquidIL
       @builder.jump_if_false(label_else)
 
       advance_template
-      end_tag, body_blank, body_raws = parse_block_body(%w[elsif else endunless])
+      parse_block_body(%w[elsif else endunless]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       branch_blanks << body_blank
       branch_raws << body_raws
 
@@ -929,7 +932,7 @@ module LiquidIL
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
-        _end_tag, else_blank, else_raws = parse_block_body(%w[endunless])
+        parse_block_body(%w[endunless]); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
         branch_blanks << else_blank
         branch_raws << else_raws
         advance_template
@@ -970,7 +973,7 @@ module LiquidIL
       # Parse until first when or else - discard this content (between case and first when)
       # In Liquid, this content is ignored
       @builder.push_capture
-      end_tag, body_blank, body_raws = parse_block_body(%w[when else endcase])
+      parse_block_body(%w[when else endcase]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       @builder.pop_capture  # Discard captured content
       @builder.pop  # Pop and discard the captured string from stack
       # Don't track this for blank detection - it's always discarded
@@ -1086,7 +1089,7 @@ module LiquidIL
       @builder.store_temp(case_flag_temp)
 
       advance_template
-      end_tag, body_blank, body_raws = parse_block_body(%w[when else endcase])
+      parse_block_body(%w[when else endcase]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
 
       @builder.label(label_next)
 
@@ -1102,7 +1105,7 @@ module LiquidIL
       @builder.jump_if_true(label_skip)  # Skip else if any when matched
 
       advance_template
-      end_tag, body_blank, body_raws = parse_block_body(%w[when else endcase])
+      parse_block_body(%w[when else endcase]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
 
       @builder.jump(label_end)
       @builder.label(label_skip)
@@ -1191,7 +1194,7 @@ module LiquidIL
 
       # Render body
       @loop_stack.push({ break: label_break, continue: label_continue })
-      end_tag, body_blank, body_raws = parse_block_body(%w[else endfor])
+      parse_block_body(%w[else endfor]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       @loop_stack.pop
 
       # Check for interrupts
@@ -1213,7 +1216,7 @@ module LiquidIL
       else_raws = nil
       if end_tag == 'else'
         advance_template
-        _end_tag, else_blank, else_raws = parse_block_body(%w[endfor])
+        parse_block_body(%w[endfor]); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
       end
 
       @builder.label(label_end)
@@ -1308,7 +1311,7 @@ module LiquidIL
 
       # Render body
       @loop_stack.push({ break: label_break, continue: label_continue })
-      _, body_blank, = parse_block_body(%w[endtablerow])
+      parse_block_body(%w[endtablerow]); body_blank = @_bb_blank
       @loop_stack.pop
 
       # Check for interrupts
@@ -1631,7 +1634,7 @@ module LiquidIL
 
       @builder.push_capture
 
-      _end_tag, _body_blank, _body_raws = parse_block_body(%w[endcapture])
+      parse_block_body(%w[endcapture]); _end_tag = @_bb_tag; _body_blank = @_bb_blank; _body_raws = @_bb_raws
       advance_template
 
       @builder.pop_capture
@@ -1648,7 +1651,7 @@ module LiquidIL
       # Capture the body content
       @builder.push_capture
 
-      _end_tag, _body_blank, _body_raws = parse_block_body(%w[endifchanged])
+      parse_block_body(%w[endifchanged]); _end_tag = @_bb_tag; _body_blank = @_bb_blank; _body_raws = @_bb_raws
       advance_template
 
       @builder.pop_capture
