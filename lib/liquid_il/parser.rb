@@ -132,8 +132,8 @@ module LiquidIL
     end
 
     # Compute the byte range of tag arguments — zero allocation.
-    # Returns [offset, length] into @source.
-    def tag_args_region
+    # Sets @_targ_off and @_targ_len directly (avoids Array alloc from return).
+    def cache_tag_args_region!
       src = @source
       pos = @template_lexer.content_start
       limit = @template_lexer.content_end
@@ -150,7 +150,8 @@ module LiquidIL
       while e > pos && (b = src.getbyte(e - 1)) && (b == 32 || b == 9 || b == 10 || b == 13)
         e -= 1
       end
-      [pos, e - pos]
+      @_targ_off = pos
+      @_targ_len = e - pos
     end
 
     # Materialize tag args from the cached region — only call this for
@@ -280,7 +281,7 @@ module LiquidIL
       tag_name = @template_lexer.tag_name
       # Compute args region (zero alloc) — only materialize for tags that
       # need string ops (for, tablerow, assign, liquid, increment, decrement).
-      @_targ_off, @_targ_len = tag_args_region
+      cache_tag_args_region!
 
       @builder.with_span(start_pos, end_pos)
 
@@ -817,9 +818,9 @@ module LiquidIL
       branch_blanks = []
       branch_raws = []
 
-      off, len = tag_args_region
+      cache_tag_args_region!
 
-      expr_lexer = expr_lexer_for_region(off, len)
+      expr_lexer = expr_lexer_for_region(@_targ_off, @_targ_len)
       parse_expression(expr_lexer)
 
       label_else = @builder.new_label
@@ -902,9 +903,9 @@ module LiquidIL
       branch_blanks = []
       branch_raws = []
 
-      off, len = tag_args_region
+      cache_tag_args_region!
 
-      expr_lexer = expr_lexer_for_region(off, len)
+      expr_lexer = expr_lexer_for_region(@_targ_off, @_targ_len)
       parse_expression(expr_lexer)
 
       label_else = @builder.new_label
