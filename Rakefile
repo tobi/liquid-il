@@ -4,7 +4,7 @@ require "shellwords"
 
 task default: :test
 
-ADAPTER = "spec/liquid_il_structured.rb"
+ADAPTER = "spec/liquid_il.rb"
 ADAPTER_VM = "spec/liquid_vm.rb"
 ADAPTER_RUBY = "spec/liquid_ruby_bench.rb"
 TEST_FILES = %w[

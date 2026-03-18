@@ -9,7 +9,7 @@ for f in lib/liquid_il/lexer.rb lib/liquid_il/parser.rb lib/liquid_il/il.rb lib/
 done
 
 # Run benchmark with YJIT
-RESULTS=$(RUBY_YJIT_ENABLE=1 bundle exec liquid-spec run spec/liquid_il_structured.rb -s benchmarks --bench 2>&1)
+RESULTS=$(RUBY_YJIT_ENABLE=1 bundle exec liquid-spec run spec/liquid_il.rb -s benchmarks --bench 2>&1)
 
 # Check for failures
 if echo "$RESULTS" | grep -q "0 passed"; then

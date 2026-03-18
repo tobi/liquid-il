@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 # (pre-existing, not related to render optimization)
 MAX_FAILURES=2
 
-RESULTS=$(bundle exec liquid-spec run spec/liquid_il_structured.rb 2>&1 | sed 's/\x1b\[[0-9;]*m//g') || true
+RESULTS=$(bundle exec liquid-spec run spec/liquid_il.rb 2>&1 | sed 's/\x1b\[[0-9;]*m//g') || true
 TOTAL_LINE=$(echo "$RESULTS" | grep "^Total:" || true)
 
 if [ -z "$TOTAL_LINE" ]; then
