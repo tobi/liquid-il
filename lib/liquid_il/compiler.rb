@@ -5,6 +5,9 @@ module LiquidIL
   class Compiler
     attr_reader :source
 
+    EMPTY_FROZEN_ARRAY = [].freeze
+    EMPTY_FROZEN_HASH = {}.freeze
+
     # Opcodes that mark control flow boundaries (used for O(1) lookup)
     CONTROL_FLOW_OPCODES = [
       IL::LABEL, IL::JUMP, IL::JUMP_IF_TRUE, IL::JUMP_IF_FALSE, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT,
@@ -29,8 +32,8 @@ module LiquidIL
         @inline_partial_stack = Array(@options[:inline_partial_stack])
         @inline_cache = (@options[:inline_partial_cache] ||= {})
       else
-        @inline_partial_stack = []
-        @inline_cache = {}
+        @inline_partial_stack = EMPTY_FROZEN_ARRAY
+        @inline_cache = EMPTY_FROZEN_HASH
       end
     end
 
@@ -66,9 +69,15 @@ module LiquidIL
     # Run enabled optimization passes
     # Pass enablement is determined at boot time via LIQUID_PASSES env var
     # See LiquidIL::Passes for configuration options
+    # Class-level cache for computed enabled-pass sets (skip_passes combos)
+    @@enabled_passes_cache = {}
+
     def optimize(instructions, spans, skip_passes: nil)
-      enabled = Passes.enabled
-      enabled = enabled - skip_passes if skip_passes
+      if skip_passes
+        enabled = (@@enabled_passes_cache[skip_passes] ||= (Passes.enabled - skip_passes).freeze)
+      else
+        enabled = Passes.enabled
+      end
 
       # Lazy-initialized max temp index, cached across passes
       @cached_max_temp_index = nil
@@ -274,14 +283,14 @@ module LiquidIL
             case next_inst[0]
             when IL::IS_TRUTHY
               truthy = const_evaluator.truthy?(val1)
-              instructions[i] = truthy ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+              instructions[i] = truthy ? IL::I_CONST_TRUE : IL::I_CONST_FALSE
               spans[i] = spans[i + 1]
               instructions.delete_at(i + 1)
               spans.delete_at(i + 1)
               next
             when IL::BOOL_NOT
               truthy = const_evaluator.truthy?(val1)
-              instructions[i] = truthy ? [IL::CONST_FALSE] : [IL::CONST_TRUE]
+              instructions[i] = truthy ? IL::I_CONST_FALSE : IL::I_CONST_TRUE
               spans[i] = spans[i + 1]
               instructions.delete_at(i + 1)
               spans.delete_at(i + 1)
@@ -331,7 +340,7 @@ module LiquidIL
               when IL::COMPARE
                 result = safe_compare(val1, val2, inst3[1])
                 if result != nil
-                  instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+                  instructions[i] = result ? IL::I_CONST_TRUE : IL::I_CONST_FALSE
                   spans[i] = spans[i + 2]
                   instructions.delete_at(i + 2)
                   spans.delete_at(i + 2)
@@ -342,7 +351,7 @@ module LiquidIL
               when IL::CASE_COMPARE
                 result = safe_case_compare(val1, val2)
                 if result != nil
-                  instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+                  instructions[i] = result ? IL::I_CONST_TRUE : IL::I_CONST_FALSE
                   spans[i] = spans[i + 2]
                   instructions.delete_at(i + 2)
                   spans.delete_at(i + 2)
@@ -353,7 +362,7 @@ module LiquidIL
               when IL::CONTAINS
                 result = safe_contains(val1, val2)
                 if result != nil
-                  instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+                  instructions[i] = result ? IL::I_CONST_TRUE : IL::I_CONST_FALSE
                   spans[i] = spans[i + 2]
                   instructions.delete_at(i + 2)
                   spans.delete_at(i + 2)
@@ -1213,9 +1222,9 @@ module LiquidIL
               replacement << [IL::CONST_STRING, value.to_s] if value.is_a?(String)
               replacement << [IL::CONST_INT, value] if value.is_a?(Integer)
               replacement << [IL::CONST_FLOAT, value] if value.is_a?(Float)
-              replacement << [IL::CONST_TRUE] if value == true
-              replacement << [IL::CONST_FALSE] if value == false
-              replacement << [IL::CONST_NIL] if value.nil?
+              replacement << IL::I_CONST_TRUE if value == true
+              replacement << IL::I_CONST_FALSE if value == false
+              replacement << IL::I_CONST_NIL if value.nil?
               next unless replacement.last # skip non-constant args
               replacement << [IL::ASSIGN_LOCAL, key]
               replacement_spans << spans[i]
