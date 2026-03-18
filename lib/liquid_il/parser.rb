@@ -32,23 +32,49 @@ module LiquidIL
     COMMAND_PROPS = %w[size first last].freeze
     RENDER_BREAK_WORDS = %w[as with for].freeze
 
+    # Class-level parser pool for sequential parsing (not thread-safe)
+    @@shared_parser = nil
+
+    def self.new(source, error_mode: :lax, warnings: nil)
+      if (parser = @@shared_parser)
+        parser.send(:_reset, source, error_mode, warnings)
+        parser
+      else
+        @@shared_parser = super
+      end
+    end
+
     def initialize(source, error_mode: :lax, warnings: nil)
       @source = source
       @template_lexer = (@@shared_template_lexer ||= TemplateLexer.new(source))
       @template_lexer.reset_source(source)
       @builder = IL::Builder.new
       @current_token = nil
-      # @loop_stack removed — was dead code (pushed/popped but never read)
       # Class-level pooled arrays — safe for sequential parsing (not thread-safe)
       @blank_raw_flat = (@@blank_raw_flat_pool ||= []).clear
       @blank_raw_marks = (@@blank_raw_marks_pool ||= []).clear
       @intern_table = (@@shared_intern_table ||= {})  # Class-level intern table for dedup across parses
       @expr_lexer = (@@shared_expr_lexer ||= ExpressionLexer.new("", intern_table: @intern_table))
-      @cycle_counter = 0 # For unique cycle identities
-      @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
-      @error_mode = error_mode  # :lax, :warn, :strict
-      @warnings = warnings  # nil until first warning (lazy)
+      @cycle_counter = 0
+      @pending_trim_left = false
+      @error_mode = error_mode
+      @warnings = warnings
     end
+
+    private def _reset(source, error_mode, warnings)
+      @source = source
+      @template_lexer.reset_source(source)
+      @builder = IL::Builder.new  # Need fresh builder (arrays returned to caller)
+      @current_token = nil
+      @blank_raw_flat.clear
+      @blank_raw_marks.clear
+      @cycle_counter = 0
+      @pending_trim_left = false
+      @error_mode = error_mode
+      @warnings = warnings
+      @_path_buf&.clear
+    end
+    public
 
     EMPTY_WARNINGS = [].freeze
     def warnings; @warnings || EMPTY_WARNINGS; end
