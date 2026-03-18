@@ -81,7 +81,7 @@ module LiquidIL
         proc: compiled_proc,
         source: code,
         can_compile: true,
-        partial_constants: @partial_constants.empty? ? nil : @partial_constants.freeze
+        partial_constants: @partial_constants.empty? ? nil : @partial_constants.freeze,
       )
     end
 
@@ -2922,6 +2922,20 @@ module LiquidIL
       end
     rescue SyntaxError => e
       nil
+    end
+
+    # Look up the ISeq binary for a given Ruby source string.
+    # After eval_ruby, the binary is already in @@iseq_cache (free O(1) lookup).
+    # Falls back to compiling + serializing if the cache was evicted.
+    def self.iseq_binary_for(ruby_source)
+      key = ruby_source.hash
+      @@iseq_cache[key] || begin
+        iseq = RubyVM::InstructionSequence.compile(ruby_source, "(liquid_il_structured)")
+        bin = iseq.to_binary.freeze
+        @@iseq_cache.clear if @@iseq_cache.size >= ISEQ_CACHE_MAX
+        @@iseq_cache[key] = bin
+        bin
+      end
     end
   end
 
