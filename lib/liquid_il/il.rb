@@ -224,8 +224,21 @@ module LiquidIL
         @instructions << I_CONST_FALSE; @spans << @current_span; self
       end
 
+      # Pre-frozen CONST_INT arrays for common values (0-10, 50, 100, 200)
+      CONST_INT_CACHE = {}.tap do |h|
+        (0..10).each { |n| h[n] = [CONST_INT, n].freeze }
+        [50, 100, 200].each { |n| h[n] = [CONST_INT, n].freeze }
+      end.freeze
+
       def const_int(val)
-        emit1(CONST_INT, val)
+        cached = CONST_INT_CACHE[val]
+        if cached
+          @instructions << cached
+          @spans << @current_span
+          self
+        else
+          emit1(CONST_INT, val)
+        end
       end
 
       def const_float(val)
