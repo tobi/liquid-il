@@ -38,8 +38,9 @@ module LiquidIL
       @builder = IL::Builder.new
       @current_token = nil
       # @loop_stack removed — was dead code (pushed/popped but never read)
-      @blank_raw_flat = []      # Flat array of all blank raw instruction indices
-      @blank_raw_marks = []     # Stack of start offsets into @blank_raw_flat
+      # Class-level pooled arrays — safe for sequential parsing (not thread-safe)
+      @blank_raw_flat = (@@blank_raw_flat_pool ||= []).clear
+      @blank_raw_marks = (@@blank_raw_marks_pool ||= []).clear
       @intern_table = (@@shared_intern_table ||= {})  # Class-level intern table for dedup across parses
       @expr_lexer = ExpressionLexer.new("", intern_table: @intern_table)
       @cycle_counter = 0 # For unique cycle identities
