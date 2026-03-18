@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "strscan"
 require "string_view"
 
 # String#materialize returns self — unifies the StringView/String boundary
@@ -39,7 +38,7 @@ module LiquidIL
     def initialize(source)
       @source = source
       @source_bytes = source.bytesize
-      @scanner = StringScanner.new(source)  # Only used for scan_raw_body (endraw regex)
+      @pos = 0
       @trim_next = false
       # Token state
       @token_type = nil
@@ -53,7 +52,7 @@ module LiquidIL
     end
 
     def reset
-      @scanner.pos = 0
+      @pos = 0
       @trim_next = false
       @token_type = nil
     end
@@ -272,40 +271,69 @@ module LiquidIL
     # Scan raw content until {% endraw %}
     # Returns [content, trim_left, trim_right] or nil if no endraw found
     def scan_raw_body
-      start_pos = @scanner.pos
+      start_pos = @pos
       @trim_next = false
 
-      if @scanner.skip_until(ENDRAW_PATTERN)
-        match_len = @scanner.matched_size
-        match_start = @scanner.pos - match_len
-        content = @source.byteslice(start_pos, match_start - start_pos)
+      src = @source
+      pos = start_pos
+      while (found = src.byteindex("endraw", pos))
+        # Walk backwards to find {%- or {% before "endraw"
+        # Skip whitespace between {% and endraw
+        pre = found - 1
+        while pre >= start_pos && (b = src.getbyte(pre)) && (b == 32 || b == 9 || b == 10 || b == 13)
+          pre -= 1
+        end
+        # Check for optional trim '-'
+        trim_l = false
+        if pre >= start_pos && src.getbyte(pre) == 45  # '-'
+          trim_l = true
+          pre -= 1
+        end
+        # Check for {%
+        unless pre >= start_pos && src.getbyte(pre) == 37 && pre > 0 && src.getbyte(pre - 1) == 123
+          pos = found + 6
+          next
+        end
+        tag_start = pre - 1
 
-        matched = @scanner.matched
-        trim_l = matched.include?("{%-")
-        trim_r = matched.include?("-%}")
+        # Walk forward past "endraw" to find %} or -%}
+        post = found + 6  # past "endraw"
+        while post < @source_bytes && (b = src.getbyte(post)) && (b == 32 || b == 9 || b == 10 || b == 13)
+          post += 1
+        end
+        trim_r = false
+        if post < @source_bytes && src.getbyte(post) == 45  # '-'
+          trim_r = true
+          post += 1
+        end
+        unless post < @source_bytes && src.getbyte(post) == 37 && post + 1 < @source_bytes && src.getbyte(post + 1) == 125
+          pos = found + 6
+          next
+        end
+        # Found valid {% endraw %}
+        @pos = post + 2
         @trim_next = trim_r
-
-        [content, trim_l, trim_r]
-      else
-        nil
+        content = src.byteslice(start_pos, tag_start - start_pos)
+        return [content, trim_l, trim_r]
       end
+      nil
     end
 
     # Advance to next token. Returns token type symbol.
     # Access token_start, token_end, trim_left, trim_right, token_content after.
     def next_token
       @_cached_tag_name = nil
-      if @scanner.eos?
+      if @pos >= @source_bytes
         @token_type = EOF
-        @token_start = @scanner.pos
-        @token_end = @scanner.pos
+        @token_start = @pos
+        @token_end = @pos
         @trim_left = false
         @trim_right = false
         return EOF
       end
 
       # Check first two bytes to see if we're at a Liquid delimiter
-      pos = @scanner.pos
+      pos = @pos
       b0 = @source.getbyte(pos)
       if b0 == 123  # '{'
         b1 = @source.getbyte(pos + 1)
@@ -338,7 +366,7 @@ module LiquidIL
     private
 
     def scan_raw_token
-      start_pos = @scanner.pos
+      start_pos = @pos
       @_needs_lstrip = @trim_next
       @trim_next = false
 
@@ -357,7 +385,7 @@ module LiquidIL
       end
       pos = limit unless pos  # no delimiter found — entire rest is raw
 
-      @scanner.pos = pos
+      @pos = pos
 
       @token_type = RAW
       @token_start = start_pos
@@ -370,7 +398,7 @@ module LiquidIL
     end
 
     def scan_liquid_token
-      start_pos = @scanner.pos
+      start_pos = @pos
       pos = start_pos
       src = @source
 
@@ -426,7 +454,7 @@ module LiquidIL
         trim_r = found_pos > 0 && src.getbyte(found_pos - 1) == 45  # '-'
         content_end_pos = trim_r ? found_pos - 1 : found_pos
         end_pos = found_pos + 2
-        @scanner.pos = end_pos
+        @pos = end_pos
 
         @trim_right = trim_r
         @trim_next = trim_r
