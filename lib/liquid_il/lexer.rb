@@ -708,7 +708,7 @@ module LiquidIL
       while (byte = @source.getbyte(@pos)) && byte >= 48 && byte <= 57
         @pos += 1
       end
-      @current_value = @source.byteslice(start, @pos - start)
+      @current_value = _intern_identifier(@source, start, @pos - start)
       @current_token = NUMBER
     end
 
@@ -766,7 +766,7 @@ module LiquidIL
       end
 
       if @source.getbyte(@pos) == quote_byte
-        @current_value = @source.byteslice(start, @pos - start)
+        @current_value = _intern_identifier(@source, start, @pos - start)
         @pos += 1  # skip closing quote
         @current_token = STRING
       else
@@ -804,7 +804,7 @@ module LiquidIL
         end
       end
 
-      @current_value = @source.byteslice(start, @pos - start)
+      @current_value = _intern_identifier(@source, start, @pos - start)
       @current_token = NUMBER
     end
 
