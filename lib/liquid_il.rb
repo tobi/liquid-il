@@ -81,11 +81,11 @@ module LiquidIL
 
   class Context
     attr_accessor :file_system, :strict_errors, :registers
-    attr_reader :custom_filters, :strict_variables, :strict_filters, :resource_limits
+    attr_reader :custom_filters, :strict_variables, :strict_filters, :resource_limits, :error_mode
 
     def initialize(file_system: nil, strict_errors: false, registers: {},
                    strict_variables: false, strict_filters: false,
-                   resource_limits: nil)
+                   resource_limits: nil, error_mode: :lax)
       @file_system = file_system
       @strict_errors = strict_errors
       @registers = registers
@@ -93,6 +93,7 @@ module LiquidIL
       @strict_filters = strict_filters
       @resource_limits = resource_limits  # { output_limit: N, render_score_limit: N }
       @custom_filters = {}  # name_str => { module: Module, pure: bool, method: UnboundMethod }
+      @error_mode = error_mode  # :lax, :warn, :strict
     end
 
     # Register custom filter methods from a module.
@@ -128,6 +129,27 @@ module LiquidIL
       LiquidIL::Filters.valid_filter_methods[name] || @custom_filters.key?(name)
     end
 
+    # Register a custom tag.
+    #
+    # Simple tags (no block):
+    #   ctx.register_tag("section", mode: :raw)  # captures raw body
+    #   ctx.register_tag("schema", mode: :discard)  # discards body
+    #   ctx.register_tag("style", mode: :passthrough)  # evaluates body normally
+    #
+    # Block tags with callbacks:
+    #   ctx.register_tag("form", mode: :passthrough,
+    #     setup: ->(args, builder) { builder.write_raw("<form>") },
+    #     teardown: ->(args, builder) { builder.write_raw("</form>") })
+    #
+    # This registers on the global Tags registry (tags affect parsing, which
+    # is global). For per-context isolation, use separate processes.
+    #
+    def register_tag(name, end_tag: nil, mode: :passthrough, setup: nil, teardown: nil)
+      end_tag ||= "end#{name}"
+      Tags.register(name, end_tag: end_tag, mode: mode, setup: setup, teardown: teardown)
+      clear_cache
+    end
+
     # Parse a template string, returning a compiled Template.
     def parse(source, **options)
       options = options.merge(file_system: @file_system) if @file_system && !options.key?(:file_system)
@@ -161,7 +183,7 @@ module LiquidIL
   #   template.write_ruby("my_template.rb")  # writes standalone file
   #
   class Template
-    attr_reader :source, :instructions, :spans, :compiled_source
+    attr_reader :source, :instructions, :spans, :compiled_source, :errors, :warnings
 
     def initialize(source, instructions, spans, context, compiled_result)
       @source = source
@@ -171,6 +193,8 @@ module LiquidIL
       @compiled_proc = compiled_result.proc
       @compiled_source = compiled_result.source
       @partial_constants = compiled_result.partial_constants
+      @errors = []
+      @warnings = []
     end
 
     # Render the template with the given variables.

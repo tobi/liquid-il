@@ -15,7 +15,7 @@ module LiquidIL
     NESTING_OPEN_TAGS = Set.new(%w[if unless case for tablerow capture comment]).freeze
     NESTING_CLOSE_TAGS = Set.new(%w[endif endunless endcase endfor endtablerow endcapture endcomment]).freeze
 
-    def initialize(source)
+    def initialize(source, error_mode: :lax, warnings: nil)
       @source = source
       @template_lexer = TemplateLexer.new(source)
       @builder = IL::Builder.new
@@ -25,7 +25,11 @@ module LiquidIL
       @expr_lexer = ExpressionLexer.new
       @cycle_counter = 0 # For unique cycle identities
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
+      @error_mode = error_mode  # :lax, :warn, :strict
+      @warnings = warnings || []  # Collect non-fatal warnings
     end
+
+    attr_reader :warnings
 
     def parse
       @template_lexer.reset
@@ -279,12 +283,25 @@ module LiquidIL
       else
         # Check registered custom tags
         if (tag_def = Tags[tag_name])
-          advance_template
+          # Raw mode tags must not advance_template — they use the lexer scanner directly
+          advance_template unless tag_def.mode == :raw
           parse_registered_tag(tag_def, tag_args)
         else
-          # Unknown tag - skip
-          advance_template
-          false
+          case @error_mode
+          when :strict
+            raise SyntaxError.new(
+              "Unknown tag '#{tag_name}'",
+              position: start_pos,
+              source: @source
+            )
+          when :warn
+            @warnings << "Unknown tag '#{tag_name}'"
+            advance_template
+            false
+          else # :lax
+            advance_template
+            false
+          end
         end
       end.tap { @builder.clear_span }
     end
@@ -299,13 +316,31 @@ module LiquidIL
       when :discard
         skip_to_end_tag(tag_def.end_tag)
       when :raw
-        result = @template_lexer.scan_raw_body
-        if result
-          content, _trim_left, _trim_right = result
-          @builder.write_raw(content) unless content.empty?
-        end
+        # For custom raw tags, scan for the specific end tag
+        @pending_trim_left = false
+        content = scan_until_end_tag(tag_def.end_tag)
+        @builder.write_raw(content) if content && !content.empty?
+        # Resynchronize the template lexer after raw scanning
+        advance_template
       end
       true
+    end
+
+    # Scan raw content until we hit a specific end tag
+    def scan_until_end_tag(end_tag_name)
+      pattern = /\{%-?\s*#{Regexp.escape(end_tag_name)}\s*-?%\}/
+      start_pos = @template_lexer.instance_variable_get(:@scanner).pos
+      scanner = @template_lexer.instance_variable_get(:@scanner)
+      source = @template_lexer.instance_variable_get(:@source)
+
+      if scanner.skip_until(pattern)
+        match_len = scanner.matched_size
+        match_start = scanner.pos - match_len
+        content = source.byteslice(start_pos, match_start - start_pos)
+        content
+      else
+        nil
+      end
     end
 
     def emit_raw(content)

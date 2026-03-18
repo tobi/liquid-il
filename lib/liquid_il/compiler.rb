@@ -35,9 +35,13 @@ module LiquidIL
     end
 
     def compile
-      parser = Parser.new(@source)
+      parser = Parser.new(@source,
+        error_mode: @options[:error_mode] || :lax,
+        warnings: @options[:warnings]
+      )
       instructions = parser.parse
       spans = parser.builder.spans
+      @warnings = parser.warnings
 
       lower_const_partials(instructions)
 

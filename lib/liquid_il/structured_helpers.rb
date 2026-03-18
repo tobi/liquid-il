@@ -19,6 +19,7 @@ module LiquidIL
     # Property lookup — replaces inline_lookup generated code.
     # Hot path: Hash string key (most common in Liquid templates).
     def self.lookup_prop(obj, key)
+      # Fast path: avoid to_liquid call for Hash (most common case)
       if obj.is_a?(Hash)
         if SPECIAL_KEYS[key]
           lookup(obj, key)
@@ -88,7 +89,11 @@ module LiquidIL
 
     def self.lookup(obj, key)
       return nil if obj.nil?
-      case obj
+
+      # Call to_liquid to unwrap drops/proxies before property access
+      obj = obj.to_liquid if obj.respond_to?(:to_liquid)
+
+      result = case obj
       when Hash
         key_s = key.to_s
         obj[key_s] || obj[key_s.to_sym] || case key_s
@@ -106,7 +111,12 @@ module LiquidIL
           else obj[key.to_i]
           end
         end
-      when LiquidIL::ForloopDrop, LiquidIL::Drop then obj[key]
+      when LiquidIL::ForloopDrop, LiquidIL::TablerowloopDrop
+        # Internal drops — trusted, use [] directly
+        obj[key]
+      when LiquidIL::Drop
+        # User drops — security-checked via invoke_drop
+        obj.invoke_drop(key)
       when LiquidIL::RangeValue
         case key.to_s
         when "first" then obj.first
@@ -124,8 +134,19 @@ module LiquidIL
         when "size" then obj.size
         end
       else
-        obj.respond_to?(:[]) ? obj[key.to_s] : nil
+        # Unknown type — check for Drop-style invoke_drop first (Liquid::Drop compat),
+        # then fall back to [] only for Hash-like objects that are known safe.
+        if obj.respond_to?(:invoke_drop)
+          obj.invoke_drop(key.to_s)
+        elsif obj.is_a?(Hash) || (obj.respond_to?(:key?) && obj.respond_to?(:[]))
+          obj[key.to_s]
+        else
+          nil
+        end
       end
+
+      # to_liquid on the result for nested drops
+      result.respond_to?(:to_liquid) ? result.to_liquid : result
     end
 
     # Lambda wrapper for backward compatibility with generated code
@@ -344,6 +365,7 @@ module LiquidIL
       return nil if obj.nil?
       return nil if key.is_a?(LiquidIL::RangeValue) || key.is_a?(Range)
       key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
+      obj = obj.to_liquid if obj.respond_to?(:to_liquid)
       case obj
       when Hash
         result = obj[key]
@@ -360,10 +382,16 @@ module LiquidIL
         else
           nil
         end
-      when LiquidIL::ForloopDrop, LiquidIL::Drop
+      when LiquidIL::ForloopDrop, LiquidIL::TablerowloopDrop
         obj[key]
+      when LiquidIL::Drop
+        obj.invoke_drop(key)
       else
-        nil
+        if obj.respond_to?(:invoke_drop)
+          obj.invoke_drop(key.to_s)
+        else
+          nil
+        end
       end
     end
 

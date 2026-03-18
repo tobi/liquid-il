@@ -2941,6 +2941,12 @@ module LiquidIL
 
       def self.compile(source, context: nil, **options)
         opts = options.empty? ? STRUCTURED_DEFAULTS : STRUCTURED_DEFAULTS.merge(options)
+        # Pass error_mode from context to compiler
+        if context&.error_mode && context.error_mode != :lax
+          opts = opts.merge(error_mode: context.error_mode)
+        end
+        warnings = []
+        opts = opts.merge(warnings: warnings)
         compiler = Compiler.new(source, **opts)
         result = compiler.compile
         instructions = result[:instructions]
@@ -2954,7 +2960,9 @@ module LiquidIL
         )
         compiled_result = structured_compiler.compile
 
-        Template.new(source, instructions, spans, context, compiled_result)
+        template = Template.new(source, instructions, spans, context, compiled_result)
+        template.instance_variable_get(:@warnings).concat(warnings)
+        template
       end
     end
   end
