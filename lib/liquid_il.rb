@@ -271,7 +271,7 @@ module LiquidIL
       end
       scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false,
                         liquid_context: liquid_context)
-      scope.file_system = ctx&.file_system
+      scope.file_system = ctx&.file_system || liquid_context&.registers&.[](:file_system)
       scope.render_errors = render_errors
       # strict_variables: render-time overrides context-level
       scope.strict_variables = strict_variables.nil? ? (ctx&.strict_variables || false) : strict_variables
