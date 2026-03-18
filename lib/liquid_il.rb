@@ -402,16 +402,15 @@ module LiquidIL
         #   output = #{module_name}.render({"name" => "World"})
         #
 
-        begin; require "liquid_il"; rescue LoadError; end
+        autoload :LiquidIL, "liquid_il" unless defined?(LiquidIL)
 
         module #{module_name}
-          extend self
 
           SPANS = #{@spans.inspect}.freeze
           SOURCE = #{@source.inspect}.freeze
           PARTIAL_CONSTANTS = #{@partial_constants.inspect}.freeze
 
-          def render(assigns = {}, render_errors: true)
+          def self.render(assigns = {}, render_errors: true)
             __scope__ = LiquidIL::Scope.new(assigns)
             __scope__.render_errors = render_errors
             __spans__ = SPANS
