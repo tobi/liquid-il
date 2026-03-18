@@ -22,7 +22,7 @@ module LiquidIL
       @current_token = nil
       @loop_stack = []
       @blank_raw_indices_stack = []
-      @intern_table = {}  # Shared string intern table for identifier dedup
+      @intern_table = (@@shared_intern_table ||= {})  # Class-level intern table for dedup across parses
       @expr_lexer = ExpressionLexer.new("", intern_table: @intern_table)
       @cycle_counter = 0 # For unique cycle identities
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
@@ -1086,7 +1086,7 @@ module LiquidIL
       limit_expr, offset_expr, offset_continue, reversed, coll_off, coll_len =
         _parse_for_options(src, in_pos + 4, limit_off)
 
-      # Build loop name — intern for dedup (same for-loop pattern repeats across templates)
+      # Build loop name from interned collection string
       collection_str = coll_len > 0 ? _intern_from(src, coll_off, coll_len) : ""
       loop_name = "#{var_name}-#{collection_str}"
 
