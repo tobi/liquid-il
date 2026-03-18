@@ -201,11 +201,11 @@ module LiquidIL
     end
 
     # Returns the ISeq binary for this template's compiled proc.
-    # After normal compilation, the binary is already in StructuredCompiler's
+    # After normal compilation, the binary is already in RubyCompiler's
     # @@iseq_cache — so this is a free O(1) lookup, not a recompilation.
-    # For templates created via from_cache, @iseq_binary is preset via constructor.
+    # For templates created via from_cache / load_iseq, @iseq_binary is preset.
     def iseq_binary
-      @iseq_binary ||= StructuredCompiler.iseq_binary_for(@compiled_source)
+      @iseq_binary ||= RubyCompiler.iseq_binary_for(@compiled_source)
     end
 
     # Everything needed to reconstruct this template without recompilation.
@@ -232,7 +232,7 @@ module LiquidIL
     #
     def self.from_cache(source:, spans:, iseq_binary:, partial_constants: nil)
       compiled_proc = RubyVM::InstructionSequence.load_from_binary(iseq_binary).eval
-      result = StructuredCompiler::CompilationResult.new(
+      result = RubyCompiler::CompilationResult.new(
         proc: compiled_proc,
         source: nil,
         can_compile: true,
@@ -326,6 +326,25 @@ module LiquidIL
       File.write(filename, to_ruby(module_name))
     end
 
+    # Write compiled ISeq binary directly to disk.
+    #
+    #   template.write_iseq("template.iseq")
+    #
+    # Note: raw ISeq binaries need source/spans to restore rich error locations.
+    # For full metadata roundtrip, use #write_cache / .load_cache.
+    def write_iseq(filename)
+      File.binwrite(filename, iseq_binary)
+    end
+
+    # Write full cache payload (source, spans, binary, partial constants) to disk.
+    #
+    #   template.write_cache("template.ilc")
+    #   restored = LiquidIL::Template.load_cache("template.ilc")
+    #
+    def write_cache(filename)
+      File.binwrite(filename, Marshal.dump(cache_data))
+    end
+
     # Pretty-print IL instructions (for debugging).
     def dump_il(io = $stdout, color: true)
       PrettyPrinter.new(@instructions, color: color, source: @source, spans: @spans).print(io)
@@ -343,6 +362,26 @@ module LiquidIL
       #
       def parse(source, **options)
         Compiler::Ruby.compile(source, **options)
+      end
+
+      # Load a template from a raw ISeq binary file.
+      #
+      #   t = LiquidIL::Template.load_iseq("template.iseq", source: "Hello {{ name }}")
+      #   t.render("name" => "World")
+      #
+      # When source/spans are omitted, runtime errors fall back to generic line info.
+      def load_iseq(filename, source: "", spans: [], partial_constants: nil)
+        from_cache(
+          source: source,
+          spans: spans,
+          iseq_binary: File.binread(filename),
+          partial_constants: partial_constants,
+        )
+      end
+
+      # Load a template from a full cache file written by #write_cache.
+      def load_cache(filename)
+        from_cache(**Marshal.load(File.binread(filename)))
       end
     end
 

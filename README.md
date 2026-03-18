@@ -56,7 +56,7 @@ template.render("name" => "World")
 
 ## Generating Standalone Ruby
 
-Compiled templates can be exported as standalone Ruby modules. The generated code depends on `liquid_il` for runtime helpers (Scope, Filters, StructuredHelpers) but is otherwise self-contained.
+Compiled templates can be exported as standalone Ruby modules. The generated code depends on `liquid_il` for runtime helpers (Scope, Filters, RuntimeHelpers) but is otherwise self-contained.
 
 ```ruby
 template = LiquidIL.parse("Hello {{ name | upcase }}!")
@@ -89,6 +89,43 @@ Use it:
 require_relative "greeting"
 Greeting.render("name" => "World")  # => "Hello WORLD!"
 ```
+
+## Saving and Loading Compiled Templates (ISeq)
+
+LiquidIL can persist compiled templates as RubyVM ISeq binaries.
+
+```ruby
+template = LiquidIL.parse("Hello {{ name }}")
+
+# 1) Raw ISeq binary (fastest, minimal payload)
+template.write_iseq("greeting.iseq")
+restored = LiquidIL::Template.load_iseq("greeting.iseq", source: "Hello {{ name }}")
+restored.render("name" => "World")
+# => "Hello World"
+
+# 2) Full cache payload (includes source/spans/partial constants)
+template.write_cache("greeting.ilc")
+restored2 = LiquidIL::Template.load_cache("greeting.ilc")
+restored2.render("name" => "World")
+# => "Hello World"
+```
+
+Low-level direct call (no Template wrapper):
+
+```ruby
+iseq = RubyVM::InstructionSequence.load_from_binary(File.binread("greeting.iseq"))
+proc_obj = iseq.eval
+scope = LiquidIL::Scope.new("name" => "World")
+output = proc_obj.call(scope, restored.spans, restored.source)
+# => "Hello World"
+```
+
+Notes:
+- ISeq binaries are Ruby-version specific (and generally architecture-specific).
+- Prefer `write_cache`/`load_cache` when you want metadata + better error locations.
+- Use raw `write_iseq`/`load_iseq` for the smallest payload and fastest restore path.
+
+See also: [`docs/compiled_templates.md`](docs/compiled_templates.md)
 
 ## CLI
 

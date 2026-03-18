@@ -14,6 +14,8 @@ TEST_FILES = %w[
   test/error_handling_test.rb
   test/dynamic_partials_runtime_test.rb
   test/dynamic_partials_performance_test.rb
+  test/iseq_cache_test.rb
+  test/iseq_persistence_test.rb
 ].freeze
 
 require_relative "lib/liquid_il/passes"
