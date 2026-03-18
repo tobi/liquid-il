@@ -38,7 +38,8 @@ module LiquidIL
       @builder = IL::Builder.new
       @current_token = nil
       # @loop_stack removed — was dead code (pushed/popped but never read)
-      @blank_raw_indices_stack = []
+      @blank_raw_flat = []      # Flat array of all blank raw instruction indices
+      @blank_raw_marks = []     # Stack of start offsets into @blank_raw_flat
       @intern_table = (@@shared_intern_table ||= {})  # Class-level intern table for dedup across parses
       @expr_lexer = ExpressionLexer.new("", intern_table: @intern_table)
       @cycle_counter = 0 # For unique cycle identities
@@ -103,44 +104,44 @@ module LiquidIL
     def parse_block_body(end_tags)
       @builder.clear_span # Body content shouldn't inherit tag's span
       blank = true
-      raw_indices = push_blank_raw_indices
-      begin
-        until template_eos?
-          # Safety: track position to detect infinite loops
-          prev_pos = current_template_start_pos
+      mark = @blank_raw_flat.size
+      @blank_raw_marks.push(mark)
+      until template_eos?
+        # Safety: track position to detect infinite loops
+        prev_pos = current_template_start_pos
 
-          case current_template_type
-          when TemplateLexer::RAW
-            blank = parse_raw && blank
-          when TemplateLexer::VAR
-            trim_previous_raw if current_template_trim_left
-            @pending_trim_left = current_template_trim_right  # For next RAW token
-            parse_variable_output
-            blank = false
-          when TemplateLexer::TAG
-            trim_previous_raw if current_template_trim_left
-            @pending_trim_left = current_template_trim_right  # For next RAW token
-            tag_name = @template_lexer.tag_name
+        case current_template_type
+        when TemplateLexer::RAW
+          blank = parse_raw && blank
+        when TemplateLexer::VAR
+          trim_previous_raw if current_template_trim_left
+          @pending_trim_left = current_template_trim_right  # For next RAW token
+          parse_variable_output
+          blank = false
+        when TemplateLexer::TAG
+          trim_previous_raw if current_template_trim_left
+          @pending_trim_left = current_template_trim_right  # For next RAW token
+          tag_name = @template_lexer.tag_name
 
-            # Check if this is an end tag we're looking for
-            if end_tags && end_tags.include?(tag_name)
-              @_bb_tag = tag_name; @_bb_blank = blank; @_bb_raws = raw_indices
-              return
-            end
-
-            tag_blank = parse_tag
-            blank = tag_blank && blank
+          # Check if this is an end tag we're looking for
+          if end_tags && end_tags.include?(tag_name)
+            @blank_raw_marks.pop
+            # Pack range as single integer: (start << 16) | end
+            @_bb_tag = tag_name; @_bb_blank = blank; @_bb_raws = (mark << 16) | @blank_raw_flat.size
+            return
           end
 
-          # Safety: raise if we didn't advance (indicates infinite loop bug)
-          if current_template_start_pos == prev_pos && !template_eos?
-            raise "Parser bug: infinite loop detected at position #{prev_pos}"
-          end
+          tag_blank = parse_tag
+          blank = tag_blank && blank
         end
-        @_bb_tag = nil; @_bb_blank = blank; @_bb_raws = raw_indices
-      ensure
-        pop_blank_raw_indices
+
+        # Safety: raise if we didn't advance (indicates infinite loop bug)
+        if current_template_start_pos == prev_pos && !template_eos?
+          raise "Parser bug: infinite loop detected at position #{prev_pos}"
+        end
       end
+      @blank_raw_marks.pop
+      @_bb_tag = nil; @_bb_blank = blank; @_bb_raws = (mark << 16) | @blank_raw_flat.size
     end
 
     def template_eos?
@@ -440,7 +441,7 @@ module LiquidIL
 
     def emit_raw(content)
       @builder.write_raw(content)
-      return unless current_blank_raw_indices
+      return if @blank_raw_marks.empty?
 
       # Zero-alloc whitespace check — works for both String and StringView::Strict
       i = 0; sz = content.bytesize; blank = true
@@ -449,7 +450,7 @@ module LiquidIL
         unless b == 32 || b == 9 || b == 10 || b == 13; blank = false; break; end
         i += 1
       end
-      current_blank_raw_indices << (@builder.instructions.length - 1) if blank
+      @blank_raw_flat << (@builder.instructions.length - 1) if blank
     end
 
     def trim_previous_raw
@@ -466,29 +467,20 @@ module LiquidIL
       end
     end
 
-    def strip_blank_raws(indices)
-      return unless indices
-      indices.each do |idx|
+    # range is a packed integer: (start << 16) | end
+    def strip_blank_raws(range)
+      return unless range
+      s = range >> 16
+      e = range & 0xFFFF
+      while s < e
+        idx = @blank_raw_flat[s]
         inst = @builder.instructions[idx]
-        next unless inst && inst[0] == IL::WRITE_RAW
-
-        @builder.instructions[idx] = [IL::NOOP]
+        @builder.instructions[idx] = IL::I_NOOP if inst && inst[0] == IL::WRITE_RAW
+        s += 1
       end
     end
 
-    def push_blank_raw_indices
-      arr = []
-      @blank_raw_indices_stack.push(arr)
-      arr
-    end
 
-    def pop_blank_raw_indices
-      @blank_raw_indices_stack.pop
-    end
-
-    def current_blank_raw_indices
-      @blank_raw_indices_stack.last
-    end
 
     def emit_loop_jump(type)
       # Always use PUSH_INTERRUPT, let JUMP_IF_INTERRUPT handle the actual jump
@@ -788,33 +780,30 @@ module LiquidIL
       @builder.jump_if_false(label_else)
 
       all_blank = true
-      branch_raws = []
+      raws_start = @blank_raw_flat.size
 
       # Parse body until elsif/else/endif
-      parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; body_blank = @_bb_blank
       all_blank = all_blank && body_blank
-      branch_raws << body_raws
 
       case end_tag
       when 'elsif'
         @builder.jump(label_end)
         @builder.label(label_else)
-        elsif_blank, elsif_raws = parse_elsif_chain(label_end)
+        elsif_blank = parse_elsif_chain(label_end)
         all_blank = all_blank && elsif_blank
-        branch_raws.concat(elsif_raws)
       when 'else'
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
         # Stop at elsif/else/endif - any elsif/else after else is malformed but ignored
-        parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
+        parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; else_blank = @_bb_blank
         all_blank = all_blank && else_blank
-        branch_raws << else_raws
         # Skip any remaining elsif/else until endif (discard their content)
         while end_tag == 'elsif' || end_tag == 'else'
           advance_template
           @builder.push_capture  # Capture to discard
-          parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; _ = @_bb_blank; _ = @_bb_raws
+          parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag
           @builder.pop_capture
           @builder.pop  # Discard captured content
         end
@@ -825,13 +814,12 @@ module LiquidIL
       end
 
       @builder.label(label_end)
-      branch_raws.each { |indices| strip_blank_raws(indices) } if all_blank
+      strip_blank_raws((raws_start << 16) | @blank_raw_flat.size) if all_blank
       all_blank
     end
 
     def parse_elsif_chain(label_end)
       all_blank = true
-      branch_raws = []
 
       cache_tag_args_region!
 
@@ -844,31 +832,28 @@ module LiquidIL
       @builder.jump_if_false(label_else)
 
       advance_template
-      parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; body_blank = @_bb_blank
       all_blank = all_blank && body_blank
-      branch_raws << body_raws
 
       case end_tag
       when 'elsif'
         @builder.jump(label_end)
         @builder.label(label_else)
-        nested_blank, nested_raws = parse_elsif_chain(label_end)
+        nested_blank = parse_elsif_chain(label_end)
         all_blank = all_blank && nested_blank
-        branch_raws.concat(nested_raws)
       when 'else'
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
-        parse_block_body(ET_ENDIF); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
+        parse_block_body(ET_ENDIF); _end_tag = @_bb_tag; else_blank = @_bb_blank
         all_blank = all_blank && else_blank
-        branch_raws << else_raws
         advance_template
       when 'endif'
         @builder.label(label_else)
         advance_template
       end
 
-      [all_blank, branch_raws]
+      all_blank
     end
 
     def parse_unless_tag(condition_str = nil)
@@ -882,26 +867,23 @@ module LiquidIL
       @builder.jump_if_true(label_else) # NOTE: opposite of if
 
       all_blank = true
-      branch_raws = []
+      raws_start = @blank_raw_flat.size
 
-      parse_block_body(ET_ELSIF_ELSE_ENDUNLESS); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_ELSIF_ELSE_ENDUNLESS); end_tag = @_bb_tag; body_blank = @_bb_blank
       all_blank = all_blank && body_blank
-      branch_raws << body_raws
 
       case end_tag
       when 'elsif'
         @builder.jump(label_end)
         @builder.label(label_else)
-        elsif_blank, elsif_raws = parse_elsif_chain_unless(label_end)
+        elsif_blank = parse_elsif_chain_unless(label_end)
         all_blank = all_blank && elsif_blank
-        branch_raws.concat(elsif_raws)
       when 'else'
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
-        parse_block_body(ET_ENDUNLESS); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
+        parse_block_body(ET_ENDUNLESS); _end_tag = @_bb_tag; else_blank = @_bb_blank
         all_blank = all_blank && else_blank
-        branch_raws << else_raws
         advance_template
       when 'endunless'
         @builder.label(label_else)
@@ -909,13 +891,12 @@ module LiquidIL
       end
 
       @builder.label(label_end)
-      branch_raws.each { |indices| strip_blank_raws(indices) } if all_blank
+      strip_blank_raws((raws_start << 16) | @blank_raw_flat.size) if all_blank
       all_blank
     end
 
     def parse_elsif_chain_unless(label_end)
       all_blank = true
-      branch_raws = []
 
       cache_tag_args_region!
 
@@ -928,31 +909,28 @@ module LiquidIL
       @builder.jump_if_false(label_else)
 
       advance_template
-      parse_block_body(ET_ELSIF_ELSE_ENDUNLESS); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_ELSIF_ELSE_ENDUNLESS); end_tag = @_bb_tag; body_blank = @_bb_blank
       all_blank = all_blank && body_blank
-      branch_raws << body_raws
 
       case end_tag
       when 'elsif'
         @builder.jump(label_end)
         @builder.label(label_else)
-        nested_blank, nested_raws = parse_elsif_chain_unless(label_end)
+        nested_blank = parse_elsif_chain_unless(label_end)
         all_blank = all_blank && nested_blank
-        branch_raws.concat(nested_raws)
       when 'else'
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
-        parse_block_body(ET_ENDUNLESS); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
+        parse_block_body(ET_ENDUNLESS); _end_tag = @_bb_tag; else_blank = @_bb_blank
         all_blank = all_blank && else_blank
-        branch_raws << else_raws
         advance_template
       when 'endunless'
         @builder.label(label_else)
         advance_template
       end
 
-      [all_blank, branch_raws]
+      all_blank
     end
 
     def parse_case_tag(case_expr_str = nil)
@@ -979,12 +957,12 @@ module LiquidIL
       @builder.store_temp(case_flag_temp)
 
       all_blank = true
-      branch_raws = []
+      raws_start = @blank_raw_flat.size
 
       # Parse until first when or else - discard this content (between case and first when)
       # In Liquid, this content is ignored
       @builder.push_capture
-      parse_block_body(ET_WHEN_ELSE_ENDCASE); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_WHEN_ELSE_ENDCASE); end_tag = @_bb_tag; body_blank = @_bb_blank
       @builder.pop_capture  # Discard captured content
       @builder.pop  # Pop and discard the captured string from stack
       # Don't track this for blank detection - it's always discarded
@@ -992,13 +970,11 @@ module LiquidIL
       # Process interspersed when/else clauses
       while end_tag == 'when' || end_tag == 'else'
         if end_tag == 'when'
-          end_tag, when_blank, when_raws = parse_when_clause_with_flag(case_value_temp, case_flag_temp)
+          end_tag, when_blank = parse_when_clause_with_flag(case_value_temp, case_flag_temp)
           all_blank = all_blank && when_blank
-          branch_raws << when_raws
         else  # else
-          end_tag, else_blank, else_raws = parse_else_clause_with_flag(case_flag_temp)
+          end_tag, else_blank = parse_else_clause_with_flag(case_flag_temp)
           all_blank = all_blank && else_blank
-          branch_raws << else_raws
         end
       end
 
@@ -1008,7 +984,7 @@ module LiquidIL
 
       @case_temp_counter -= 2  # Release temp indices
 
-      branch_raws.each { |indices| strip_blank_raws(indices) } if all_blank
+      strip_blank_raws((raws_start << 16) | @blank_raw_flat.size) if all_blank
       all_blank
     end
 
@@ -1099,11 +1075,11 @@ module LiquidIL
       @builder.store_temp(case_flag_temp)
 
       advance_template
-      parse_block_body(ET_WHEN_ELSE_ENDCASE); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_WHEN_ELSE_ENDCASE); end_tag = @_bb_tag; body_blank = @_bb_blank
 
       @builder.label(label_next)
 
-      [end_tag, body_blank, body_raws]
+      [end_tag, body_blank]
     end
 
     def parse_else_clause_with_flag(case_flag_temp)
@@ -1115,7 +1091,7 @@ module LiquidIL
       @builder.jump_if_true(label_skip)  # Skip else if any when matched
 
       advance_template
-      parse_block_body(ET_WHEN_ELSE_ENDCASE); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_WHEN_ELSE_ENDCASE); end_tag = @_bb_tag; body_blank = @_bb_blank
 
       @builder.jump(label_end)
       @builder.label(label_skip)
@@ -1124,7 +1100,7 @@ module LiquidIL
       # But we already parsed it above, so just continue
       @builder.label(label_end)
 
-      [end_tag, body_blank, body_raws]
+      [end_tag, body_blank]
     end
 
     def parse_for_tag(tag_args = nil)
@@ -1202,7 +1178,8 @@ module LiquidIL
       @builder.assign_local(var_name)
 
       # Render body
-      parse_block_body(ET_ELSE_ENDFOR); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      raws_start = @blank_raw_flat.size
+      parse_block_body(ET_ELSE_ENDFOR); end_tag = @_bb_tag; body_blank = @_bb_blank
 
       # Check for interrupts
       @builder.jump_if_interrupt(label_break)
@@ -1220,20 +1197,16 @@ module LiquidIL
 
       @builder.label(label_else)
       else_blank = true
-      else_raws = nil
       if end_tag == 'else'
         advance_template
-        parse_block_body(ET_ENDFOR); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
+        parse_block_body(ET_ENDFOR); _end_tag = @_bb_tag; else_blank = @_bb_blank
       end
 
       @builder.label(label_end)
       advance_template # consume endfor
 
       tag_blank = body_blank && (end_tag != 'else' || else_blank)
-      if tag_blank
-        strip_blank_raws(body_raws)
-        strip_blank_raws(else_raws) if end_tag == 'else'
-      end
+      strip_blank_raws((raws_start << 16) | @blank_raw_flat.size) if tag_blank
       tag_blank
     end
 
@@ -1646,7 +1619,7 @@ module LiquidIL
 
       @builder.push_capture
 
-      parse_block_body(ET_ENDCAPTURE); _end_tag = @_bb_tag; _body_blank = @_bb_blank; _body_raws = @_bb_raws
+      parse_block_body(ET_ENDCAPTURE)
       advance_template
 
       @builder.pop_capture
@@ -1663,7 +1636,7 @@ module LiquidIL
       # Capture the body content
       @builder.push_capture
 
-      parse_block_body(ET_ENDIFCHANGED); _end_tag = @_bb_tag; _body_blank = @_bb_blank; _body_raws = @_bb_raws
+      parse_block_body(ET_ENDIFCHANGED)
       advance_template
 
       @builder.pop_capture
