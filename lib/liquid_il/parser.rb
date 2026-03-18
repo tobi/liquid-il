@@ -347,6 +347,9 @@ module LiquidIL
       when 'ifchanged'
         advance_template
         parse_ifchanged_tag
+      when 'paginate'
+        advance_template
+        parse_paginate_tag
       when '#'
         # Inline comment, skip
         advance_template
@@ -1620,6 +1623,63 @@ module LiquidIL
       @builder.decrement(var_name)
       @builder.write_value
       false
+    end
+
+    # Parse {% paginate collection by N %} ... {% endpaginate %}
+    # Byte-scans to find "by" keyword and extract collection_path + page_size.
+    def parse_paginate_tag
+      src = @source
+      off = @_targ_off
+      len = @_targ_len
+      limit = off + len
+
+      # Skip leading whitespace
+      while off < limit && (b = src.getbyte(off)) && (b == 32 || b == 9); off += 1; end
+
+      # Find " by " — scan backwards from end to find "by" keyword
+      by_pos = nil
+      i = off
+      while i < limit - 2
+        if (src.getbyte(i) | 32) == 98 && (src.getbyte(i + 1) | 32) == 121  # 'b','y'
+          # Check it's word-bounded: preceded by space and followed by space
+          if i > off && (src.getbyte(i - 1) == 32 || src.getbyte(i - 1) == 9)
+            if i + 2 >= limit || src.getbyte(i + 2) == 32 || src.getbyte(i + 2) == 9
+              by_pos = i
+            end
+          end
+        end
+        i += 1
+      end
+
+      if by_pos
+        # Collection path: from off to by_pos (trimmed)
+        cp_end = by_pos
+        while cp_end > off && src.getbyte(cp_end - 1) == 32; cp_end -= 1; end
+        coll_path = _intern_from(src, off, cp_end - off)
+
+        # Page size: from by_pos+2 to end (trimmed)
+        ps_start = by_pos + 2
+        while ps_start < limit && src.getbyte(ps_start) == 32; ps_start += 1; end
+        ps_end = limit
+        while ps_end > ps_start && src.getbyte(ps_end - 1) == 32; ps_end -= 1; end
+
+        # Parse integer from bytes
+        page_size = 0
+        j = ps_start
+        while j < ps_end
+          db = src.getbyte(j)
+          break unless db >= 48 && db <= 57
+          page_size = page_size * 10 + (db - 48)
+          j += 1
+        end
+
+        @builder.emit(:PAGINATE_SETUP, coll_path, page_size)
+      end
+
+      parse_block_body(["endpaginate"])
+      @builder.emit(:PAGINATE_TEARDOWN) if by_pos
+      advance_template
+      true
     end
 
     def parse_cycle_tag(tag_args = nil)
