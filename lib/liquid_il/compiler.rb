@@ -53,7 +53,7 @@ module LiquidIL
         optimize(instructions, spans, skip_passes: @options[:skip_passes])
       end
 
-      IL.link(instructions)
+      IL.link(instructions, spans: spans)
 
       # Optimization pass 21: Strip labels after linking (VM speedup)
       # Must run after IL.link since it adjusts jump target indices

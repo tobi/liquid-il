@@ -207,9 +207,11 @@ module LiquidIL
         self
       end
 
+      I_LABEL = [LABEL].freeze
+
       def emit_label(id)
-        @instructions << [LABEL, id]
-        @spans << nil  # Labels don't have source spans
+        @instructions << I_LABEL
+        @spans << id  # Label ID stored in spans slot (labels have no source span)
         self
       end
 
@@ -538,13 +540,15 @@ module LiquidIL
     @@link_label_positions = {}
 
     # Link labels to instruction indices
-    def self.link(instructions)
+    # Label IDs are stored in spans[i] (not inst[1]) to allow frozen LABEL arrays.
+    def self.link(instructions, spans: nil)
       # First pass: find all label positions
       label_positions = @@link_label_positions
       label_positions.clear
       instructions.each_with_index do |inst, idx|
         if inst[0] == LABEL
-          label_positions[inst[1]] = idx
+          label_id = spans ? spans[idx] : inst[1]
+          label_positions[label_id] = idx
         end
       end
 
