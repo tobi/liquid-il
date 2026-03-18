@@ -22,6 +22,7 @@ module LiquidIL
       @current_token = nil
       @loop_stack = []
       @blank_raw_indices_stack = []
+      @expr_lexer = ExpressionLexer.new
       @cycle_counter = 0 # For unique cycle identities
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
     end
@@ -38,6 +39,12 @@ module LiquidIL
 
     def advance_template
       @template_lexer.next_token
+    end
+
+    def expr_lexer_for(source)
+      @expr_lexer.reset_source(source)
+      @expr_lexer.advance
+      @expr_lexer
     end
 
     def current_template_type
@@ -182,8 +189,7 @@ module LiquidIL
         return true  # Blank output
       end
 
-      expr_lexer = ExpressionLexer.new(content)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(content)
 
       parse_expression(expr_lexer)
       parse_filters(expr_lexer)
@@ -632,8 +638,7 @@ module LiquidIL
     # --- Tag implementations ---
 
     def parse_if_tag(condition_str)
-      expr_lexer = ExpressionLexer.new(condition_str)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(condition_str)
       parse_expression(expr_lexer)
 
       label_else = @builder.new_label
@@ -691,8 +696,7 @@ module LiquidIL
 
       condition_str = extract_tag_args
 
-      expr_lexer = ExpressionLexer.new(condition_str)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(condition_str)
       parse_expression(expr_lexer)
 
       label_else = @builder.new_label
@@ -729,8 +733,7 @@ module LiquidIL
     end
 
     def parse_unless_tag(condition_str)
-      expr_lexer = ExpressionLexer.new(condition_str)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(condition_str)
       parse_expression(expr_lexer)
 
       label_else = @builder.new_label
@@ -778,8 +781,7 @@ module LiquidIL
 
       condition_str = extract_tag_args
 
-      expr_lexer = ExpressionLexer.new(condition_str)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(condition_str)
       parse_expression(expr_lexer)
 
       label_else = @builder.new_label
@@ -823,8 +825,7 @@ module LiquidIL
       @case_temp_counter += 2
 
       begin
-        expr_lexer = ExpressionLexer.new(case_expr_str)
-        expr_lexer.advance
+        expr_lexer = expr_lexer_for(case_expr_str)
         parse_expression(expr_lexer)
 
         @builder.store_temp(case_value_temp) # Store case value
@@ -887,8 +888,7 @@ module LiquidIL
         next if val_str.empty?
 
         begin
-          expr_lexer = ExpressionLexer.new(val_str)
-          expr_lexer.advance
+          expr_lexer = expr_lexer_for(val_str)
 
           @builder.load_temp(case_value_temp)   # Load case value
           parse_expression(expr_lexer)          # Push when value
@@ -938,42 +938,54 @@ module LiquidIL
 
     def parse_for_tag(tag_args)
       # Parse: var_name in collection [limit:N] [offset:N] [reversed]
-      match = tag_args.match(/(\w+)\s+in\s+(.+)/)
-      raise SyntaxError, 'Invalid for tag syntax' unless match
+      # Single-pass parsing — no regex, no gsub, no MatchData allocations
+      in_pos = tag_args.index(' in ')
+      raise SyntaxError, 'Invalid for tag syntax' unless in_pos
 
-      var_name = match[1]
-      rest = match[2]
+      var_name = tag_args.byteslice(0, in_pos).strip
+      rest = tag_args.byteslice(in_pos + 4, tag_args.bytesize - in_pos - 4)
 
-      # Parse options
       limit_expr = nil
       offset_expr = nil
       offset_continue = false
       reversed = false
+      collection_parts = []
 
-      # Check for reversed
-      if rest =~ /\breversed\b/
-        reversed = true
-        rest = rest.gsub(/\breversed\b/, '')
+      # Tokenize rest by whitespace, extract options in one pass
+      tokens = rest.split
+      i = 0
+      while i < tokens.length
+        tok = tokens[i]
+        # Strip trailing comma for keyword matching (e.g. "reversed," or "limit:3,")
+        clean = tok.end_with?(',') ? tok.chomp(',') : tok
+        if clean == 'reversed'
+          reversed = true
+        elsif clean == 'limit' || clean.start_with?('limit:')
+          val = clean.bytesize > 6 ? clean.byteslice(6, clean.bytesize - 6) : nil
+          if val.nil? || val.empty?
+            i += 1
+            val = tokens[i].chomp(',') if i < tokens.length
+          end
+          limit_expr = val
+        elsif clean == 'offset' || clean.start_with?('offset:')
+          val = clean.bytesize > 7 ? clean.byteslice(7, clean.bytesize - 7) : nil
+          if val.nil? || val.empty?
+            i += 1
+            val = tokens[i].chomp(',') if i < tokens.length
+          end
+          if val == 'continue'
+            offset_continue = true
+          else
+            offset_expr = val
+            offset_continue = false
+          end
+        else
+          collection_parts << clean
+        end
+        i += 1
       end
 
-      # Check for limit
-      if rest =~ /\blimit\s*:\s*([^,\s]+)/
-        limit_expr = Regexp.last_match(1)
-        rest = rest.gsub(/\blimit\s*:\s*[^,\s]+/, '')
-      end
-
-      # Check for offset
-      if rest =~ /\boffset\s*:\s*continue\b/
-        offset_continue = true
-        rest = rest.gsub(/\boffset\s*:\s*continue\b/, '')
-      end
-      if rest =~ /\boffset\s*:\s*([^,\s]+)/
-        offset_expr = Regexp.last_match(1)
-        offset_continue = false
-        rest = rest.gsub(/\boffset\s*:\s*[^,\s]+/, '')
-      end
-
-      collection_expr = rest.tr(',', ' ').strip
+      collection_expr = collection_parts.join(' ')
 
       # Generate loop name for offset:continue
       loop_name = "#{var_name}-#{collection_expr}"
@@ -986,8 +998,7 @@ module LiquidIL
       label_end = @builder.new_label
 
       # Evaluate collection
-      expr_lexer = ExpressionLexer.new(collection_expr)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(collection_expr)
       parse_expression(expr_lexer)
 
       # Check for empty BEFORE initializing iterator - jump_if_empty peeks then pops if empty
@@ -996,14 +1007,12 @@ module LiquidIL
       # Emit offset first, then limit (IL order matches application order)
       # Sequential readers can apply: offset first (drop N), then limit (take M)
       if offset_expr
-        offset_lexer = ExpressionLexer.new(offset_expr)
-        offset_lexer.advance
+        offset_lexer = expr_lexer_for(offset_expr)
         parse_expression(offset_lexer)
       end
 
       if limit_expr
-        limit_lexer = ExpressionLexer.new(limit_expr)
-        limit_lexer.advance
+        limit_lexer = expr_lexer_for(limit_expr)
         parse_expression(limit_lexer)
       end
 
@@ -1058,43 +1067,58 @@ module LiquidIL
 
     def parse_tablerow_tag(tag_args)
       # Parse: var_name in collection [cols:N] [limit:N] [offset:N]
-      match = tag_args.match(/(\w+)\s+in\s+(.+)/)
-      raise SyntaxError, 'Invalid tablerow tag syntax' unless match
+      # Single-pass parsing — no regex, no gsub, no MatchData allocations
+      in_pos = tag_args.index(' in ')
+      raise SyntaxError, 'Invalid tablerow tag syntax' unless in_pos
 
-      var_name = match[1]
-      rest = match[2]
+      var_name = tag_args.byteslice(0, in_pos).strip
+      rest = tag_args.byteslice(in_pos + 4, tag_args.bytesize - in_pos - 4)
 
-      # Parse options
       limit_expr = nil
       offset_expr = nil
-      cols = nil # default: all in one row
-      cols_expr = nil # expression for cols (if variable)
+      cols = nil
+      cols_expr = nil
+      collection_parts = []
 
-      # Check for cols (handle numeric, nil, and variable cases)
-      if rest =~ /\bcols\s*:\s*nil\b/i
-        cols = :explicit_nil  # Explicitly set to nil - col_last is always false
-        rest = rest.gsub(/\bcols\s*:\s*nil\b/i, '')
-      elsif rest =~ /\bcols\s*:\s*(\d+)/
-        cols = Regexp.last_match(1).to_i
-        rest = rest.gsub(/\bcols\s*:\s*\d+/, '')
-      elsif rest =~ /\bcols\s*:\s*([a-zA-Z_][a-zA-Z0-9_.\[\]'"]*)/
-        cols_expr = Regexp.last_match(1)
-        rest = rest.gsub(/\bcols\s*:\s*[a-zA-Z_][a-zA-Z0-9_.\[\]'"]*/, '')
+      tokens = rest.split
+      i = 0
+      while i < tokens.length
+        tok = tokens[i]
+        clean = tok.end_with?(',') ? tok.chomp(',') : tok
+        if clean == 'cols' || clean.start_with?('cols:')
+          val = clean.bytesize > 5 ? clean.byteslice(5, clean.bytesize - 5) : nil
+          if val.nil? || val.empty?
+            i += 1
+            val = tokens[i].chomp(',') if i < tokens.length
+          end
+          if val && val.downcase == 'nil'
+            cols = :explicit_nil
+          elsif val && val.match?(/\A\d+\z/)
+            cols = val.to_i
+          elsif val
+            cols_expr = val
+          end
+        elsif clean == 'limit' || clean.start_with?('limit:')
+          val = clean.bytesize > 6 ? clean.byteslice(6, clean.bytesize - 6) : nil
+          if val.nil? || val.empty?
+            i += 1
+            val = tokens[i].chomp(',') if i < tokens.length
+          end
+          limit_expr = val
+        elsif clean == 'offset' || clean.start_with?('offset:')
+          val = clean.bytesize > 7 ? clean.byteslice(7, clean.bytesize - 7) : nil
+          if val.nil? || val.empty?
+            i += 1
+            val = tokens[i].chomp(',') if i < tokens.length
+          end
+          offset_expr = val
+        else
+          collection_parts << clean
+        end
+        i += 1
       end
 
-      # Check for limit
-      if rest =~ /\blimit\s*:\s*([^,\s]+)/
-        limit_expr = Regexp.last_match(1)
-        rest = rest.gsub(/\blimit\s*:\s*[^,\s]+/, '')
-      end
-
-      # Check for offset
-      if rest =~ /\boffset\s*:\s*([^,\s]+)/
-        offset_expr = Regexp.last_match(1)
-        rest = rest.gsub(/\boffset\s*:\s*[^,\s]+/, '')
-      end
-
-      collection_expr = rest.tr(',', ' ').strip
+      collection_expr = collection_parts.join(' ')
 
       # Generate loop name
       loop_name = "#{var_name}-#{collection_expr}"
@@ -1107,29 +1131,25 @@ module LiquidIL
       label_end = @builder.new_label
 
       # Evaluate collection
-      expr_lexer = ExpressionLexer.new(collection_expr)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(collection_expr)
       parse_expression(expr_lexer)
 
       # Note: Unlike for loops, tablerow should NOT jump_if_empty
       # because even empty tablerows output <tr class="row1"></tr>
 
       if limit_expr
-        limit_lexer = ExpressionLexer.new(limit_expr)
-        limit_lexer.advance
+        limit_lexer = expr_lexer_for(limit_expr)
         parse_expression(limit_lexer)
       end
 
       if offset_expr
-        offset_lexer = ExpressionLexer.new(offset_expr)
-        offset_lexer.advance
+        offset_lexer = expr_lexer_for(offset_expr)
         parse_expression(offset_lexer)
       end
 
       # Handle dynamic cols expression
       if cols_expr
-        cols_lexer = ExpressionLexer.new(cols_expr)
-        cols_lexer.advance
+        cols_lexer = expr_lexer_for(cols_expr)
         parse_expression(cols_lexer)
         cols = :dynamic  # Signal that cols value is on the stack
       end
@@ -1170,14 +1190,12 @@ module LiquidIL
     end
 
     def parse_assign_tag(tag_args)
-      match = tag_args.match(/([\w-]+)\s*=\s*(.+)/)
-      raise SyntaxError, 'Invalid assign syntax' unless match
+      eq_pos = tag_args.index('=')
+      raise SyntaxError, 'Invalid assign syntax' unless eq_pos
+      var_name = tag_args.byteslice(0, eq_pos).strip
+      value_expr = tag_args.byteslice(eq_pos + 1, tag_args.bytesize - eq_pos - 1).strip
 
-      var_name = match[1]
-      value_expr = match[2]
-
-      expr_lexer = ExpressionLexer.new(value_expr)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(value_expr)
       parse_expression(expr_lexer)
       parse_filters(expr_lexer)
 
@@ -1186,8 +1204,7 @@ module LiquidIL
     end
 
     def parse_capture_tag(tag_args)
-      lexer = ExpressionLexer.new(tag_args)
-      lexer.advance
+      lexer = expr_lexer_for(tag_args)
 
       # Variable name can be identifier or quoted string
       var_name = case lexer.current
@@ -1243,8 +1260,7 @@ module LiquidIL
     def parse_cycle_tag(tag_args)
       # Parse: 'group': val1, val2, val3  OR  identifier: val1, val2  OR  val1, val2, val3
       # Values can be literals (strings, numbers) or variables (identifiers)
-      expr_lexer = ExpressionLexer.new(tag_args)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(tag_args)
 
       group = nil
       group_var = nil # Variable name to lookup for group
@@ -1351,8 +1367,7 @@ module LiquidIL
     end
 
     def parse_echo_tag(tag_args)
-      expr_lexer = ExpressionLexer.new(tag_args)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(tag_args)
       parse_expression(expr_lexer)
       parse_filters(expr_lexer)
       @builder.write_value
@@ -1565,8 +1580,7 @@ module LiquidIL
       label_else = @builder.new_label
       label_end = @builder.new_label
 
-      expr_lexer = ExpressionLexer.new(condition)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(condition)
       parse_expression(expr_lexer)
       @builder.jump_if_false(label_else)
 
@@ -1606,8 +1620,7 @@ module LiquidIL
 
       label_end = @builder.new_label
 
-      expr_lexer = ExpressionLexer.new(condition)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(condition)
       parse_expression(expr_lexer)
       @builder.jump_if_true(label_end)
 
@@ -1689,8 +1702,7 @@ module LiquidIL
       label_end = @builder.new_label
 
       # Evaluate collection
-      expr_lexer = ExpressionLexer.new(collection_expr)
-      expr_lexer.advance
+      expr_lexer = expr_lexer_for(collection_expr)
       parse_expression(expr_lexer)
 
       @builder.jump_if_empty(label_else)
@@ -1698,14 +1710,12 @@ module LiquidIL
       # Emit offset first, then limit (IL order matches application order)
       # Sequential readers can apply: offset first (drop N), then limit (take M)
       if offset_expr
-        offset_lexer = ExpressionLexer.new(offset_expr)
-        offset_lexer.advance
+        offset_lexer = expr_lexer_for(offset_expr)
         parse_expression(offset_lexer)
       end
 
       if limit_expr
-        limit_lexer = ExpressionLexer.new(limit_expr)
-        limit_lexer.advance
+        limit_lexer = expr_lexer_for(limit_expr)
         parse_expression(limit_lexer)
       end
 
@@ -1819,8 +1829,7 @@ module LiquidIL
 
     def parse_render_tag(tag_args)
       # Parse: 'partial_name' [with expr | for expr] [as alias] [, var1: val1]
-      lexer = ExpressionLexer.new(tag_args)
-      lexer.advance
+      lexer = expr_lexer_for(tag_args)
 
       # Get partial name (must be quoted string)
       raise SyntaxError, 'Syntax Error: Template name must be a quoted string' unless lexer.current == ExpressionLexer::STRING
@@ -2069,8 +2078,7 @@ module LiquidIL
 
     def parse_include_tag(tag_args)
       # Use expression lexer for proper tokenization
-      lexer = ExpressionLexer.new(tag_args)
-      lexer.advance
+      lexer = expr_lexer_for(tag_args)
 
       # First token is the partial name (string, identifier expression, nil, or number)
       if lexer.current == :STRING

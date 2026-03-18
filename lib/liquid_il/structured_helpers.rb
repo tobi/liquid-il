@@ -42,12 +42,22 @@ module LiquidIL
       end
     end
 
+    # Pre-built frozen string table for small integers (0-999) — avoids Integer#to_s allocation
+    INT_TO_S = Array.new(1000) { |i| i.to_s.freeze }.freeze
+
     # Inline output append — replaces 7-line case statement in generated code with 1 method call.
     # Hot path: String is most common, then Integer/Float.
     def self.output_append(output, value)
       case value
       when String then output << value
-      when Integer, Float then output << value.to_s
+      when Integer
+        # Fast path: use pre-built string for small non-negative integers (loop indices, counts)
+        if value >= 0 && value < 1000
+          output << INT_TO_S[value]
+        else
+          output << value.to_s
+        end
+      when Float then output << value.to_s
       when nil then nil
       when true then output << "true"
       when false then output << "false"
@@ -379,7 +389,12 @@ module LiquidIL
         child_scope.file_system = fs
         child_scope.render_errors = scope.render_errors
         # Execute the compiled proc directly with the child scope
-        result = compiled.instance_variable_get(:@compiled_proc).call(child_scope, compiled.spans, compiled.source)
+        pc = compiled.instance_variable_get(:@partial_constants)
+        result = if pc
+          compiled.instance_variable_get(:@compiled_proc).call(child_scope, compiled.spans, compiled.source, pc)
+        else
+          compiled.instance_variable_get(:@compiled_proc).call(child_scope, compiled.spans, compiled.source)
+        end
         output << result
       rescue LiquidIL::RuntimeError => e
         raise unless scope.render_errors
@@ -427,6 +442,17 @@ module LiquidIL
       [paginate, items]
     end
 
+    # Regex matching HTML-special characters that need escaping
+    NEEDS_ESCAPE_RE = /[&<>"']/
+
+    # Fast HTML escape: returns input unchanged (zero-alloc) when no escaping needed.
+    # CGI.escapeHTML always allocates a new String, even for "safe" input.
+    def self.escape_html(value)
+      return nil if value.nil?
+      s = value.is_a?(String) ? value : LiquidIL::Utils.to_s(value)
+      s.match?(NEEDS_ESCAPE_RE) ? CGI.escapeHTML(s) : s
+    end
+
     # Short aliases for generated code compactness (saves ~10% code size)
     class << self
       alias_method :lf, :lookup_prop_fast
@@ -440,6 +466,7 @@ module LiquidIL
       alias_method :sc, :slice_collection
       alias_method :vi, :valid_integer
       alias_method :bl, :bracket_lookup
+      alias_method :eh, :escape_html
     end
   end
 end

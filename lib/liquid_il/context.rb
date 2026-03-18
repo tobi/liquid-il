@@ -7,9 +7,9 @@ module LiquidIL
     attr_accessor :file_system, :render_errors, :current_file
     attr_reader :strict_errors
 
-    def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true)
+    def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true, locals: nil)
       @static_environments = static_environments
-      @locals = {}  # Always needed (assigns happen immediately)
+      @locals = locals || {}
       @file_system = file_system
       @depth = depth
       @strict_errors = strict_errors
@@ -56,6 +56,12 @@ module LiquidIL
 
     def isolated
       scope = RenderScope.new(@static_environments, @file_system, @depth, strict_errors: @strict_errors, render_errors: @render_errors)
+      scope.current_file = @current_file
+      scope
+    end
+
+    def isolated_with(assigns)
+      scope = RenderScope.new(@static_environments, @file_system, @depth, strict_errors: @strict_errors, render_errors: @render_errors, locals: assigns)
       scope.current_file = @current_file
       scope
     end
@@ -134,24 +140,20 @@ module LiquidIL
         @static_environments = stringify_keys(static_environments)
         root_scope = stringify_keys(assigns)
       else
-        # Optimized common case: assigns serves as both static env and root scope.
-        # If keys are already strings, take ownership (no copy).
+        # No explicit static_environments: assigns is both the initial context
+        # and the mutable scope. We dup for static_environments so that
+        # runtime assigns ({% assign %}) don't leak into isolated render scopes.
         all_strings = false
         if assigns.is_a?(Hash) && !assigns.empty?
           all_strings = true
           assigns.each_key { |k| unless k.is_a?(String); all_strings = false; break; end }
         end
         if all_strings
-          # Keys already strings — take direct ownership of the hash.
-          # static_environments and root_scope share the same object.
-          # This is safe because assigns to root_scope via scope.assign go to @scopes.last,
-          # and lookups check scopes first before falling through to static_environments.
-          @static_environments = assigns
           root_scope = assigns
         else
           root_scope = stringify_keys(assigns)
-          @static_environments = root_scope
         end
+        @static_environments = root_scope.dup
       end
       @scopes = nil  # Lazy: only created on push_scope
       @root_scope = root_scope
@@ -223,12 +225,14 @@ module LiquidIL
     def lookup(key)
       key = key.to_s unless key.is_a?(String)
       # Fast path: check top scope first (most common for loop vars, assigns)
+      # Use [] first, only call key? when nil (avoids double hash lookup for non-nil values)
       top = @top_scope
-      if top.key?(key)
+      v = top[key]
+      if !v.nil? || top.key?(key)
         # Ultra-fast path: no counters active (most common case)
-        return top[key] unless @has_counters
+        return v unless @has_counters
         # But assigned vars take precedence over counters, check that
-        return top[key] if (@assigned_vars && @assigned_vars[key]) || !@counters.key?(key)
+        return v if (@assigned_vars && @assigned_vars[key]) || !@counters.key?(key)
       end
       # Check if this was explicitly assigned - assigned vars take precedence over counters
       if @has_counters && @assigned_vars && @assigned_vars[key]
@@ -416,6 +420,12 @@ module LiquidIL
 
     def isolated
       scope = RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors, render_errors: @render_errors)
+      scope.current_file = @current_file
+      scope
+    end
+
+    def isolated_with(assigns)
+      scope = RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors, render_errors: @render_errors, locals: assigns)
       scope.current_file = @current_file
       scope
     end
