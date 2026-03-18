@@ -725,13 +725,13 @@ module LiquidIL
 
     def parse_filter_args(lexer)
       pos_args_count = 0
-      kw_args_builders = []
+      kw_args_builders = nil  # Lazy — most filters have no keyword args
 
       loop do
         # Check for keyword argument
         if lexer.current == ExpressionLexer::IDENTIFIER
           # Look ahead for colon
-          saved_state = lexer.save_state
+          lexer.save_state
           lexer.advance
 
           if lexer.current == ExpressionLexer::COLON
@@ -749,10 +749,10 @@ module LiquidIL
             @builder.const_string(key)
             parse_expression(lexer)
             @builder = original_builder
-            kw_args_builders << kw_builder
+            (kw_args_builders ||= []) << kw_builder
           else
             # Not a keyword arg, restore and parse as positional
-            lexer.restore_state(saved_state)
+            lexer.restore_state
             parse_expression(lexer)
             pos_args_count += 1
           end
@@ -767,11 +767,11 @@ module LiquidIL
       end
 
       # Now emit all keyword arguments
-      kw_args_builders.each do |builder|
-        @builder.emit_from(builder)
-      end
+      if kw_args_builders
+        kw_args_builders.each do |builder|
+          @builder.emit_from(builder)
+        end
 
-      if kw_args_builders.any?
         @builder.build_hash(kw_args_builders.length)
         pos_args_count + 1
       else
