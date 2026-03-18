@@ -1,6 +1,14 @@
 # frozen_string_literal: true
 
-require "string_view"
+if ENV["LIQUID_IL_POLYFILL_STRINGVIEW"]
+  require_relative "string_view_polyfill"
+else
+  begin
+    require "string_view"
+  rescue LoadError
+    require_relative "string_view_polyfill"
+  end
+end
 
 # String#materialize returns self — unifies the StringView/String boundary
 # so callers can unconditionally call .materialize without type checks.
