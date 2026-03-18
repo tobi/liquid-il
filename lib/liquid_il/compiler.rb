@@ -1323,12 +1323,14 @@ module LiquidIL
 
     def lower_const_partial(inst, target_opcode)
       name = inst[1]
-      args = inst[2].dup
       if inline_partials_enabled? && @partial_loader
+        args = inst[2].dup
         compiled = compile_partial_template(name, @partial_loader)
         args["__compiled_template__"] = compiled if compiled
+        [target_opcode, name, args]
+      else
+        [target_opcode, name, inst[2]]
       end
-      [target_opcode, name, args]
     end
 
     def compile_partial_template(name, loader)
