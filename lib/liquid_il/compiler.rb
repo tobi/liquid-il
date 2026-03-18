@@ -401,7 +401,8 @@ module LiquidIL
         if inst[0] == IL::CALL_FILTER
           name = inst[1].to_s
           argc = inst[2]
-          if SAFE_FOLD_FILTERS.include?(name)
+          prev_op = i > 0 ? instructions[i - 1][0] : nil
+          if SAFE_FOLD_FILTERS.include?(name) && (CONST_OPCODE_SET[prev_op] || prev_op == IL::BUILD_HASH)
             collected = collect_const_values(instructions, i - 1, argc + 1)
             if collected
               values, start_idx = collected
