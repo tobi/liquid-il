@@ -15,6 +15,23 @@ module LiquidIL
     NESTING_OPEN_TAGS = Set.new(%w[if unless case for tablerow capture comment]).freeze
     NESTING_CLOSE_TAGS = Set.new(%w[endif endunless endcase endfor endtablerow endcapture endcomment]).freeze
 
+    # Frozen end-tag arrays for parse_block_body — avoid per-call Array alloc
+    ET_ELSIF_ELSE_ENDIF = %w[elsif else endif].freeze
+    ET_ELSIF_ELSE_ENDUNLESS = %w[elsif else endunless].freeze
+    ET_WHEN_ELSE_ENDCASE = %w[when else endcase].freeze
+    ET_ELSE_ENDFOR = %w[else endfor].freeze
+    ET_ENDFOR = %w[endfor].freeze
+    ET_ENDIF = %w[endif].freeze
+    ET_ENDUNLESS = %w[endunless].freeze
+    ET_ENDTABLEROW = %w[endtablerow].freeze
+    ET_ENDCAPTURE = %w[endcapture].freeze
+    ET_ENDIFCHANGED = %w[endifchanged].freeze
+    ET_ENDPAGINATE = %w[endpaginate].freeze
+
+    # Frozen lookup arrays — avoid per-call allocations
+    COMMAND_PROPS = %w[size first last].freeze
+    RENDER_BREAK_WORDS = %w[as with for].freeze
+
     def initialize(source, error_mode: :lax, warnings: nil)
       @source = source
       @template_lexer = TemplateLexer.new(source)
@@ -621,7 +638,7 @@ module LiquidIL
       lexer.advance
 
       # Check for command optimizations
-      if %w[size first last].include?(name) && lexer.current != ExpressionLexer::DOT && lexer.current != ExpressionLexer::LBRACKET
+      if COMMAND_PROPS.include?(name) && lexer.current != ExpressionLexer::DOT && lexer.current != ExpressionLexer::LBRACKET
         # This is a variable, not a command
         @builder.find_var(name)
       else
@@ -778,7 +795,7 @@ module LiquidIL
       branch_raws = []
 
       # Parse body until elsif/else/endif
-      parse_block_body(%w[elsif else endif]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       branch_blanks << body_blank
       branch_raws << body_raws
 
@@ -794,14 +811,14 @@ module LiquidIL
         @builder.label(label_else)
         advance_template
         # Stop at elsif/else/endif - any elsif/else after else is malformed but ignored
-        parse_block_body(%w[elsif else endif]); end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
+        parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
         branch_blanks << else_blank
         branch_raws << else_raws
         # Skip any remaining elsif/else until endif (discard their content)
         while end_tag == 'elsif' || end_tag == 'else'
           advance_template
           @builder.push_capture  # Capture to discard
-          parse_block_body(%w[elsif else endif]); end_tag = @_bb_tag; _ = @_bb_blank; _ = @_bb_raws
+          parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; _ = @_bb_blank; _ = @_bb_raws
           @builder.pop_capture
           @builder.pop  # Discard captured content
         end
@@ -832,7 +849,7 @@ module LiquidIL
       @builder.jump_if_false(label_else)
 
       advance_template
-      parse_block_body(%w[elsif else endif]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       branch_blanks << body_blank
       branch_raws << body_raws
 
@@ -847,7 +864,7 @@ module LiquidIL
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
-        parse_block_body(%w[endif]); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
+        parse_block_body(ET_ENDIF); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
         branch_blanks << else_blank
         branch_raws << else_raws
         advance_template
@@ -872,7 +889,7 @@ module LiquidIL
       branch_blanks = []
       branch_raws = []
 
-      parse_block_body(%w[elsif else endunless]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_ELSIF_ELSE_ENDUNLESS); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       branch_blanks << body_blank
       branch_raws << body_raws
 
@@ -887,7 +904,7 @@ module LiquidIL
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
-        parse_block_body(%w[endunless]); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
+        parse_block_body(ET_ENDUNLESS); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
         branch_blanks << else_blank
         branch_raws << else_raws
         advance_template
@@ -917,7 +934,7 @@ module LiquidIL
       @builder.jump_if_false(label_else)
 
       advance_template
-      parse_block_body(%w[elsif else endunless]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_ELSIF_ELSE_ENDUNLESS); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       branch_blanks << body_blank
       branch_raws << body_raws
 
@@ -932,7 +949,7 @@ module LiquidIL
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
-        parse_block_body(%w[endunless]); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
+        parse_block_body(ET_ENDUNLESS); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
         branch_blanks << else_blank
         branch_raws << else_raws
         advance_template
@@ -973,7 +990,7 @@ module LiquidIL
       # Parse until first when or else - discard this content (between case and first when)
       # In Liquid, this content is ignored
       @builder.push_capture
-      parse_block_body(%w[when else endcase]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_WHEN_ELSE_ENDCASE); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       @builder.pop_capture  # Discard captured content
       @builder.pop  # Pop and discard the captured string from stack
       # Don't track this for blank detection - it's always discarded
@@ -1089,7 +1106,7 @@ module LiquidIL
       @builder.store_temp(case_flag_temp)
 
       advance_template
-      parse_block_body(%w[when else endcase]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_WHEN_ELSE_ENDCASE); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
 
       @builder.label(label_next)
 
@@ -1105,7 +1122,7 @@ module LiquidIL
       @builder.jump_if_true(label_skip)  # Skip else if any when matched
 
       advance_template
-      parse_block_body(%w[when else endcase]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_WHEN_ELSE_ENDCASE); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
 
       @builder.jump(label_end)
       @builder.label(label_skip)
@@ -1194,7 +1211,7 @@ module LiquidIL
 
       # Render body
       @loop_stack.push({ break: label_break, continue: label_continue })
-      parse_block_body(%w[else endfor]); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
+      parse_block_body(ET_ELSE_ENDFOR); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
       @loop_stack.pop
 
       # Check for interrupts
@@ -1216,7 +1233,7 @@ module LiquidIL
       else_raws = nil
       if end_tag == 'else'
         advance_template
-        parse_block_body(%w[endfor]); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
+        parse_block_body(ET_ENDFOR); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
       end
 
       @builder.label(label_end)
@@ -1311,7 +1328,7 @@ module LiquidIL
 
       # Render body
       @loop_stack.push({ break: label_break, continue: label_continue })
-      parse_block_body(%w[endtablerow]); body_blank = @_bb_blank
+      parse_block_body(ET_ENDTABLEROW); body_blank = @_bb_blank
       @loop_stack.pop
 
       # Check for interrupts
@@ -1634,7 +1651,7 @@ module LiquidIL
 
       @builder.push_capture
 
-      parse_block_body(%w[endcapture]); _end_tag = @_bb_tag; _body_blank = @_bb_blank; _body_raws = @_bb_raws
+      parse_block_body(ET_ENDCAPTURE); _end_tag = @_bb_tag; _body_blank = @_bb_blank; _body_raws = @_bb_raws
       advance_template
 
       @builder.pop_capture
@@ -1651,7 +1668,7 @@ module LiquidIL
       # Capture the body content
       @builder.push_capture
 
-      parse_block_body(%w[endifchanged]); _end_tag = @_bb_tag; _body_blank = @_bb_blank; _body_raws = @_bb_raws
+      parse_block_body(ET_ENDIFCHANGED); _end_tag = @_bb_tag; _body_blank = @_bb_blank; _body_raws = @_bb_raws
       advance_template
 
       @builder.pop_capture
@@ -1724,7 +1741,7 @@ module LiquidIL
         @builder.emit(:PAGINATE_SETUP, coll_path, page_size)
       end
 
-      parse_block_body(["endpaginate"])
+      parse_block_body(ET_ENDPAGINATE)
       @builder.emit(:PAGINATE_TEARDOWN) if by_pos
       advance_template
       true
@@ -2414,7 +2431,7 @@ module LiquidIL
           lexer.advance
         when ExpressionLexer::IDENTIFIER
           # Check for keywords that end expressions
-          break if paren_depth == 0 && %w[as with for].include?(lexer.value)
+          break if paren_depth == 0 && RENDER_BREAK_WORDS.include?(lexer.value)
 
           # Peek ahead to see if this is a keyword argument (identifier followed by colon)
           if paren_depth == 0
@@ -2691,7 +2708,7 @@ module LiquidIL
         when :IDENTIFIER
           val = lexer.value
           # Stop at reserved keywords
-          break if %w[with for as].include?(val)
+          break if RENDER_BREAK_WORDS.include?(val)
           # Check for keyword arg (identifier followed by colon)
           if lexer.peek == :COLON
             break
