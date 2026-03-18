@@ -1083,8 +1083,10 @@ module LiquidIL
       while ve > vs && src.getbyte(ve - 1) == 32; ve -= 1; end
       var_name = _intern_from(src, vs, ve - vs)
 
-      limit_expr, offset_expr, offset_continue, reversed, coll_off, coll_len =
+      lo, ll, oo, ol, offset_continue, reversed, coll_off, coll_len =
         _parse_for_options(src, in_pos + 4, limit_off)
+      has_limit = ll > 0
+      has_offset = ol > 0
 
       # Build loop name — use object_id pair as key (both strings are interned/frozen)
       collection_str = coll_len > 0 ? _intern_from(src, coll_off, coll_len) : ""
@@ -1108,19 +1110,19 @@ module LiquidIL
 
       # Emit offset first, then limit (IL order matches application order)
       # Sequential readers can apply: offset first (drop N), then limit (take M)
-      if offset_expr
-        offset_lexer = expr_lexer_for(offset_expr)
+      if has_offset
+        offset_lexer = expr_lexer_for_region(oo, ol)
         parse_expression(offset_lexer)
       end
 
-      if limit_expr
-        limit_lexer = expr_lexer_for(limit_expr)
+      if has_limit
+        limit_lexer = expr_lexer_for_region(lo, ll)
         parse_expression(limit_lexer)
       end
 
       # Initialize for loop (pops collection, creates iterator)
       # Pass label_end for error recovery - on error, output error message and jump past the for block
-      @builder.for_init(var_name, loop_name, !limit_expr.nil?, !offset_expr.nil?, offset_continue, reversed, label_end)
+      @builder.for_init(var_name, loop_name, has_limit, has_offset, offset_continue, reversed, label_end)
 
       @builder.push_scope
       @builder.push_forloop
@@ -1193,9 +1195,11 @@ module LiquidIL
       while ve > vs && src.getbyte(ve - 1) == 32; ve -= 1; end
       var_name = _intern_from(src, vs, ve - vs)
 
-      # Parse rest after ' in ' using byte scanning
-      limit_expr, offset_expr, _, _, coll_off, coll_len, cols, cols_expr =
+      # Parse rest after ' in ' using byte scanning — returns regions (zero alloc)
+      lo, ll, oo, ol, _, _, coll_off, coll_len, cols, co, cl =
         _parse_tablerow_options(src, in_pos + 4, limit_off)
+      has_limit = ll > 0
+      has_offset = ol > 0
 
       collection_str = coll_len > 0 ? _intern_from(src, coll_off, coll_len) : ""
       # Generate loop name — use object_id pair for zero-alloc cache lookup
@@ -1216,25 +1220,25 @@ module LiquidIL
       # Note: Unlike for loops, tablerow should NOT jump_if_empty
       # because even empty tablerows output <tr class="row1"></tr>
 
-      if limit_expr
-        limit_lexer = expr_lexer_for(limit_expr)
+      if has_limit
+        limit_lexer = expr_lexer_for_region(lo, ll)
         parse_expression(limit_lexer)
       end
 
-      if offset_expr
-        offset_lexer = expr_lexer_for(offset_expr)
+      if has_offset
+        offset_lexer = expr_lexer_for_region(oo, ol)
         parse_expression(offset_lexer)
       end
 
       # Handle dynamic cols expression
-      if cols_expr
-        cols_lexer = expr_lexer_for(cols_expr)
+      if cl > 0
+        cols_lexer = expr_lexer_for_region(co, cl)
         parse_expression(cols_lexer)
         cols = :dynamic  # Signal that cols value is on the stack
       end
 
       # Initialize tablerow (pops collection, creates iterator with cols)
-      @builder.tablerow_init(var_name, loop_name, !limit_expr.nil?, !offset_expr.nil?, cols)
+      @builder.tablerow_init(var_name, loop_name, has_limit, has_offset, cols)
 
       @builder.push_scope
       # NOTE: tablerow does NOT push a forloop - it has its own tablerowloop variable
@@ -1322,11 +1326,12 @@ module LiquidIL
     end
 
     # Parse for-tag options from a string starting at `start`.
-    # Returns [limit_expr, offset_expr, offset_continue, reversed, collection_expr]
+    # Returns [limit_off, limit_len, offset_off, offset_len, offset_continue, reversed, collection_expr]
+    # limit/offset are returned as source regions (offset, length) — zero allocation.
     # Avoids .split — tokenizes by scanning bytes.
     def _parse_for_options(src, start, scan_limit = nil)
-      limit_expr = nil
-      offset_expr = nil
+      limit_off = 0; limit_len = 0
+      offset_off = 0; offset_len = 0
       offset_continue = false
       reversed = false
       collection_end = start  # Track end of collection expression
@@ -1359,7 +1364,7 @@ module LiquidIL
         elsif tok_len >= 5 && fb == 108 && _bytes_eq?(src, tok_start, "limit", 5)
           in_collection = false
           if tok_len > 6 && src.getbyte(tok_start + 5) == 58  # ':'
-            limit_expr = src.byteslice(tok_start + 6, te - tok_start - 6)
+            limit_off = tok_start + 6; limit_len = te - tok_start - 6
           else
             # Next token is the value
             while pos < len && src.getbyte(pos) == 32; pos += 1; end
@@ -1367,25 +1372,30 @@ module LiquidIL
             while pos < len && (b = src.getbyte(pos)) && b != 32 && b != 9; pos += 1; end
             ve2 = pos
             ve2 -= 1 if ve2 > vs2 && src.getbyte(ve2 - 1) == 44
-            limit_expr = src.byteslice(vs2, ve2 - vs2) if ve2 > vs2
+            if ve2 > vs2
+              limit_off = vs2; limit_len = ve2 - vs2
+            end
           end
         elsif tok_len >= 6 && fb == 111 && _bytes_eq?(src, tok_start, "offset", 6)
           in_collection = false
-          val = nil
+          vo = 0; vl = 0
           if tok_len > 7 && src.getbyte(tok_start + 6) == 58
-            val = src.byteslice(tok_start + 7, te - tok_start - 7)
+            vo = tok_start + 7; vl = te - tok_start - 7
           else
             while pos < len && src.getbyte(pos) == 32; pos += 1; end
             vs2 = pos
             while pos < len && (b = src.getbyte(pos)) && b != 32 && b != 9; pos += 1; end
             ve2 = pos
             ve2 -= 1 if ve2 > vs2 && src.getbyte(ve2 - 1) == 44
-            val = src.byteslice(vs2, ve2 - vs2) if ve2 > vs2
+            if ve2 > vs2
+              vo = vs2; vl = ve2 - vs2
+            end
           end
-          if val == "continue"
+          # Check for "continue" by byte matching (8 bytes: c-o-n-t-i-n-u-e)
+          if vl == 8 && src.getbyte(vo) == 99 && _bytes_eq?(src, vo, "continue")
             offset_continue = true
-          else
-            offset_expr = val
+          elsif vl > 0
+            offset_off = vo; offset_len = vl
           end
         else
           # Part of collection expression
@@ -1399,16 +1409,18 @@ module LiquidIL
       cs = start
       while cs < ce && src.getbyte(cs) == 32; cs += 1; end
 
-      [limit_expr, offset_expr, offset_continue, reversed, cs, [ce - cs, 0].max]
+      [limit_off, limit_len, offset_off, offset_len, offset_continue, reversed, cs, [ce - cs, 0].max]
     end
 
     # Parse tablerow options — like _parse_for_options but with cols: support.
-    # Returns [limit_expr, offset_expr, offset_continue, reversed, collection_expr, cols, cols_expr]
+    # Returns [limit_off, limit_len, offset_off, offset_len, offset_continue, reversed,
+    #          coll_start, coll_len, cols, cols_off, cols_len]
+    # limit/offset/cols are returned as source regions (offset, length) — zero allocation.
     def _parse_tablerow_options(src, start, scan_limit = nil)
-      limit_expr = nil
-      offset_expr = nil
+      limit_off = 0; limit_len = 0
+      offset_off = 0; offset_len = 0
       cols = nil
-      cols_expr = nil
+      cols_off = 0; cols_len = 0
       collection_end = start
       len = scan_limit || src.bytesize
       pos = start
@@ -1429,49 +1441,68 @@ module LiquidIL
         fb = src.getbyte(tok_start)
         if tok_len >= 4 && fb == 99 && _bytes_eq?(src, tok_start, "cols", 4) # cols
           in_collection = false
-          val = nil
+          vo = 0; vl = 0
           if tok_len > 5 && src.getbyte(tok_start + 4) == 58
-            val = src.byteslice(tok_start + 5, te - tok_start - 5)
+            vo = tok_start + 5; vl = te - tok_start - 5
           else
             while pos < len && src.getbyte(pos) == 32; pos += 1; end
             vs2 = pos
             while pos < len && (b = src.getbyte(pos)) && b != 32 && b != 9; pos += 1; end
             ve2 = pos
             ve2 -= 1 if ve2 > vs2 && src.getbyte(ve2 - 1) == 44
-            val = src.byteslice(vs2, ve2 - vs2) if ve2 > vs2
+            if ve2 > vs2
+              vo = vs2; vl = ve2 - vs2
+            end
           end
-          if val
-            if val.downcase == 'nil'
+          if vl > 0
+            # Check for 'nil' (3 bytes: n-i-l)
+            if vl == 3 && (src.getbyte(vo) | 32) == 110 && (src.getbyte(vo + 1) | 32) == 105 && (src.getbyte(vo + 2) | 32) == 108
               cols = :explicit_nil
-            elsif val.match?(/\A\d+\z/)
-              cols = val.to_i
             else
-              cols_expr = val
+              # Check if all digits
+              all_digits = true; j = 0
+              while j < vl
+                db = src.getbyte(vo + j)
+                unless db >= 48 && db <= 57; all_digits = false; break; end
+                j += 1
+              end
+              if all_digits
+                # Parse integer from bytes
+                num = 0; j = 0
+                while j < vl; num = num * 10 + (src.getbyte(vo + j) - 48); j += 1; end
+                cols = num
+              else
+                cols_off = vo; cols_len = vl
+              end
             end
           end
         elsif tok_len >= 5 && fb == 108 && _bytes_eq?(src, tok_start, "limit", 5)
           in_collection = false
           if tok_len > 6 && src.getbyte(tok_start + 5) == 58
-            limit_expr = src.byteslice(tok_start + 6, te - tok_start - 6)
+            limit_off = tok_start + 6; limit_len = te - tok_start - 6
           else
             while pos < len && src.getbyte(pos) == 32; pos += 1; end
             vs2 = pos
             while pos < len && (b = src.getbyte(pos)) && b != 32 && b != 9; pos += 1; end
             ve2 = pos
             ve2 -= 1 if ve2 > vs2 && src.getbyte(ve2 - 1) == 44
-            limit_expr = src.byteslice(vs2, ve2 - vs2) if ve2 > vs2
+            if ve2 > vs2
+              limit_off = vs2; limit_len = ve2 - vs2
+            end
           end
         elsif tok_len >= 6 && fb == 111 && _bytes_eq?(src, tok_start, "offset", 6)
           in_collection = false
           if tok_len > 7 && src.getbyte(tok_start + 6) == 58
-            offset_expr = src.byteslice(tok_start + 7, te - tok_start - 7)
+            offset_off = tok_start + 7; offset_len = te - tok_start - 7
           else
             while pos < len && src.getbyte(pos) == 32; pos += 1; end
             vs2 = pos
             while pos < len && (b = src.getbyte(pos)) && b != 32 && b != 9; pos += 1; end
             ve2 = pos
             ve2 -= 1 if ve2 > vs2 && src.getbyte(ve2 - 1) == 44
-            offset_expr = src.byteslice(vs2, ve2 - vs2) if ve2 > vs2
+            if ve2 > vs2
+              offset_off = vs2; offset_len = ve2 - vs2
+            end
           end
         else
           collection_end = pos if in_collection
@@ -1483,7 +1514,7 @@ module LiquidIL
       cs = start
       while cs < ce && src.getbyte(cs) == 32; cs += 1; end
 
-      [limit_expr, offset_expr, false, false, cs, [ce - cs, 0].max, cols, cols_expr]
+      [limit_off, limit_len, offset_off, offset_len, false, false, cs, [ce - cs, 0].max, cols, cols_off, cols_len]
     end
 
     # Check if bytes at `pos` match `str` for `len` bytes (or full str length)
