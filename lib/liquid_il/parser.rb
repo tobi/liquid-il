@@ -972,12 +972,12 @@ module LiquidIL
       # Process interspersed when/else clauses
       while end_tag == 'when' || end_tag == 'else'
         if end_tag == 'when'
-          end_tag, when_blank = parse_when_clause_with_flag(case_value_temp, case_flag_temp)
-          all_blank = all_blank && when_blank
+          parse_when_clause_with_flag(case_value_temp, case_flag_temp)
         else  # else
-          end_tag, else_blank = parse_else_clause_with_flag(case_flag_temp)
-          all_blank = all_blank && else_blank
+          parse_else_clause_with_flag(case_flag_temp)
         end
+        end_tag = @_case_end_tag
+        all_blank = all_blank && @_case_blank
       end
 
       if end_tag == 'endcase'
@@ -1077,11 +1077,11 @@ module LiquidIL
       @builder.store_temp(case_flag_temp)
 
       advance_template
-      parse_block_body(ET_WHEN_ELSE_ENDCASE); end_tag = @_bb_tag; body_blank = @_bb_blank
+      parse_block_body(ET_WHEN_ELSE_ENDCASE); body_blank = @_bb_blank
 
       @builder.label(label_next)
 
-      [end_tag, body_blank]
+      @_case_end_tag = @_bb_tag; @_case_blank = body_blank
     end
 
     def parse_else_clause_with_flag(case_flag_temp)
@@ -1102,7 +1102,7 @@ module LiquidIL
       # But we already parsed it above, so just continue
       @builder.label(label_end)
 
-      [end_tag, body_blank]
+      @_case_end_tag = @_bb_tag; @_case_blank = body_blank
     end
 
     def parse_for_tag(tag_args = nil)
