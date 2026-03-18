@@ -175,7 +175,7 @@ module LiquidIL
 
           # Pass 5: Collapse FIND_VAR + LOOKUP_CONST_PATH
           if p5 && opcode == IL::FIND_VAR && next_opcode == IL::LOOKUP_CONST_PATH
-            instructions[i] = [IL::FIND_VAR_PATH, inst[1], next_inst[1]]
+            instructions[i] = IL::Builder.cached_inst2(IL::FIND_VAR_PATH, inst[1], next_inst[1])
             spans[i] = spans[i + 1]
             instructions.delete_at(i + 1)
             spans.delete_at(i + 1)
@@ -209,7 +209,7 @@ module LiquidIL
 
           # Pass 20: Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR
           if p20 && opcode == IL::FIND_VAR && next_opcode == IL::WRITE_VALUE
-            instructions[i] = [IL::WRITE_VAR, inst[1]]
+            instructions[i] = IL::Builder.cached_inst1(IL::WRITE_VAR, inst[1])
             spans[i] = spans[i + 1]
             instructions.delete_at(i + 1)
             spans.delete_at(i + 1)
@@ -219,7 +219,7 @@ module LiquidIL
 
           # Pass 20: Fuse FIND_VAR_PATH + WRITE_VALUE → WRITE_VAR_PATH
           if p20 && opcode == IL::FIND_VAR_PATH && next_opcode == IL::WRITE_VALUE
-            instructions[i] = [IL::WRITE_VAR_PATH, inst[1], inst[2]]
+            instructions[i] = IL::Builder.cached_inst2(IL::WRITE_VAR_PATH, inst[1], inst[2])
             spans[i] = spans[i + 1]
             instructions.delete_at(i + 1)
             spans.delete_at(i + 1)
@@ -1425,23 +1425,23 @@ module LiquidIL
     def const_instruction_for(value)
       case value
       when nil
-        [IL::CONST_NIL]
+        IL::I_CONST_NIL
       when true
-        [IL::CONST_TRUE]
+        IL::I_CONST_TRUE
       when false
-        [IL::CONST_FALSE]
+        IL::I_CONST_FALSE
       when Integer
-        [IL::CONST_INT, value]
+        IL::Builder::CONST_INT_CACHE[value] || IL::Builder.cached_inst1(IL::CONST_INT, value)
       when Float
-        [IL::CONST_FLOAT, value]
+        IL::Builder.cached_inst1(IL::CONST_FLOAT, value)
       when String
-        [IL::CONST_STRING, value]
+        IL::Builder.cached_inst1(IL::CONST_STRING, value)
       when RangeValue
         [IL::CONST_RANGE, value.start_val, value.end_val]
       when EmptyLiteral
-        [IL::CONST_EMPTY]
+        IL::I_CONST_EMPTY
       when BlankLiteral
-        [IL::CONST_BLANK]
+        IL::I_CONST_BLANK
       else
         nil
       end
