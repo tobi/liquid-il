@@ -325,8 +325,22 @@ module LiquidIL
         @instructions << I_HALT; @spans << @current_span; self
       end
 
+      COMPARE_EQ = [COMPARE, :eq].freeze
+      COMPARE_NE = [COMPARE, :ne].freeze
+      COMPARE_LT = [COMPARE, :lt].freeze
+      COMPARE_GT = [COMPARE, :gt].freeze
+      COMPARE_LE = [COMPARE, :le].freeze
+      COMPARE_GE = [COMPARE, :ge].freeze
+      COMPARE_CACHE = { eq: COMPARE_EQ, ne: COMPARE_NE, lt: COMPARE_LT,
+                        gt: COMPARE_GT, le: COMPARE_LE, ge: COMPARE_GE }.freeze
+
       def compare(op)
-        emit1(COMPARE, op)
+        cached = COMPARE_CACHE[op]
+        if cached
+          @instructions << cached; @spans << @current_span; self
+        else
+          emit1(COMPARE, op)
+        end
       end
 
       def case_compare
@@ -391,8 +405,13 @@ module LiquidIL
         @instructions << I_POP_FORLOOP; @spans << @current_span; self
       end
 
+      I_PUSH_INTERRUPT_BREAK = [PUSH_INTERRUPT, :break].freeze
+      I_PUSH_INTERRUPT_CONTINUE = [PUSH_INTERRUPT, :continue].freeze
+
       def push_interrupt(type)
-        emit1(PUSH_INTERRUPT, type)
+        @instructions << (type == :break ? I_PUSH_INTERRUPT_BREAK : I_PUSH_INTERRUPT_CONTINUE)
+        @spans << @current_span
+        self
       end
 
       def pop_interrupt
