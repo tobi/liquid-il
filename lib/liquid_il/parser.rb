@@ -791,20 +791,20 @@ module LiquidIL
       @builder.is_truthy
       @builder.jump_if_false(label_else)
 
-      branch_blanks = []
+      all_blank = true
       branch_raws = []
 
       # Parse body until elsif/else/endif
       parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
-      branch_blanks << body_blank
+      all_blank = all_blank && body_blank
       branch_raws << body_raws
 
       case end_tag
       when 'elsif'
         @builder.jump(label_end)
         @builder.label(label_else)
-        elsif_blanks, elsif_raws = parse_elsif_chain(label_end)
-        branch_blanks.concat(elsif_blanks)
+        elsif_blank, elsif_raws = parse_elsif_chain(label_end)
+        all_blank = all_blank && elsif_blank
         branch_raws.concat(elsif_raws)
       when 'else'
         @builder.jump(label_end)
@@ -812,7 +812,7 @@ module LiquidIL
         advance_template
         # Stop at elsif/else/endif - any elsif/else after else is malformed but ignored
         parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
-        branch_blanks << else_blank
+        all_blank = all_blank && else_blank
         branch_raws << else_raws
         # Skip any remaining elsif/else until endif (discard their content)
         while end_tag == 'elsif' || end_tag == 'else'
@@ -829,13 +829,12 @@ module LiquidIL
       end
 
       @builder.label(label_end)
-      tag_blank = branch_blanks.all?
-      branch_raws.each { |indices| strip_blank_raws(indices) } if tag_blank
-      tag_blank
+      branch_raws.each { |indices| strip_blank_raws(indices) } if all_blank
+      all_blank
     end
 
     def parse_elsif_chain(label_end)
-      branch_blanks = []
+      all_blank = true
       branch_raws = []
 
       cache_tag_args_region!
@@ -850,22 +849,22 @@ module LiquidIL
 
       advance_template
       parse_block_body(ET_ELSIF_ELSE_ENDIF); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
-      branch_blanks << body_blank
+      all_blank = all_blank && body_blank
       branch_raws << body_raws
 
       case end_tag
       when 'elsif'
         @builder.jump(label_end)
         @builder.label(label_else)
-        nested_blanks, nested_raws = parse_elsif_chain(label_end)
-        branch_blanks.concat(nested_blanks)
+        nested_blank, nested_raws = parse_elsif_chain(label_end)
+        all_blank = all_blank && nested_blank
         branch_raws.concat(nested_raws)
       when 'else'
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
         parse_block_body(ET_ENDIF); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
-        branch_blanks << else_blank
+        all_blank = all_blank && else_blank
         branch_raws << else_raws
         advance_template
       when 'endif'
@@ -873,7 +872,7 @@ module LiquidIL
         advance_template
       end
 
-      [branch_blanks, branch_raws]
+      [all_blank, branch_raws]
     end
 
     def parse_unless_tag(condition_str = nil)
@@ -886,26 +885,26 @@ module LiquidIL
       @builder.is_truthy
       @builder.jump_if_true(label_else) # NOTE: opposite of if
 
-      branch_blanks = []
+      all_blank = true
       branch_raws = []
 
       parse_block_body(ET_ELSIF_ELSE_ENDUNLESS); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
-      branch_blanks << body_blank
+      all_blank = all_blank && body_blank
       branch_raws << body_raws
 
       case end_tag
       when 'elsif'
         @builder.jump(label_end)
         @builder.label(label_else)
-        elsif_blanks, elsif_raws = parse_elsif_chain_unless(label_end)
-        branch_blanks.concat(elsif_blanks)
+        elsif_blank, elsif_raws = parse_elsif_chain_unless(label_end)
+        all_blank = all_blank && elsif_blank
         branch_raws.concat(elsif_raws)
       when 'else'
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
         parse_block_body(ET_ENDUNLESS); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
-        branch_blanks << else_blank
+        all_blank = all_blank && else_blank
         branch_raws << else_raws
         advance_template
       when 'endunless'
@@ -914,13 +913,12 @@ module LiquidIL
       end
 
       @builder.label(label_end)
-      tag_blank = branch_blanks.all?
-      branch_raws.each { |indices| strip_blank_raws(indices) } if tag_blank
-      tag_blank
+      branch_raws.each { |indices| strip_blank_raws(indices) } if all_blank
+      all_blank
     end
 
     def parse_elsif_chain_unless(label_end)
-      branch_blanks = []
+      all_blank = true
       branch_raws = []
 
       cache_tag_args_region!
@@ -935,22 +933,22 @@ module LiquidIL
 
       advance_template
       parse_block_body(ET_ELSIF_ELSE_ENDUNLESS); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
-      branch_blanks << body_blank
+      all_blank = all_blank && body_blank
       branch_raws << body_raws
 
       case end_tag
       when 'elsif'
         @builder.jump(label_end)
         @builder.label(label_else)
-        nested_blanks, nested_raws = parse_elsif_chain_unless(label_end)
-        branch_blanks.concat(nested_blanks)
+        nested_blank, nested_raws = parse_elsif_chain_unless(label_end)
+        all_blank = all_blank && nested_blank
         branch_raws.concat(nested_raws)
       when 'else'
         @builder.jump(label_end)
         @builder.label(label_else)
         advance_template
         parse_block_body(ET_ENDUNLESS); _end_tag = @_bb_tag; else_blank = @_bb_blank; else_raws = @_bb_raws
-        branch_blanks << else_blank
+        all_blank = all_blank && else_blank
         branch_raws << else_raws
         advance_template
       when 'endunless'
@@ -958,7 +956,7 @@ module LiquidIL
         advance_template
       end
 
-      [branch_blanks, branch_raws]
+      [all_blank, branch_raws]
     end
 
     def parse_case_tag(case_expr_str = nil)
@@ -984,7 +982,7 @@ module LiquidIL
       @builder.const_false
       @builder.store_temp(case_flag_temp)
 
-      branch_blanks = []
+      all_blank = true
       branch_raws = []
 
       # Parse until first when or else - discard this content (between case and first when)
@@ -999,11 +997,11 @@ module LiquidIL
       while end_tag == 'when' || end_tag == 'else'
         if end_tag == 'when'
           end_tag, when_blank, when_raws = parse_when_clause_with_flag(case_value_temp, case_flag_temp)
-          branch_blanks << when_blank
+          all_blank = all_blank && when_blank
           branch_raws << when_raws
         else  # else
           end_tag, else_blank, else_raws = parse_else_clause_with_flag(case_flag_temp)
-          branch_blanks << else_blank
+          all_blank = all_blank && else_blank
           branch_raws << else_raws
         end
       end
@@ -1014,9 +1012,8 @@ module LiquidIL
 
       @case_temp_counter -= 2  # Release temp indices
 
-      tag_blank = branch_blanks.all?
-      branch_raws.each { |indices| strip_blank_raws(indices) } if tag_blank
-      tag_blank
+      branch_raws.each { |indices| strip_blank_raws(indices) } if all_blank
+      all_blank
     end
 
     def parse_when_clause_with_flag(case_value_temp, case_flag_temp)
