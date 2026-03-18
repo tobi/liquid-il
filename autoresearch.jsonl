@@ -1,0 +1,1 @@
+{"type":"config","name":"StringView — Eliminate Parse Allocations","metricName":"parse_allocs","metricUnit":"","bestDirection":"lower"}

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -uo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 # Run liquid-spec and verify 0 errors, max 2 known failures
 # Known failures: 2 error-line-number bugs in snippet error handling
