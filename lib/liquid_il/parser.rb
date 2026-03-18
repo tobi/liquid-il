@@ -296,10 +296,10 @@ module LiquidIL
         parse_case_tag
       when 'for'
         advance_template
-        parse_for_tag(materialize_tag_args)
+        parse_for_tag
       when 'tablerow'
         advance_template
-        parse_tablerow_tag(materialize_tag_args)
+        parse_tablerow_tag
       when 'assign'
         advance_template
         parse_assign_tag
@@ -1056,23 +1056,35 @@ module LiquidIL
       [end_tag, body_blank, body_raws]
     end
 
-    def parse_for_tag(tag_args)
+    def parse_for_tag(tag_args = nil)
       # Parse: var_name in collection [limit:N] [offset:N] [reversed]
-      # Single-pass parsing — no regex, no gsub, no MatchData allocations
-      in_pos = tag_args.index(' in ')
+      # When called from parse_tag: scan @source directly (avoids materialize_tag_args).
+      # When called from parse_liquid_tag: receives tag_args string.
+      src = tag_args || @source
+      off = tag_args ? 0 : @_targ_off
+      limit_off = tag_args ? tag_args.bytesize : (@_targ_off + @_targ_len)
+
+      # Find ' in ' by byte scanning
+      in_pos = nil
+      i = off
+      while i < limit_off - 3
+        if src.getbyte(i) == 32 && (src.getbyte(i + 1) | 32) == 105 &&
+           (src.getbyte(i + 2) | 32) == 110 && src.getbyte(i + 3) == 32
+          in_pos = i
+          break
+        end
+        i += 1
+      end
       raise SyntaxError, 'Invalid for tag syntax' unless in_pos
 
-      # Intern var_name to avoid byteslice+strip alloc for repeated names
-      vs = 0; ve = in_pos
-      while vs < ve && tag_args.getbyte(vs) == 32; vs += 1; end
-      while ve > vs && tag_args.getbyte(ve - 1) == 32; ve -= 1; end
-      var_name = _intern_from(tag_args, vs, ve - vs)
+      # Intern var_name
+      vs = off; ve = in_pos
+      while vs < ve && src.getbyte(vs) == 32; vs += 1; end
+      while ve > vs && src.getbyte(ve - 1) == 32; ve -= 1; end
+      var_name = _intern_from(src, vs, ve - vs)
 
-      # Parse rest after ' in ' using byte scanning — no .split allocation.
-      # Scan for option keywords (limit:, offset:, reversed) while building
-      # the collection expression region.
       limit_expr, offset_expr, offset_continue, reversed, collection_expr =
-        _parse_for_options(tag_args, in_pos + 4)
+        _parse_for_options(src, in_pos + 4, limit_off)
 
       # Generate loop name for offset:continue
       loop_name = "#{var_name}-#{collection_expr}"
@@ -1152,21 +1164,35 @@ module LiquidIL
       tag_blank
     end
 
-    def parse_tablerow_tag(tag_args)
+    def parse_tablerow_tag(tag_args = nil)
       # Parse: var_name in collection [cols:N] [limit:N] [offset:N]
-      # Single-pass parsing — no regex, no gsub, no MatchData allocations
-      in_pos = tag_args.index(' in ')
+      # When called from parse_tag: scan @source directly (avoids materialize).
+      src = tag_args || @source
+      off = tag_args ? 0 : @_targ_off
+      limit_off = tag_args ? tag_args.bytesize : (@_targ_off + @_targ_len)
+
+      # Find ' in ' by byte scanning
+      in_pos = nil
+      i = off
+      while i < limit_off - 3
+        if src.getbyte(i) == 32 && (src.getbyte(i + 1) | 32) == 105 &&
+           (src.getbyte(i + 2) | 32) == 110 && src.getbyte(i + 3) == 32
+          in_pos = i
+          break
+        end
+        i += 1
+      end
       raise SyntaxError, 'Invalid tablerow tag syntax' unless in_pos
 
-      # Intern var_name to avoid byteslice+strip alloc for repeated names
-      vs = 0; ve = in_pos
-      while vs < ve && tag_args.getbyte(vs) == 32; vs += 1; end
-      while ve > vs && tag_args.getbyte(ve - 1) == 32; ve -= 1; end
-      var_name = _intern_from(tag_args, vs, ve - vs)
+      # Intern var_name
+      vs = off; ve = in_pos
+      while vs < ve && src.getbyte(vs) == 32; vs += 1; end
+      while ve > vs && src.getbyte(ve - 1) == 32; ve -= 1; end
+      var_name = _intern_from(src, vs, ve - vs)
 
       # Parse rest after ' in ' using byte scanning
       limit_expr, offset_expr, _, _, collection_expr, cols, cols_expr =
-        _parse_tablerow_options(tag_args, in_pos + 4)
+        _parse_tablerow_options(src, in_pos + 4, limit_off)
 
       # Generate loop name
       loop_name = "#{var_name}-#{collection_expr}"
@@ -1293,13 +1319,13 @@ module LiquidIL
     # Parse for-tag options from a string starting at `start`.
     # Returns [limit_expr, offset_expr, offset_continue, reversed, collection_expr]
     # Avoids .split — tokenizes by scanning bytes.
-    def _parse_for_options(src, start)
+    def _parse_for_options(src, start, scan_limit = nil)
       limit_expr = nil
       offset_expr = nil
       offset_continue = false
       reversed = false
       collection_end = start  # Track end of collection expression
-      len = src.bytesize
+      len = scan_limit || src.bytesize
       pos = start
       in_collection = true  # Before we hit any option keyword
 
@@ -1374,13 +1400,13 @@ module LiquidIL
 
     # Parse tablerow options — like _parse_for_options but with cols: support.
     # Returns [limit_expr, offset_expr, offset_continue, reversed, collection_expr, cols, cols_expr]
-    def _parse_tablerow_options(src, start)
+    def _parse_tablerow_options(src, start, scan_limit = nil)
       limit_expr = nil
       offset_expr = nil
       cols = nil
       cols_expr = nil
       collection_end = start
-      len = src.bytesize
+      len = scan_limit || src.bytesize
       pos = start
       in_collection = true
 
