@@ -3,6 +3,12 @@
 require "strscan"
 require "string_view"
 
+# String#materialize returns self — unifies the StringView/String boundary
+# so callers can unconditionally call .materialize without type checks.
+class String
+  def materialize = self
+end
+
 module LiquidIL
   # High-performance template tokenizer
   # Stage 1: Splits template into RAW, TAG, and VAR tokens

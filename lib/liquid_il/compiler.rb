@@ -201,7 +201,7 @@ module LiquidIL
 
           # Pass 9: Merge consecutive WRITE_RAW
           if p9 && opcode == IL::WRITE_RAW && next_opcode == IL::WRITE_RAW
-            instructions[i] = [IL::WRITE_RAW, inst[1] + next_inst[1]]
+            instructions[i] = [IL::WRITE_RAW, inst[1].materialize + next_inst[1].materialize]
             instructions.delete_at(i + 1)
             spans.delete_at(i + 1)
             next  # keep merging if more follow
@@ -537,7 +537,7 @@ module LiquidIL
       while i < instructions.length - 1
         if instructions[i][0] == IL::WRITE_RAW && instructions[i + 1][0] == IL::WRITE_RAW
           # Merge the two writes
-          instructions[i] = [IL::WRITE_RAW, instructions[i][1] + instructions[i + 1][1]]
+          instructions[i] = [IL::WRITE_RAW, instructions[i][1].materialize + instructions[i + 1][1].materialize]
           instructions.delete_at(i + 1)
           spans.delete_at(i + 1)
         else

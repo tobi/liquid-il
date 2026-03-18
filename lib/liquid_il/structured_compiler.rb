@@ -434,7 +434,7 @@ module LiquidIL
 
       when IL::WRITE_RAW
         @pc += 1
-        raw_str = inst[1].to_s  # String#to_s returns self; StringView#to_s materializes
+        raw_str = inst[1].materialize
         if @uses_interrupts
           "#{prefix}_O << #{raw_str.inspect} unless _S.has_interrupt?\n"
         else
