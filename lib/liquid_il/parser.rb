@@ -9,7 +9,7 @@ module LiquidIL
     FILTER_ALIASES = {
       'h' => 'escape'
     }.freeze
-    WHITESPACE_ONLY = /\A[ \t\r\n]*\z/
+    # WHITESPACE_ONLY removed — replaced by inline byte scanning in emit_raw
 
     # Built-in tags for nesting tracker
     NESTING_OPEN_TAGS = Set.new(%w[if unless case for tablerow capture comment]).freeze
