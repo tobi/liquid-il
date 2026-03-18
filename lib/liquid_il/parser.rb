@@ -650,16 +650,22 @@ module LiquidIL
       # Try to build a FIND_VAR_PATH directly for dotted const paths
       # Emits one instruction instead of N+1 (FIND_VAR + N × LOOKUP_CONST_KEY)
       if lexer.current == ExpressionLexer::DOT
-        path = nil
+        # Collect path keys, computing hash for intern lookup
+        path_keys = nil
+        path_hash = 0x811c9dc5
         loop do
           if lexer.current == ExpressionLexer::DOT
             lexer.advance
             raise SyntaxError, "Expected property name after '.'" unless lexer.current == ExpressionLexer::IDENTIFIER
-            (path ||= []) << lexer.value
+            key = lexer.value
+            (path_keys ||= []) << key
+            # Mix key's object_id into hash (keys are interned, so object_id is stable)
+            path_hash = (path_hash ^ key.object_id) * 0x01000193 & 0xFFFFFFFF
             lexer.advance
           elsif lexer.current == ExpressionLexer::LBRACKET || lexer.current == ExpressionLexer::FAT_ARROW
-            # Dynamic access — emit what we have so far, then handle brackets
-            if path
+            # Dynamic access — emit what we have, then handle brackets
+            if path_keys
+              path = @intern_table[path_hash] || (@intern_table[path_hash] = path_keys.freeze)
               @builder.find_var_path(name, path)
             else
               @builder.find_var(name)
@@ -670,7 +676,8 @@ module LiquidIL
             break
           end
         end
-        if path
+        if path_keys
+          path = @intern_table[path_hash] || (@intern_table[path_hash] = path_keys.freeze)
           @builder.find_var_path(name, path)
         else
           @builder.find_var(name)
