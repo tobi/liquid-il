@@ -92,8 +92,10 @@ module LiquidIL
       @strict_variables = strict_variables
       @strict_filters = strict_filters
       @resource_limits = resource_limits  # { output_limit: N, render_score_limit: N }
-      @custom_filters = {}  # name_str => { module: Module, pure: bool, method: UnboundMethod }
       @error_mode = error_mode  # :lax, :warn, :strict
+      # Seed custom filters from global registry; per-context register_filter can override
+      global = LiquidIL::Filters.global_registry
+      @custom_filters = global.empty? ? {} : global.dup
     end
 
     # Register custom filter methods from a module.
@@ -185,7 +187,7 @@ module LiquidIL
   class Template
     attr_reader :source, :instructions, :spans, :compiled_source, :errors, :warnings
 
-    def initialize(source, instructions, spans, context, compiled_result)
+    def initialize(source, instructions, spans, context, compiled_result, iseq_binary: nil)
       @source = source
       @instructions = instructions
       @spans = spans
@@ -193,8 +195,50 @@ module LiquidIL
       @compiled_proc = compiled_result.proc
       @compiled_source = compiled_result.source
       @partial_constants = compiled_result.partial_constants
+      @iseq_binary = iseq_binary
       @errors = []
       @warnings = []
+    end
+
+    # Returns the ISeq binary for this template's compiled proc.
+    # After normal compilation, the binary is already in StructuredCompiler's
+    # @@iseq_cache — so this is a free O(1) lookup, not a recompilation.
+    # For templates created via from_cache, @iseq_binary is preset via constructor.
+    def iseq_binary
+      @iseq_binary ||= StructuredCompiler.iseq_binary_for(@compiled_source)
+    end
+
+    # Everything needed to reconstruct this template without recompilation.
+    # Roundtrips with Template.from_cache:
+    #
+    #   data = template.cache_data
+    #   restored = LiquidIL::Template.from_cache(**data)
+    #
+    # Note: ISeq binaries are not portable across Ruby versions.
+    def cache_data
+      {
+        source: @source,
+        spans: @spans,
+        iseq_binary: iseq_binary,
+        partial_constants: @partial_constants,
+      }
+    end
+
+    # Reconstruct a Template from cached components (no recompilation needed).
+    # Accepts the output of #cache_data.
+    #
+    #   data = template.cache_data
+    #   restored = LiquidIL::Template.from_cache(**data)
+    #
+    def self.from_cache(source:, spans:, iseq_binary:, partial_constants: nil)
+      compiled_proc = RubyVM::InstructionSequence.load_from_binary(iseq_binary).eval
+      result = StructuredCompiler::CompilationResult.new(
+        proc: compiled_proc,
+        source: nil,
+        can_compile: true,
+        partial_constants: partial_constants,
+      )
+      new(source, [], spans, nil, result, iseq_binary: iseq_binary)
     end
 
     # Render the template with the given variables.
@@ -222,8 +266,14 @@ module LiquidIL
       scope.strict_variables = strict_variables.nil? ? (ctx&.strict_variables || false) : strict_variables
       # strict_filters: render-time overrides context-level
       scope.strict_filters = strict_filters.nil? ? (ctx&.strict_filters || false) : strict_filters
-      # Custom filters from context
-      scope.custom_filters = ctx&.custom_filters if ctx&.custom_filters && !ctx.custom_filters.empty?
+      # Custom filters from context, falling back to global registry (needed for from_cache templates where @context is nil)
+      custom_filters = ctx&.custom_filters
+      if custom_filters && !custom_filters.empty?
+        scope.custom_filters = custom_filters
+      else
+        global = LiquidIL::Filters.global_registry
+        scope.custom_filters = global unless global.empty?
+      end
       # Resource limits from context
       scope.resource_limits = ctx&.resource_limits if ctx&.resource_limits
 
@@ -358,6 +408,10 @@ module LiquidIL
       indent = " " * extra_spaces
       code.lines.map { |l| l.strip.empty? ? "\n" : "#{indent}#{l}" }.join
     end
+
+    private
+
+    attr_writer :iseq_binary
   end
 
   # Module-level convenience methods.
@@ -370,6 +424,15 @@ module LiquidIL
     # One-shot render.
     def render(source, assigns = {}, **options)
       parse(source).render(assigns, **options)
+    end
+
+    # Register a filter module globally. All new Contexts will inherit it.
+    #
+    #   LiquidIL.register_filter(MoneyFilters, pure: true)
+    #   LiquidIL.register_filter(ShopifyFilters)
+    #
+    def register_filter(mod, pure: false)
+      Filters.register(mod, pure: pure)
     end
   end
 end

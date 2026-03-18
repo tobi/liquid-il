@@ -26,7 +26,46 @@ module LiquidIL
     MAX_I64 = (1 << 63) - 1
     I64_RANGE = MIN_I64..MAX_I64
 
+    # Global filter registry — mirrors Tags.register pattern.
+    # Filters registered here are available to all Contexts.
+    #
+    #   LiquidIL::Filters.register(MoneyFilters, pure: true)
+    #   LiquidIL::Filters.register(ShopifyFilters)
+    #
+    @global_registry = {}
+
     class << self
+      # Register a filter module globally. All new Contexts will inherit these.
+      #
+      #   LiquidIL::Filters.register(MoneyFilters, pure: true)
+      #   LiquidIL::Filters.register(ShopifyFilters)  # impure (default)
+      #
+      def register(mod, pure: false)
+        unless mod.is_a?(Module)
+          raise ArgumentError, "register expects a Module, got #{mod.class}"
+        end
+
+        mod.instance_methods(false).each do |name|
+          name_s = name.to_s
+          @global_registry[name_s] = {
+            module: mod,
+            pure: pure,
+            method: mod.instance_method(name),
+          }
+        end
+      end
+
+      def global_registry
+        @global_registry
+      end
+
+      def global_filter_registered?(name)
+        @global_registry.key?(name.to_s)
+      end
+
+      def clear_global_registry!
+        @global_registry.clear
+      end
       # Private methods that shouldn't be callable as filters
       INTERNAL_METHODS = %w[to_number to_integer to_safe_integer clamp_i64 strftime_filter apply].freeze
 
