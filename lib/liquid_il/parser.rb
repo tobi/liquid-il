@@ -999,27 +999,81 @@ module LiquidIL
     end
 
     def parse_when_clause_with_flag(case_value_temp, case_flag_temp)
-      when_values_str = extract_tag_args
+      # Compute tag args region directly (same logic as extract_tag_args but no byteslice)
+      src = @source
+      pos = @template_lexer.content_start
+      limit = @template_lexer.content_end
+      while pos < limit && (b = src.getbyte(pos)) && (b == 32 || b == 9 || b == 10 || b == 13); pos += 1; end
+      while pos < limit && (b = src.getbyte(pos)) && b > 32; pos += 1; end  # skip "when"
+      while pos < limit && (b = src.getbyte(pos)) && (b == 32 || b == 9 || b == 10 || b == 13); pos += 1; end
+      args_end = limit
+      while args_end > pos && (b = src.getbyte(args_end - 1)) && (b == 32 || b == 9 || b == 10 || b == 13); args_end -= 1; end
 
-      # Parse comma-separated values
+      # Parse comma/or-separated values by scanning bytes — zero alloc
       label_body = @builder.new_label
       label_next = @builder.new_label
 
-      # Split on commas or "or" and check each value
-      when_values_str.split(/\s*(?:,|\bor\b)\s*/).each do |val_str|
-        val_str = val_str.strip
-        next if val_str.empty?
+      val_start = pos
+      while val_start < args_end
+        # Skip leading whitespace
+        while val_start < args_end && (b = src.getbyte(val_start)) && (b == 32 || b == 9); val_start += 1; end
+        break if val_start >= args_end
 
-        begin
-          expr_lexer = expr_lexer_for(val_str)
+        # Find end of this value (comma or "or" keyword)
+        val_end = val_start
+        in_string = false
+        string_char = 0
+        while val_end < args_end
+          cb = src.getbyte(val_end)
+          if in_string
+            val_end += 1
+            in_string = false if cb == string_char
+          elsif cb == 39 || cb == 34  # ' or "
+            in_string = true
+            string_char = cb
+            val_end += 1
+          elsif cb == 44  # comma
+            break
+          elsif cb == 111 || cb == 79  # 'o' or 'O' — check for "or"
+            if val_end + 1 < args_end && (src.getbyte(val_end + 1) | 32) == 114  # 'r'
+              # Ensure word boundary: next char is space/end
+              if val_end + 2 >= args_end || src.getbyte(val_end + 2) == 32 || src.getbyte(val_end + 2) == 9
+                break
+              end
+            end
+            val_end += 1
+          else
+            val_end += 1
+          end
+        end
 
-          @builder.load_temp(case_value_temp)   # Load case value
-          parse_expression(expr_lexer)          # Push when value
-          @builder.case_compare                 # Case-specific compare
-          @builder.jump_if_true(label_body)
-        rescue SyntaxError
-          # Skip invalid when expressions
-          next
+        # Trim trailing whitespace from value
+        ve = val_end
+        while ve > val_start && (src.getbyte(ve - 1) == 32 || src.getbyte(ve - 1) == 9); ve -= 1; end
+
+        if ve > val_start
+          begin
+            expr_lexer = expr_lexer_for_region(val_start, ve - val_start)
+
+            @builder.load_temp(case_value_temp)
+            parse_expression(expr_lexer)
+            @builder.case_compare
+            @builder.jump_if_true(label_body)
+          rescue SyntaxError
+            # Skip invalid when expressions
+          end
+        end
+
+        # Advance past separator
+        if val_end < args_end
+          sep = src.getbyte(val_end)
+          if sep == 44  # comma
+            val_start = val_end + 1
+          else  # "or"
+            val_start = val_end + 2
+          end
+        else
+          val_start = args_end
         end
       end
 
