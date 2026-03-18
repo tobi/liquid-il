@@ -414,18 +414,19 @@ module LiquidIL
       end
 
       content_start = pos
-      @scanner.pos = pos
 
-      # Find matching end delimiter
-      if @scanner.skip_until(end_pattern)
-        match_len = @scanner.matched_size
-        content_end_pos = @scanner.pos - match_len
-        end_pos = @scanner.pos
+      # Find matching end delimiter using byteindex (memchr-based, faster than regex)
+      end_marker = b1 == 123 ? "}}" : "%}"  # {{ → }}, {% → %}
+      found_pos = src.byteindex(end_marker, pos)
+      if found_pos
+        # Check for trim: preceding '-' before the end delimiter
+        trim_r = found_pos > 0 && src.getbyte(found_pos - 1) == 45  # '-'
+        content_end_pos = trim_r ? found_pos - 1 : found_pos
+        end_pos = found_pos + 2
+        @scanner.pos = end_pos
 
-        # Check trim_right: does the end delimiter start with '-'?
-        # matched starts with '-' if trim
-        @trim_right = @source.getbyte(content_end_pos) == 45  # '-'
-        @trim_next = @trim_right
+        @trim_right = trim_r
+        @trim_next = trim_r
 
         @token_type = type
         @token_start = start_pos

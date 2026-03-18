@@ -1,44 +1,38 @@
-# Autoresearch Ideas — StringView String Allocation Reduction
+# Autoresearch Ideas — Parse Allocs & Speed Optimization
 
-## Summary
-**String allocs: 100% reduction** — from 2,378 to 0.
-**Total allocs: 10.1% reduction** — from 13,273 to 11,934.
-**No speed regression** — parse_µs at or below baseline.
+## Current State
+- **parse_allocs**: 10,571 (down 11.4% from 11,933 baseline)
+- **parse_µs**: ~3,050 (down ~7% from 3,268 baseline)
+- **string_allocs**: 0 (maintained from prior phase)
 
-## Completed Techniques
+## Completed (this phase)
+1. ✅ Spans as integer start_pos (not [start, end] arrays) — -302
+2. ✅ Inline for_init/tablerow_init emit (skip splat) — -26
+3. ✅ Flat blank_raw tracking with packed integer ranges — -174
+4. ✅ Lazy warnings array — -5
+5. ✅ Pool blank_raw_flat/marks at class level — -25
+6. ✅ Case when/else returns via ivars — -4
+7. ✅ byteindex for raw token scanning (memchr vs getbyte loop)
+8. ✅ Fuse FIND_VAR→WRITE_VAR at parse time — -85
+9. ✅ Fuse FIND_VAR+LOOKUP_CONST_KEY*→WRITE_VAR_PATH at parse time — -312
+10. ✅ Inline FIND_VAR_PATH in parse_variable_lookup — -431
+11. ✅ Intern path arrays — ~-204 on warm cache
 
-### String allocs (2,378 → 0)
-1. ExpressionLexer `reset_region` — scan source by position
-2. VAR/tag args region scanning — eliminates token_content byteslice
-3. Identifier/string/number interning — FNV-1a hash dedup table
-4. RAW content as StringView — deferred materialization
-5. Assign/increment/decrement interning
-6. For/tablerow byte scanning — options parsed without .split
-7. Common tag fast path — byte-matching table for all known tags
-8. Class-level shared intern table — persists across Parser instances
-9. Loop_name object_id pair keys — zero-alloc cache lookup
-10. Limit/offset/cols as source regions — expr_lexer_for_region
-11. Paginate tag byte scanning — first-class parser method
-12. When clause byte scanning — comma/or splitting by bytes
-13. Cycle identity hash-based key — avoids join allocation
-14. Fixed tag length bugs (unless=6, endpaginate=11)
-15. Removed intern collision verification — FNV-1a+length = 40 bits
+## Remaining Allocs (~10,571 total, ~3,319 from liquid_il)
+- **1,241** emit1 instruction arrays — fundamental IL
+- **579** StringView::Strict — RAW content (replaced String allocs)
+- **523** emit2 instruction arrays (FIND_VAR_PATH etc.) — fundamental IL
+- **367** emit_label arrays — fundamental IL
+- **317** path arrays — now interned on warm cache
+- **266** per-parse objects (Parser, Builder, Lexer, Scanner, etc.)
+- **~7,250** from Ruby internals (T_IMEMO, T_DATA, etc.)
 
-### Total allocs (13,273 → 11,934)
-16. cache_tag_args_region! — set ivars directly, no Array return
-17. parse_block_body ivar returns — @_bb_tag/@_bb_blank/@_bb_raws
-18. Frozen end-tag constants — ET_ELSIF_ELSE_ENDIF etc.
-19. Frozen lookup arrays — COMMAND_PROPS, RENDER_BREAK_WORDS
-20. Remove dead loop_stack — pushed/popped but never read
-21. save_state uses ivars — zero-alloc backtracking
-22. Lazy kw_args_builders — nil until first keyword arg
-23. branch_blanks → all_blank boolean — running tracker
-24. For/tablerow option results via ivars — @_fo_* namespace
+## Ideas to Explore
+- **Flat bytecode encoding**: Replace array-of-arrays with flat integer array + operand table. Would eliminate ALL instruction array allocs (~2,131). Major architecture change.
+- **Label-free linking**: Store label positions in a side-table hash during parsing, skip LABEL instructions entirely. Saves 367 array allocs.
+- **Parser/Builder pooling**: Reuse Parser objects across templates. Saves ~266 allocs per template. Requires careful state reset.
+- **LOOKUP_CONST_KEY at parse time for keywords**: When checking `{% if x.y %}`, the FIND_VAR_PATH is emitted for `x.y`, but `LOOKUP_CONST_KEY` still happens for keywords. Could detect these.
 
-## Remaining Allocs (require major refactoring to reduce)
-- ~3,100 IL instruction Arrays — fundamental to IL architecture
-- 579 StringView — RAW content (replaces String allocs, net neutral)
-- 189 blank tracking Arrays — push_blank_raw_indices (pooling causes bugs)
-- ~80 branch_raws Arrays — if/elsif/else chains (need all raws at end)
-- ~114 per-parse objects — Builder, Lexer, Scanner (could pool but invasive)
-- ~80 filter arg local arrays — parse_filter_args misc tracking
+## What Didn't Work
+- **Fusing var paths in parse_variable_lookup via slice!+append**: Caused +1,357 alloc regression. The slice! on the instruction array is O(n) and the new arrays outweigh savings.
+- **Array pool for blank_raw_indices**: Use-after-free bugs in nested blocks.
