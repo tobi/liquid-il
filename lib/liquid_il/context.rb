@@ -573,6 +573,13 @@ module LiquidIL
         return nil unless info
         info[:method].bind_call(info[:module], input, *args)
       end
+    rescue ArgumentError => e
+      # Convert ArgumentError to FilterRuntimeError so it shows in output
+      raise @strict_errors ? e : FilterRuntimeError.new(e.message)
+    rescue => e
+      # Re-raise in strict mode, raise FilterRuntimeError("internal") otherwise
+      raise e if @strict_errors || e.is_a?(FilterRuntimeError)
+      raise FilterRuntimeError.new("internal")
     end
 
     def custom_filter?(name)
