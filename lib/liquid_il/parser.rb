@@ -512,7 +512,70 @@ module LiquidIL
     # --- Expression parsing ---
 
     def parse_expression(lexer)
-      parse_logical_expression(lexer)
+      # Fast path: identifier (most common expression type)
+      # Skip 3 method calls (logical → comparison → primary) for the common case
+      if lexer.current == ExpressionLexer::IDENTIFIER
+        parse_variable_lookup(lexer)
+        # Check if this simple var is followed by a logical/comparison operator
+        case lexer.current
+        when ExpressionLexer::AND, ExpressionLexer::OR
+          _parse_logical_tail(lexer)
+        when ExpressionLexer::EQ, ExpressionLexer::NE, ExpressionLexer::LT,
+             ExpressionLexer::GT, ExpressionLexer::LE, ExpressionLexer::GE,
+             ExpressionLexer::CONTAINS
+          _parse_comparison_tail(lexer)
+        end
+      else
+        parse_logical_expression(lexer)
+      end
+    end
+
+    def _parse_logical_tail(lexer)
+      if lexer.current == ExpressionLexer::AND
+        lexer.advance
+        label_false = @builder.new_label
+        label_end = @builder.new_label
+        @builder.jump_if_false(label_false)
+        parse_logical_expression(lexer)
+        @builder.jump(label_end)
+        @builder.label(label_false)
+        @builder.const_false
+        @builder.label(label_end)
+      elsif lexer.current == ExpressionLexer::OR
+        lexer.advance
+        label_true = @builder.new_label
+        label_end = @builder.new_label
+        @builder.jump_if_true(label_true)
+        parse_logical_expression(lexer)
+        @builder.jump(label_end)
+        @builder.label(label_true)
+        @builder.const_true
+        @builder.label(label_end)
+      end
+    end
+
+    def _parse_comparison_tail(lexer)
+      loop do
+        case lexer.current
+        when ExpressionLexer::EQ
+          lexer.advance; parse_primary_expression(lexer); @builder.compare(:eq)
+        when ExpressionLexer::NE
+          lexer.advance; parse_primary_expression(lexer); @builder.compare(:ne)
+        when ExpressionLexer::LT
+          lexer.advance; parse_primary_expression(lexer); @builder.compare(:lt)
+        when ExpressionLexer::GT
+          lexer.advance; parse_primary_expression(lexer); @builder.compare(:gt)
+        when ExpressionLexer::LE
+          lexer.advance; parse_primary_expression(lexer); @builder.compare(:le)
+        when ExpressionLexer::GE
+          lexer.advance; parse_primary_expression(lexer); @builder.compare(:ge)
+        when ExpressionLexer::CONTAINS
+          lexer.advance; parse_primary_expression(lexer); @builder.contains
+        else
+          break
+        end
+      end
+      _parse_logical_tail(lexer)
     end
 
     # Liquid uses RIGHT-ASSOCIATIVE evaluation with equal precedence for and/or
