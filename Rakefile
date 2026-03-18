@@ -12,6 +12,7 @@ TEST_FILES = %w[
   test/ruby_compiler_test.rb
   test/optimization_passes_test.rb
   test/error_handling_test.rb
+  test/dynamic_partials_runtime_test.rb
 ].freeze
 
 require_relative "lib/liquid_il/passes"
