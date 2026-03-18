@@ -1956,10 +1956,11 @@ module LiquidIL
       # Check if any values are variables (need runtime lookup)
       has_var_values = values.any? { |v| v[0] == :var }
 
-      # Build identity from original values — use object_id-based key for zero-alloc cache
-      ik = values.size
-      values.each { |v| ik = (ik << 16) ^ v[1].hash }
-      ik = (ik << 4) | 3  # tag to distinguish from other intern keys
+      # Build identity from original values — FNV-1a hash with 30-bit mask to stay Fixnum
+      ik = 0x811c9dc5 & 0x3FFFFFFF
+      ik = ((ik ^ values.size) * 0x01000193) & 0x3FFFFFFF
+      values.each { |v| ik = ((ik ^ (v[1].hash & 0xFFFF)) * 0x01000193) & 0x3FFFFFFF }
+      ik = (ik << 2) | 3  # tag to distinguish from other intern keys
       base_identity = @intern_table[ik]
       unless base_identity
         identity_parts = values.map { |v| v[1].to_s }
