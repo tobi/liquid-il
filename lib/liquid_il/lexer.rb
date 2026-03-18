@@ -39,7 +39,7 @@ module LiquidIL
     def initialize(source)
       @source = source
       @source_bytes = source.bytesize
-      @scanner = StringScanner.new(source)
+      @scanner = StringScanner.new(source)  # Only used for scan_raw_body (endraw regex)
       @trim_next = false
       # Token state
       @token_type = nil

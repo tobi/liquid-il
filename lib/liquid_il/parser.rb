@@ -272,7 +272,7 @@ module LiquidIL
     end
 
     def parse_variable_output
-      @builder.with_span(current_template_start_pos, current_template_end_pos)
+      @builder.with_span(current_template_start_pos)
 
       # Handle empty variable `{{}}` — zero-alloc byte check
       if @template_lexer.content_blank?
@@ -320,13 +320,12 @@ module LiquidIL
 
     def parse_tag
       start_pos = current_template_start_pos
-      end_pos = current_template_end_pos
       tag_name = @template_lexer.tag_name
       # Compute args region (zero alloc) — only materialize for tags that
       # need string ops (for, tablerow, assign, liquid, increment, decrement).
       cache_tag_args_region!
 
-      @builder.with_span(start_pos, end_pos)
+      @builder.with_span(start_pos)
 
       case tag_name
       when 'if'
@@ -782,7 +781,8 @@ module LiquidIL
             # Use a temporary builder to capture instructions for keyword args
             kw_builder = IL::Builder.new
             # Set the current span on the kw_builder so keyword arg instructions have it
-            kw_builder.with_span(*@builder.instance_variable_get(:@current_span)) if @builder.instance_variable_get(:@current_span)
+            span = @builder.instance_variable_get(:@current_span)
+            kw_builder.with_span(span) if span
             
             original_builder = @builder
             @builder = kw_builder
