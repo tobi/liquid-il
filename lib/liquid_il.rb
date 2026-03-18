@@ -422,7 +422,6 @@ module LiquidIL
             _S = __scope__
             _sp = __spans__
             _ts = __template_source__
-            _PC = __partial_constants__
             _pc = __partial_constants__
 
         #{indent_body(proc_body, 4)}
