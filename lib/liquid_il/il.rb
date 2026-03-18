@@ -109,6 +109,9 @@ module LiquidIL
     CUSTOM_TAG_AFTER  = :CUSTOM_TAG_AFTER   # [:CUSTOM_TAG_AFTER, handler]
     CUSTOM_TAG_RENDER = :CUSTOM_TAG_RENDER  # [:CUSTOM_TAG_RENDER, handler, argc, lazy_args]
 
+    # Dynamic render — {% render variable %} with a global handler
+    DYNAMIC_RENDER = :DYNAMIC_RENDER  # [:DYNAMIC_RENDER] - pops evaluated name from stack
+
     # No-op (for comments, etc.)
     NOOP = :NOOP                     # [:NOOP]
 
@@ -465,6 +468,10 @@ module LiquidIL
 
       def custom_tag_render(handler, argc, lazy_args = nil)
         emit(CUSTOM_TAG_RENDER, handler, argc, lazy_args)
+      end
+
+      def dynamic_render
+        @instructions << [DYNAMIC_RENDER]; @spans << @current_span; self
       end
     end
 

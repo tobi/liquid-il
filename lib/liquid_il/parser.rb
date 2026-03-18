@@ -1945,8 +1945,13 @@ module LiquidIL
       # Parse: 'partial_name' [with expr | for expr] [as alias] [, var1: val1]
       lexer = expr_lexer_for(tag_args)
 
-      # Get partial name (must be quoted string)
-      raise SyntaxError, 'Syntax Error: Template name must be a quoted string' unless lexer.current == ExpressionLexer::STRING
+      # Dynamic render: {% render variable %} — when a global handler is registered
+      if lexer.current != ExpressionLexer::STRING
+        if Tags.dynamic_render_handler
+          return parse_dynamic_render_tag(tag_args, lexer)
+        end
+        raise SyntaxError, 'Syntax Error: Template name must be a quoted string'
+      end
 
       partial_name = lexer.value
       lexer.advance
@@ -2029,6 +2034,14 @@ module LiquidIL
       args['__as__'] = as_alias if as_alias
 
       @builder.const_render(partial_name, args)
+      false
+    end
+
+    # Parse {% render variable %} — dynamic render with global handler.
+    # Only the variable expression is allowed (no with/for/as/keyword args).
+    def parse_dynamic_render_tag(tag_args, lexer)
+      parse_expression(lexer)
+      @builder.dynamic_render
       false
     end
 

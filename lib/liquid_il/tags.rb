@@ -28,8 +28,17 @@ module LiquidIL
     )
 
     @registry = {}
+    @dynamic_render_handler = nil
 
     class << self
+      # Global handler for {% render variable %} (dynamic render).
+      # Must respond to `render(scope, output, name)`.
+      attr_reader :dynamic_render_handler
+
+      def register_dynamic_render_handler(handler)
+        @dynamic_render_handler = handler
+      end
+
       def register(name, end_tag: nil, mode: :passthrough, setup: nil, teardown: nil,
                    on_parse: nil, handler: nil, parse_args: nil)
         name = name.to_s.freeze
@@ -76,6 +85,7 @@ module LiquidIL
       def clear!
         @registry.clear
         @end_tags&.clear
+        @dynamic_render_handler = nil
       end
     end
 

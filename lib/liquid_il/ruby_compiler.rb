@@ -679,6 +679,12 @@ module LiquidIL
       when IL::CUSTOM_TAG_RENDER
         generate_custom_tag_nonblock([], indent)
 
+      when IL::DYNAMIC_RENDER
+        # DYNAMIC_RENDER after expression — handled via generate_expression_statement
+        # If we encounter it standalone (shouldn't happen), skip it
+        @pc += 1
+        ""
+
       when IL::CUSTOM_TAG_AFTER
         # CUSTOM_TAG_AFTER is handled inside generate_custom_tag_block
         # If we encounter it standalone (shouldn't happen), skip it
@@ -759,6 +765,8 @@ module LiquidIL
         generate_custom_tag_block(expr, indent)
       when :custom_tag_render
         generate_custom_tag_nonblock(expr, indent)
+      when :dynamic_render
+        generate_dynamic_render(expr, indent)
       else
         # Just evaluate expression for side effects (rare)
         temp_code + "#{prefix}#{expr_to_ruby(expr)}\n"
@@ -894,6 +902,21 @@ module LiquidIL
       end
 
       code << "#{prefix}_pc[#{handler_key.inspect}].render(_S, _O, #{args_ref})\n"
+      code
+    end
+
+    # Generate code for {% render variable %} with a global dynamic render handler.
+    # The expression (name) has already been compiled and is in `expr`.
+    def generate_dynamic_render(expr, indent)
+      prefix = INDENT[indent]
+      handler = Tags.dynamic_render_handler
+      return "#{prefix}# dynamic render: no handler registered\n" unless handler
+
+      handler_key = "__dynamic_render_handler__"
+      @partial_constants[handler_key] ||= handler
+
+      code = String.new
+      code << "#{prefix}_pc[#{handler_key.inspect}].render(_S, _O, #{expr_to_ruby(expr)})\n"
       code
     end
 
@@ -1358,6 +1381,9 @@ module LiquidIL
           return [stack, :custom_tag_before]
         when IL::CUSTOM_TAG_RENDER
           return [stack, :custom_tag_render]
+        when IL::DYNAMIC_RENDER
+          @pc += 1
+          return [stack.last, :dynamic_render]
         when IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE
           # Check if this is a short-circuit and/or pattern, not an actual if condition
           # Pattern: JUMP_IF_FALSE -> CONST_FALSE -> end (this is the false branch of 'and')
