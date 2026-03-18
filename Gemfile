@@ -11,3 +11,5 @@ gem "minitest"
 # Load local-only dependencies (gitignored)
 local_gemfile = File.join(__dir__, "Gemfile.local")
 eval_gemfile(local_gemfile) if File.exist?(local_gemfile)
+
+gem "string_view", "~> 0.1.0"
