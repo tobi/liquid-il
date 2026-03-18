@@ -1062,7 +1062,11 @@ module LiquidIL
       in_pos = tag_args.index(' in ')
       raise SyntaxError, 'Invalid for tag syntax' unless in_pos
 
-      var_name = tag_args.byteslice(0, in_pos).strip
+      # Intern var_name to avoid byteslice+strip alloc for repeated names
+      vs = 0; ve = in_pos
+      while vs < ve && tag_args.getbyte(vs) == 32; vs += 1; end
+      while ve > vs && tag_args.getbyte(ve - 1) == 32; ve -= 1; end
+      var_name = _intern_from(tag_args, vs, ve - vs)
       rest = tag_args.byteslice(in_pos + 4, tag_args.bytesize - in_pos - 4)
 
       limit_expr = nil
@@ -1191,7 +1195,11 @@ module LiquidIL
       in_pos = tag_args.index(' in ')
       raise SyntaxError, 'Invalid tablerow tag syntax' unless in_pos
 
-      var_name = tag_args.byteslice(0, in_pos).strip
+      # Intern var_name to avoid byteslice+strip alloc for repeated names
+      vs = 0; ve = in_pos
+      while vs < ve && tag_args.getbyte(vs) == 32; vs += 1; end
+      while ve > vs && tag_args.getbyte(ve - 1) == 32; ve -= 1; end
+      var_name = _intern_from(tag_args, vs, ve - vs)
       rest = tag_args.byteslice(in_pos + 4, tag_args.bytesize - in_pos - 4)
 
       limit_expr = nil
