@@ -339,19 +339,20 @@ module LiquidIL
       @_needs_lstrip = @trim_next
       @trim_next = false
 
-      # Scan byte-by-byte looking for '{' followed by '{' or '%'
-      pos = start_pos
+      # Fast search for '{' using C-level memchr via byteindex
       src = @source
       limit = @source_bytes
-      while pos < limit
-        if src.getbyte(pos) == 123  # '{'
-          b1 = src.getbyte(pos + 1)
-          if b1 == 123 || b1 == 37  # '{' or '%'
-            break
-          end
+      pos = start_pos
+      while pos && pos < limit
+        pos = src.byteindex("{", pos)
+        break unless pos  # no '{' found — rest is raw
+        b1 = src.getbyte(pos + 1)
+        if b1 == 123 || b1 == 37  # '{' or '%'
+          break  # found liquid delimiter
         end
-        pos += 1
+        pos += 1  # lone '{', keep searching
       end
+      pos = limit unless pos  # no delimiter found — entire rest is raw
 
       @scanner.pos = pos
 
