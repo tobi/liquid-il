@@ -296,11 +296,11 @@ module LiquidIL
         last = @builder.instructions.last
         if last && @builder.instructions.size == inst_before + 1
           if last[0] == IL::FIND_VAR
-            # {{ var }} → WRITE_VAR (replace opcode in-place)
-            last[0] = IL::WRITE_VAR
+            # {{ var }} → WRITE_VAR (replace instruction — FIND_VAR may be frozen/cached)
+            @builder.instructions[-1] = IL::Builder.cached_inst1(IL::WRITE_VAR, last[1])
           elsif last[0] == IL::FIND_VAR_PATH
-            # {{ var.a.b }} → WRITE_VAR_PATH (replace opcode in-place)
-            last[0] = IL::WRITE_VAR_PATH
+            # {{ var.a.b }} → WRITE_VAR_PATH (replace instruction — may be frozen)
+            @builder.instructions[-1] = IL::Builder.cached_inst2(IL::WRITE_VAR_PATH, last[1], last[2])
           else
             @builder.write_value
           end

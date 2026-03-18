@@ -139,6 +139,23 @@ module LiquidIL
     class Builder
       attr_reader :spans
 
+      # Class-level cache for [opcode, name] instruction arrays (warm-cache model).
+      # Keys: (opcode.object_id << 32) | name.object_id  (both are stable for symbols/interned strings)
+      @@inst1_cache = {}
+
+      def self.cached_inst1(opcode, name)
+        key = (opcode.object_id << 32) | name.object_id
+        @@inst1_cache[key] || (@@inst1_cache[key] = [opcode, name].freeze)
+      end
+
+      # 2-arg cache for [opcode, a, b] instructions (e.g. CALL_FILTER)
+      @@inst2_cache = {}
+
+      def self.cached_inst2(opcode, a, b)
+        key = (opcode.object_id << 32) ^ (a.object_id << 16) ^ b.object_id
+        @@inst2_cache[key] || (@@inst2_cache[key] = [opcode, a, b].freeze)
+      end
+
       def initialize
         @instructions = []
         @spans = []  # Parallel array: [start_pos, end_pos] or nil
@@ -246,7 +263,9 @@ module LiquidIL
       end
 
       def const_string(val)
-        emit1(CONST_STRING, val)
+        @instructions << Builder.cached_inst1(CONST_STRING, val)
+        @spans << @current_span
+        self
       end
 
       def const_range(start_val, end_val)
@@ -262,11 +281,15 @@ module LiquidIL
       end
 
       def find_var(name)
-        emit1(FIND_VAR, name)
+        @instructions << Builder.cached_inst1(FIND_VAR, name)
+        @spans << @current_span
+        self
       end
 
       def find_var_path(name, path)
-        emit2(FIND_VAR_PATH, name, path)
+        @instructions << Builder.cached_inst2(FIND_VAR_PATH, name, path)
+        @spans << @current_span
+        self
       end
 
       def find_var_dynamic
@@ -368,11 +391,15 @@ module LiquidIL
       end
 
       def assign(name)
-        emit1(ASSIGN, name)
+        @instructions << Builder.cached_inst1(ASSIGN, name)
+        @spans << @current_span
+        self
       end
 
       def assign_local(name)
-        emit1(ASSIGN_LOCAL, name)
+        @instructions << Builder.cached_inst1(ASSIGN_LOCAL, name)
+        @spans << @current_span
+        self
       end
 
       def new_range
@@ -380,7 +407,9 @@ module LiquidIL
       end
 
       def call_filter(name, argc)
-        emit2(CALL_FILTER, name, argc)
+        @instructions << Builder.cached_inst2(CALL_FILTER, name, argc)
+        @spans << @current_span
+        self
       end
 
       def for_init(var_name, loop_name, has_limit = false, has_offset = false, offset_continue = false, reversed = false, recovery_label = nil)
