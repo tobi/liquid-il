@@ -136,15 +136,15 @@ module LiquidIL
     # Avoids N separate array walks by combining all simple peephole patterns.
     def fused_peephole(instructions, spans, enabled)
       # Pre-compute pass flags to avoid Set#include? per instruction
-      p3 = p3
-      p4 = p4
-      p5 = p5
-      p6 = p6
+      p3 = enabled.include?(3)
+      p4 = enabled.include?(4)
+      p5 = enabled.include?(5)
+      p6 = enabled.include?(6)
       p7 = enabled.include?(7)
-      p8 = p8
-      p9 = p9
-      p13 = p13
-      p20 = p20
+      p8 = enabled.include?(8)
+      p9 = enabled.include?(9)
+      p13 = enabled.include?(13)
+      p20 = enabled.include?(20)
 
       i = 0
       while i < instructions.length
