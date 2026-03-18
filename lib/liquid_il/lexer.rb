@@ -548,16 +548,20 @@ module LiquidIL
 
     def initialize(source = "")
       @source = source
-      @scanner = StringScanner.new(source)
+      @source_len = source.bytesize
+      @pos = 0
       @current_token = nil
       @current_value = nil
       @peeked = false
+      @view = StringView.new(source, 0, 0)  # Reusable view for reset_source
     end
 
+    # Reset to scan a new source. Accepts String or StringView — zero alloc
+    # when called with a StringView (uses reset! on the internal view).
     def reset_source(source)
       @source = source
-      @scanner.string = source
-      @scanner.pos = 0
+      @source_len = source.bytesize
+      @pos = 0
       @current_token = nil
       @current_value = nil
       @peeked = false
@@ -565,7 +569,7 @@ module LiquidIL
     end
 
     def reset
-      @scanner.pos = 0
+      @pos = 0
       @current_token = nil
       @current_value = nil
       @peeked = false
@@ -573,12 +577,12 @@ module LiquidIL
 
     # Save current lexer state for backtracking
     def save_state
-      { pos: @scanner.pos, token: @current_token, value: @current_value, peeked: @peeked }
+      { pos: @pos, token: @current_token, value: @current_value, peeked: @peeked }
     end
 
     # Restore lexer state from saved state
     def restore_state(state)
-      @scanner.pos = state[:pos]
+      @pos = state[:pos]
       @current_token = state[:token]
       @current_value = state[:value]
       @peeked = state[:peeked]
@@ -608,19 +612,19 @@ module LiquidIL
       @current_value = nil
 
       # Skip whitespace — inline byte check for common case (no whitespace)
-      pos = @scanner.pos
+      pos = @pos
       while (b = @source.getbyte(pos)) && (b == 32 || b == 9 || b == 10 || b == 13)
         pos += 1
       end
-      @scanner.pos = pos if pos != @scanner.pos
+      @pos = pos
 
-      if @scanner.eos?
+      if pos >= @source_len
         @current_token = EOF
         @peeked = true
         return EOF
       end
 
-      byte = @source.getbyte(@scanner.pos)
+      byte = @source.getbyte(pos)
 
       # Check punctuation table first (most common)
       if (punct = PUNCT_TABLE[byte])
@@ -652,7 +656,7 @@ module LiquidIL
     # Require current to match, raise otherwise
     def expect(token_type)
       unless accept(token_type)
-        raise SyntaxError, "Expected #{token_type} but got #{current} at position #{@scanner.pos}"
+        raise SyntaxError, "Expected #{token_type} but got #{current} at position #{@pos}"
       end
     end
 
@@ -664,71 +668,71 @@ module LiquidIL
 
     def scan_punctuation(punct)
       if punct == :DOT_OR_DOTDOT
-        next_byte = @source.getbyte(@scanner.pos + 1)
+        next_byte = @source.getbyte(@pos + 1)
         if next_byte == 46 # another . -> DOTDOT
-          @scanner.pos += 2
+          @pos += 2
           @current_token = DOTDOT
         elsif next_byte && next_byte >= 48 && next_byte <= 57 # digit -> float like .5
           scan_leading_decimal_number
         else
-          @scanner.pos += 1
+          @pos += 1
           @current_token = DOT
         end
       else
-        @scanner.pos += 1
+        @pos += 1
         @current_token = punct
       end
     end
 
     # Scan number starting with decimal like .5
     def scan_leading_decimal_number
-      start = @scanner.pos
-      @scanner.pos += 1 # skip .
+      start = @pos
+      @pos += 1 # skip .
       # Consume digits
-      while (byte = @source.getbyte(@scanner.pos)) && byte >= 48 && byte <= 57
-        @scanner.pos += 1
+      while (byte = @source.getbyte(@pos)) && byte >= 48 && byte <= 57
+        @pos += 1
       end
-      @current_value = @source.byteslice(start, @scanner.pos - start)
+      @current_value = @source.byteslice(start, @pos - start)
       @current_token = NUMBER
     end
 
     def scan_comparison(comp)
       case comp
       when :EQ_START
-        @scanner.pos += 1
-        next_byte = @source.getbyte(@scanner.pos)
+        @pos += 1
+        next_byte = @source.getbyte(@pos)
         if next_byte == 61  # =
-          @scanner.pos += 1
+          @pos += 1
           @current_token = EQ
         elsif next_byte == 62  # > (fat arrow for lax parsing)
-          @scanner.pos += 1
+          @pos += 1
           @current_token = FAT_ARROW
         else
-          raise SyntaxError, "Expected '==' at position #{@scanner.pos - 1}"
+          raise SyntaxError, "Expected '==' at position #{@pos - 1}"
         end
       when :NE_START
-        @scanner.pos += 1
-        if @source.getbyte(@scanner.pos) == 61  # =
-          @scanner.pos += 1
+        @pos += 1
+        if @source.getbyte(@pos) == 61  # =
+          @pos += 1
           @current_token = NE
         else
-          raise SyntaxError, "Expected '!=' at position #{@scanner.pos - 1}"
+          raise SyntaxError, "Expected '!=' at position #{@pos - 1}"
         end
       when :LT_START
-        @scanner.pos += 1
-        if @source.getbyte(@scanner.pos) == 61  # =
-          @scanner.pos += 1
+        @pos += 1
+        if @source.getbyte(@pos) == 61  # =
+          @pos += 1
           @current_token = LE
-        elsif @source.getbyte(@scanner.pos) == 62  # >
-          @scanner.pos += 1
+        elsif @source.getbyte(@pos) == 62  # >
+          @pos += 1
           @current_token = NE  # <> is also !=
         else
           @current_token = LT
         end
       when :GT_START
-        @scanner.pos += 1
-        if @source.getbyte(@scanner.pos) == 61  # =
-          @scanner.pos += 1
+        @pos += 1
+        if @source.getbyte(@pos) == 61  # =
+          @pos += 1
           @current_token = GE
         else
           @current_token = GT
@@ -737,17 +741,17 @@ module LiquidIL
     end
 
     def scan_string(quote_byte)
-      @scanner.pos += 1  # skip opening quote
-      start = @scanner.pos
+      @pos += 1  # skip opening quote
+      start = @pos
 
       # Find closing quote
-      while (b = @source.getbyte(@scanner.pos)) && b != quote_byte
-        @scanner.pos += 1
+      while (b = @source.getbyte(@pos)) && b != quote_byte
+        @pos += 1
       end
 
-      if @source.getbyte(@scanner.pos) == quote_byte
-        @current_value = @source.byteslice(start, @scanner.pos - start)
-        @scanner.pos += 1  # skip closing quote
+      if @source.getbyte(@pos) == quote_byte
+        @current_value = @source.byteslice(start, @pos - start)
+        @pos += 1  # skip closing quote
         @current_token = STRING
       else
         raise SyntaxError, "Unterminated string at position #{start - 1}"
@@ -755,41 +759,41 @@ module LiquidIL
     end
 
     def scan_number
-      start = @scanner.pos
+      start = @pos
 
       # Optional negative sign
-      @scanner.pos += 1 if @source.getbyte(@scanner.pos) == 45  # -
+      @pos += 1 if @source.getbyte(@pos) == 45  # -
 
       # Check if this is actually a number (not just a minus sign)
-      byte = @source.getbyte(@scanner.pos)
+      byte = @source.getbyte(@pos)
       unless byte && byte >= 48 && byte <= 57
         # Not a number, back up and try identifier
-        @scanner.pos = start
+        @pos = start
         return scan_identifier_or_keyword
       end
 
       # Consume digits
-      while (byte = @source.getbyte(@scanner.pos)) && byte >= 48 && byte <= 57
-        @scanner.pos += 1
+      while (byte = @source.getbyte(@pos)) && byte >= 48 && byte <= 57
+        @pos += 1
       end
 
       # Check for decimal part
-      if @source.getbyte(@scanner.pos) == 46  # .
-        next_byte = @source.getbyte(@scanner.pos + 1)
+      if @source.getbyte(@pos) == 46  # .
+        next_byte = @source.getbyte(@pos + 1)
         if next_byte && next_byte >= 48 && next_byte <= 57
-          @scanner.pos += 1  # skip .
-          while (byte = @source.getbyte(@scanner.pos)) && byte >= 48 && byte <= 57
-            @scanner.pos += 1
+          @pos += 1  # skip .
+          while (byte = @source.getbyte(@pos)) && byte >= 48 && byte <= 57
+            @pos += 1
           end
         end
       end
 
-      @current_value = @source.byteslice(start, @scanner.pos - start)
+      @current_value = @source.byteslice(start, @pos - start)
       @current_token = NUMBER
     end
 
     def scan_identifier_or_keyword
-      start = @scanner.pos
+      start = @pos
       src = @source
 
       # First char: a-z, A-Z, _
@@ -813,7 +817,7 @@ module LiquidIL
         end
       end
 
-      @scanner.pos = pos
+      @pos = pos
       len = pos - start
       first_byte = src.getbyte(start)
 
