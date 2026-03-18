@@ -2,7 +2,7 @@
 # frozen_string_literal: true
 
 # LiquidIL adapter for liquid-spec
-# Uses the structured compiler which generates YJIT-friendly Ruby.
+# Uses the ruby compiler which generates YJIT-friendly Ruby.
 
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"

@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Quick syntax check on key files
-for f in lib/liquid_il/lexer.rb lib/liquid_il/parser.rb lib/liquid_il/il.rb lib/liquid_il/structured_compiler.rb lib/liquid_il/compiler.rb lib/liquid_il/passes.rb; do
+for f in lib/liquid_il/lexer.rb lib/liquid_il/parser.rb lib/liquid_il/il.rb lib/liquid_il/ruby_compiler.rb lib/liquid_il/compiler.rb lib/liquid_il/passes.rb; do
   ruby -c "$f" > /dev/null 2>&1 || { echo "SYNTAX ERROR in $f" >&2; echo "METRIC render_µs=0"; echo "METRIC parse_µs=0"; exit 1; }
 done
 

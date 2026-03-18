@@ -1480,11 +1480,11 @@ module LiquidIL
       end
 
       def truthy?(value)
-        StructuredHelpers::IS_TRUTHY.call(value)
+        RuntimeHelpers::IS_TRUTHY.call(value)
       end
 
       def compare(left, right, op)
-        StructuredHelpers::COMPARE.call(left, right, op)
+        RuntimeHelpers::COMPARE.call(left, right, op)
       end
 
       def case_compare(left, right)
@@ -1492,7 +1492,7 @@ module LiquidIL
       end
 
       def contains(left, right)
-        StructuredHelpers::CONTAINS.call(left, right)
+        RuntimeHelpers::CONTAINS.call(left, right)
       end
 
       def filter(name, input, args)

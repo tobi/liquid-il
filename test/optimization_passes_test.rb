@@ -598,7 +598,7 @@ class Pass17CacheRepeatedLookupsTest < Minitest::Test
   end
 
   def test_repeated_lookup_renders_correctly
-    # Pass 17 is skipped by the structured compiler (it handles caching at Ruby level)
+    # Pass 17 is skipped by the ruby compiler (it handles caching at Ruby level)
     # Just verify correctness
     template = @ctx.parse("{{ x }}{{ x }}{{ x }}", optimize: true)
     assert_equal "aaa", template.render("x" => "a")

@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
-require_relative "structured_helpers"
+require_relative "runtime_helpers"
 
 module LiquidIL
   # Compiles IL to Ruby with native control flow (if/else, each blocks)
   # and direct expressions (no stack). This generates YJIT-friendly code.
-  class StructuredCompiler
+  class RubyCompiler
     OUTPUT_CAPACITY = 8192
 
     class CompilationResult
@@ -98,7 +98,7 @@ module LiquidIL
 
       # Load the partial source
       fs = @context&.file_system
-      source = StructuredHelpers.read_partial_source(fs, name, @context)
+      source = RuntimeHelpers.read_partial_source(fs, name, @context)
 
       unless source
         @partial_names_in_progress.delete(name)
@@ -118,8 +118,8 @@ module LiquidIL
       instructions = result[:instructions]
       spans = result[:spans]
 
-      # Recursively compile to structured Ruby (sharing partials cache + frozen arrays)
-      structured_compiler = StructuredCompiler.new(
+      # Recursively compile to Ruby (sharing partials cache + frozen arrays)
+      ruby_compiler = RubyCompiler.new(
         instructions,
         spans: spans,
         template_source: source,
@@ -128,23 +128,23 @@ module LiquidIL
         partial_names_in_progress: @partial_names_in_progress
       )
       # Share frozen array registry so partial constants are declared in the parent proc
-      structured_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
-      structured_compiler.instance_variable_set(:@frozen_array_counter, @frozen_array_counter)
+      ruby_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
+      ruby_compiler.instance_variable_set(:@frozen_array_counter, @frozen_array_counter)
 
       # Check if this partial can be compiled
-      unless structured_compiler.send(:can_compile?)
+      unless ruby_compiler.send(:can_compile?)
         @partial_names_in_progress.delete(name)
         raise "Partial '#{name}' cannot be compiled (unsupported features)"
       end
 
       # Scan for nested partials first (this populates @partials with all nested partials)
-      structured_compiler.send(:scan_and_compile_partials)
+      ruby_compiler.send(:scan_and_compile_partials)
 
       # Generate code for this partial's body
-      structured_compiler.instance_variable_set(:@pc, 0)
-      partial_body = structured_compiler.send(:generate_body)
+      ruby_compiler.instance_variable_set(:@pc, 0)
+      partial_body = ruby_compiler.send(:generate_body)
       # Sync frozen array counter back (the hash is shared by reference, but counter is an int)
-      @frozen_array_counter = structured_compiler.instance_variable_get(:@frozen_array_counter)
+      @frozen_array_counter = ruby_compiler.instance_variable_get(:@frozen_array_counter)
 
       # Detect which features this partial uses (for conditional preamble generation)
       partial_uses_cycles = false
@@ -216,7 +216,7 @@ module LiquidIL
       fs = @context&.file_system
       return false unless fs
 
-      source = StructuredHelpers.read_partial_source(fs, name, @context)
+      source = RuntimeHelpers.read_partial_source(fs, name, @context)
 
       return false unless source
 
@@ -262,7 +262,7 @@ module LiquidIL
       end
 
       # Ensure shared helpers are initialized (once, at first use)
-      StructuredHelpers.init
+      RuntimeHelpers.init
 
       # Generate partials + body first so frozen array constants are registered
       partial_code = generate_partial_lambdas
@@ -276,7 +276,7 @@ module LiquidIL
       else
         code << "proc do |_S, _sp, _ts|\n"
       end
-      code << "  _H = LiquidIL::StructuredHelpers\n"
+      code << "  _H = LiquidIL::RuntimeHelpers\n"
       code << "  _U = LiquidIL::Utils\n"
       # Frozen array constants must be declared before partial lambdas
       # (lambdas are closures that capture these variables)
@@ -650,7 +650,7 @@ module LiquidIL
            IL::FOR_END, IL::FOR_NEXT, IL::JUMP_IF_EMPTY, IL::PUSH_FORLOOP, IL::POP,
            IL::IFCHANGED_CHECK, IL::TABLEROW_NEXT, IL::TABLEROW_END
         @pc += 1
-        "" # No-ops in structured code (IFCHANGED_CHECK handled by POP_CAPTURE)
+        "" # No-ops in generated Ruby (IFCHANGED_CHECK handled by POP_CAPTURE)
 
       when IL::LOAD_TEMP
         # Load from temp generates expression - peek ahead to see what follows
@@ -2859,7 +2859,7 @@ module LiquidIL
 
     def inline_lookup(obj_ruby, key)
       key_s = key.to_s
-      if StructuredHelpers::SPECIAL_KEYS[key_s]
+      if RuntimeHelpers::SPECIAL_KEYS[key_s]
         "_H.lp(#{obj_ruby}, #{key_s.inspect})"
       else
         "_H.lf(#{obj_ruby}, #{key_s.inspect})"
@@ -2915,7 +2915,7 @@ module LiquidIL
       if (bin = @@iseq_cache[key])
         RubyVM::InstructionSequence.load_from_binary(bin).eval
       else
-        iseq = RubyVM::InstructionSequence.compile(source, "(liquid_il_structured)")
+        iseq = RubyVM::InstructionSequence.compile(source, "(liquid_il_ruby)")
         @@iseq_cache.clear if @@iseq_cache.size >= ISEQ_CACHE_MAX
         @@iseq_cache[key] = iseq.to_binary.freeze
         iseq.eval
@@ -2926,13 +2926,13 @@ module LiquidIL
   end
 
   class Compiler
-    # Structured Ruby compiler — the default (and only) compilation path.
+    # Ruby compiler — the default (and only) compilation path.
     # Generates YJIT-friendly Ruby with native control flow.
-    module Structured
-      STRUCTURED_DEFAULTS = { optimize: true, skip_passes: [0, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22] }.freeze
+    module Ruby
+      RUBY_DEFAULTS = { optimize: true, skip_passes: [0, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22] }.freeze
 
       def self.compile(source, context: nil, **options)
-        opts = options.empty? ? STRUCTURED_DEFAULTS : STRUCTURED_DEFAULTS.merge(options)
+        opts = options.empty? ? RUBY_DEFAULTS : RUBY_DEFAULTS.merge(options)
         # Pass error_mode from context to compiler
         if context&.error_mode && context.error_mode != :lax
           opts = opts.merge(error_mode: context.error_mode)
@@ -2944,13 +2944,13 @@ module LiquidIL
         instructions = result[:instructions]
         spans = result[:spans]
 
-        structured_compiler = StructuredCompiler.new(
+        ruby_compiler = RubyCompiler.new(
           instructions,
           spans: spans,
           template_source: source,
           context: context
         )
-        compiled_result = structured_compiler.compile
+        compiled_result = ruby_compiler.compile
 
         template = Template.new(source, instructions, spans, context, compiled_result)
         template.instance_variable_get(:@warnings).concat(warnings)

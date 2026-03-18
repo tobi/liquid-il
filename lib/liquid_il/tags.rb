@@ -77,7 +77,7 @@ module LiquidIL
           coll_path = $1
           page_size = $2.to_i
           # Push the collection path and page size as constants, then call a special
-          # helper that will be handled by the structured compiler
+          # helper that will be handled by the ruby compiler
           builder.emit(:PAGINATE_SETUP, coll_path, page_size)
         end
       },

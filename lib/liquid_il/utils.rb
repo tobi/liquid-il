@@ -116,7 +116,7 @@ module LiquidIL
     end
 
     # Case/when comparison for case statements
-    # Similar to VM's case_compare but simplified for structured compiler
+    # Similar to VM's case_compare but simplified for ruby compiler
     def self.case_equal?(when_value, case_value)
       # Handle drops with to_liquid_value for comparisons
       case_value = case_value.to_liquid_value if case_value.respond_to?(:to_liquid_value)

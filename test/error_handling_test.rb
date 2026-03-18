@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require_relative "../lib/liquid_il"
 
-# Focused tests for error handling in the structured compiler.
+# Focused tests for error handling in the ruby compiler.
 class ErrorHandlingTest < Minitest::Test
   class MemoryFS
     def initialize(templates)

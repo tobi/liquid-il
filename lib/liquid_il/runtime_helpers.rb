@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
-# Shared helper lambdas for StructuredCompiler-generated code.
+# Shared helper lambdas for RubyCompiler-generated code.
 # Created once at module load time, referenced by all compiled templates.
 # This avoids re-parsing ~250 lines of Ruby on every template eval().
 
 module LiquidIL
-  module StructuredHelpers
+  module RuntimeHelpers
     @initialized = false
 
     # Hash keys with special semantics (size→length, first→pair)
@@ -564,4 +564,5 @@ module LiquidIL
       alias_method :eh, :escape_html
     end
   end
+
 end

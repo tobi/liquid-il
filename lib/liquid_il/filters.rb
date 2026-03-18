@@ -72,7 +72,7 @@ module LiquidIL
 
       # Fast dispatch — caller has already validated the filter name exists.
       # Skips valid_filter_methods lookup and name.to_s conversion.
-      # Used by structured compiler for filters known at compile time.
+      # Used by ruby compiler for filters known at compile time.
       def apply_fast(name, input, args, context)
         @context = context
         case args.length

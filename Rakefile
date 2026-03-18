@@ -9,7 +9,7 @@ ADAPTER_VM = "spec/liquid_vm.rb"
 ADAPTER_RUBY = "spec/liquid_ruby_bench.rb"
 TEST_FILES = %w[
   test/liquid_il_test.rb
-  test/structured_compiler_test.rb
+  test/ruby_compiler_test.rb
   test/optimization_passes_test.rb
   test/error_handling_test.rb
 ].freeze

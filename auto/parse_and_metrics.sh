@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Quick syntax check on key files (<0.5s total)
-for f in lib/liquid_il/lexer.rb lib/liquid_il/parser.rb lib/liquid_il/il.rb lib/liquid_il/structured_compiler.rb lib/liquid_il/compiler.rb lib/liquid_il/passes.rb; do
+for f in lib/liquid_il/lexer.rb lib/liquid_il/parser.rb lib/liquid_il/il.rb lib/liquid_il/ruby_compiler.rb lib/liquid_il/compiler.rb lib/liquid_il/passes.rb; do
   ruby -c "$f" > /dev/null 2>&1 || { echo "SYNTAX ERROR in $f" >&2; echo "METRIC parse_µs=0"; echo "METRIC render_µs=0"; exit 1; }
 done
 
@@ -71,7 +71,7 @@ class BenchFS
   def read_template_file(name); @files[name] || @files["#{name}.liquid"] || ""; end
 end
 
-OPTS = LiquidIL::Compiler::Structured::STRUCTURED_DEFAULTS
+OPTS = LiquidIL::Compiler::Ruby::RUBY_DEFAULTS
 
 # Warmup (populates ISeq cache)
 templates.each { |t| fs = BenchFS.new(t[:filesystem]); ctx = LiquidIL::Context.new(file_system: fs); 5.times { ctx.parse(t[:source]) rescue nil } }
@@ -88,14 +88,14 @@ stage_times = Hash.new(0)
     stage_times[:lex_parse_il] += Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - s
 
     s = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
-    sc = LiquidIL::StructuredCompiler.new(result[:instructions], spans: result[:spans], template_source: t[:source], context: ctx)
+    sc = LiquidIL::RubyCompiler.new(result[:instructions], spans: result[:spans], template_source: t[:source], context: ctx)
     compiled = sc.compile
-    stage_times[:structured_compile] += Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - s
+    stage_times[:ruby_compile] += Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - s
 
     src = compiled.source
     s = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
     key = src.hash
-    cache = LiquidIL::StructuredCompiler.class_variable_get(:@@iseq_cache)
+    cache = LiquidIL::RubyCompiler.class_variable_get(:@@iseq_cache)
     if (bin = cache[key])
       RubyVM::InstructionSequence.load_from_binary(bin).eval
     else
