@@ -152,7 +152,18 @@ module LiquidIL
       [pos, e - pos]
     end
 
-    # Extract tag arguments as a String — for tag parsers that do string ops.
+    # Materialize tag args from the cached region — only call this for
+    # tag parsers that need a real String (for, tablerow, assign, etc.).
+    def materialize_tag_args
+      @_targ_len > 0 ? @source.byteslice(@_targ_off, @_targ_len) : ""
+    end
+
+    # Expression lexer for the current tag args region — zero allocation.
+    def expr_lexer_for_tag_args
+      expr_lexer_for_region(@_targ_off, @_targ_len)
+    end
+
+    # Extract tag arguments as a String — for standalone calls outside parse_tag.
     def extract_tag_args
       src = @source
       pos = @template_lexer.content_start
@@ -241,41 +252,43 @@ module LiquidIL
       start_pos = current_template_start_pos
       end_pos = current_template_end_pos
       tag_name = @template_lexer.tag_name
-      tag_args = extract_tag_args
+      # Compute args region (zero alloc) — only materialize for tags that
+      # need string ops (for, tablerow, assign, liquid, increment, decrement).
+      @_targ_off, @_targ_len = tag_args_region
 
       @builder.with_span(start_pos, end_pos)
 
       case tag_name
       when 'if'
         advance_template
-        parse_if_tag(tag_args)
+        parse_if_tag
       when 'unless'
         advance_template
-        parse_unless_tag(tag_args)
+        parse_unless_tag
       when 'case'
         advance_template
-        parse_case_tag(tag_args)
+        parse_case_tag
       when 'for'
         advance_template
-        parse_for_tag(tag_args)
+        parse_for_tag(materialize_tag_args)
       when 'tablerow'
         advance_template
-        parse_tablerow_tag(tag_args)
+        parse_tablerow_tag(materialize_tag_args)
       when 'assign'
         advance_template
-        parse_assign_tag(tag_args)
+        parse_assign_tag(materialize_tag_args)
       when 'capture'
         advance_template
-        parse_capture_tag(tag_args)
+        parse_capture_tag
       when 'increment'
         advance_template
-        parse_increment_tag(tag_args)
+        parse_increment_tag(materialize_tag_args)
       when 'decrement'
         advance_template
-        parse_decrement_tag(tag_args)
+        parse_decrement_tag(materialize_tag_args)
       when 'cycle'
         advance_template
-        parse_cycle_tag(tag_args)
+        parse_cycle_tag
       when 'break'
         advance_template
         emit_loop_jump(:break)
@@ -286,10 +299,10 @@ module LiquidIL
         false
       when 'echo'
         advance_template
-        parse_echo_tag(tag_args)
+        parse_echo_tag
       when 'liquid'
         advance_template
-        parse_liquid_tag(tag_args)
+        parse_liquid_tag(materialize_tag_args)
       when 'raw'
         # Don't advance_template - parse_raw_tag uses lexer directly
         parse_raw_tag
@@ -301,10 +314,10 @@ module LiquidIL
         parse_doc_tag
       when 'render'
         advance_template
-        parse_render_tag(tag_args)
+        parse_render_tag
       when 'include'
         advance_template
-        parse_include_tag(tag_args)
+        parse_include_tag
       when 'ifchanged'
         advance_template
         parse_ifchanged_tag
@@ -317,7 +330,7 @@ module LiquidIL
         if (tag_def = Tags[tag_name])
           # Raw mode tags must not advance_template — they use the lexer scanner directly
           advance_template unless tag_def.mode == :raw
-          parse_registered_tag(tag_def, tag_args)
+          parse_registered_tag(tag_def, materialize_tag_args)
         else
           case @error_mode
           when :strict
@@ -704,8 +717,8 @@ module LiquidIL
 
     # --- Tag implementations ---
 
-    def parse_if_tag(condition_str)
-      expr_lexer = expr_lexer_for(condition_str)
+    def parse_if_tag(condition_str = nil)
+      expr_lexer = condition_str ? expr_lexer_for(condition_str) : expr_lexer_for_tag_args
       parse_expression(expr_lexer)
 
       label_else = @builder.new_label
@@ -761,9 +774,9 @@ module LiquidIL
       branch_blanks = []
       branch_raws = []
 
-      condition_str = extract_tag_args
+      off, len = tag_args_region
 
-      expr_lexer = expr_lexer_for(condition_str)
+      expr_lexer = expr_lexer_for_region(off, len)
       parse_expression(expr_lexer)
 
       label_else = @builder.new_label
@@ -799,8 +812,8 @@ module LiquidIL
       [branch_blanks, branch_raws]
     end
 
-    def parse_unless_tag(condition_str)
-      expr_lexer = expr_lexer_for(condition_str)
+    def parse_unless_tag(condition_str = nil)
+      expr_lexer = condition_str ? expr_lexer_for(condition_str) : expr_lexer_for_tag_args
       parse_expression(expr_lexer)
 
       label_else = @builder.new_label
@@ -846,9 +859,9 @@ module LiquidIL
       branch_blanks = []
       branch_raws = []
 
-      condition_str = extract_tag_args
+      off, len = tag_args_region
 
-      expr_lexer = expr_lexer_for(condition_str)
+      expr_lexer = expr_lexer_for_region(off, len)
       parse_expression(expr_lexer)
 
       label_else = @builder.new_label
@@ -884,7 +897,7 @@ module LiquidIL
       [branch_blanks, branch_raws]
     end
 
-    def parse_case_tag(case_expr_str)
+    def parse_case_tag(case_expr_str = nil)
       # Allocate unique temp indices for this case statement (supports nesting)
       @case_temp_counter ||= 0
       case_value_temp = @case_temp_counter
@@ -892,7 +905,7 @@ module LiquidIL
       @case_temp_counter += 2
 
       begin
-        expr_lexer = expr_lexer_for(case_expr_str)
+        expr_lexer = case_expr_str ? expr_lexer_for(case_expr_str) : expr_lexer_for_tag_args
         parse_expression(expr_lexer)
 
         @builder.store_temp(case_value_temp) # Store case value
@@ -1270,8 +1283,8 @@ module LiquidIL
       true
     end
 
-    def parse_capture_tag(tag_args)
-      lexer = expr_lexer_for(tag_args)
+    def parse_capture_tag(tag_args = nil)
+      lexer = tag_args ? expr_lexer_for(tag_args) : expr_lexer_for_tag_args
 
       # Variable name can be identifier or quoted string
       var_name = case lexer.current
@@ -1324,10 +1337,10 @@ module LiquidIL
       false
     end
 
-    def parse_cycle_tag(tag_args)
+    def parse_cycle_tag(tag_args = nil)
       # Parse: 'group': val1, val2, val3  OR  identifier: val1, val2  OR  val1, val2, val3
       # Values can be literals (strings, numbers) or variables (identifiers)
-      expr_lexer = expr_lexer_for(tag_args)
+      expr_lexer = tag_args ? expr_lexer_for(tag_args) : expr_lexer_for_tag_args
 
       group = nil
       group_var = nil # Variable name to lookup for group
@@ -1433,8 +1446,8 @@ module LiquidIL
       false
     end
 
-    def parse_echo_tag(tag_args)
-      expr_lexer = expr_lexer_for(tag_args)
+    def parse_echo_tag(tag_args = nil)
+      expr_lexer = tag_args ? expr_lexer_for(tag_args) : expr_lexer_for_tag_args
       parse_expression(expr_lexer)
       parse_filters(expr_lexer)
       @builder.write_value
@@ -1894,9 +1907,9 @@ module LiquidIL
       !has_content
     end
 
-    def parse_render_tag(tag_args)
+    def parse_render_tag(tag_args = nil)
       # Parse: 'partial_name' [with expr | for expr] [as alias] [, var1: val1]
-      lexer = expr_lexer_for(tag_args)
+      lexer = tag_args ? expr_lexer_for(tag_args) : expr_lexer_for_tag_args
 
       # Get partial name (must be quoted string)
       raise SyntaxError, 'Syntax Error: Template name must be a quoted string' unless lexer.current == ExpressionLexer::STRING
@@ -2143,9 +2156,9 @@ module LiquidIL
       end
     end
 
-    def parse_include_tag(tag_args)
+    def parse_include_tag(tag_args = nil)
       # Use expression lexer for proper tokenization
-      lexer = expr_lexer_for(tag_args)
+      lexer = tag_args ? expr_lexer_for(tag_args) : expr_lexer_for_tag_args
 
       # First token is the partial name (string, identifier expression, nil, or number)
       if lexer.current == :STRING
