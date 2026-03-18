@@ -1086,7 +1086,7 @@ module LiquidIL
       limit_expr, offset_expr, offset_continue, reversed, coll_off, coll_len =
         _parse_for_options(src, in_pos + 4, limit_off)
 
-      # Build loop name from interned collection string
+      # Build loop name — intern for dedup (same for-loop pattern repeats across templates)
       collection_str = coll_len > 0 ? _intern_from(src, coll_off, coll_len) : ""
       loop_name = "#{var_name}-#{collection_str}"
 

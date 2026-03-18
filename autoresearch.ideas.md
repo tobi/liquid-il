@@ -1,44 +1,39 @@
 # Autoresearch Ideas — StringView String Allocation Reduction
 
-## Remaining Targets (from 921 string allocs)
+## Summary
+**Achieved: 71.3% reduction** — from 2,378 to 683 string allocations during parse.
 
-### Irreducible (515 allocs)
-- **515** lexer.rb intern first-occurrence byteslice — unique identifiers/strings/numbers that must be created once
+## Remaining Breakdown (683 total)
+- **563 irreducible**: first-occurrence interned strings (unique identifiers, string literals, numbers, assign var_names)
+- **39**: `loop_name` string interpolation in for-tags (necessary — used by IL for_init)
+- **38**: tag_name slow path for uncommon tags (# comment, doc, custom tags)
+- **20**: custom tag registration strings (tags.rb)
+- **15**: misc parser edge cases (cycle identity, for-in-liquid path)
+- **5**: materialize_tag_args for remaining tags called from liquid tag
+- **3**: other
 
-### For/Tablerow Tag (~182 allocs)
-- Rewrite `parse_for_tag` and `parse_tablerow_tag` to scan `@source` directly via region
-- Find ` in ` by byte scanning, intern var_name, parse collection via `expr_lexer_for_region`
-- Complex because options parsing (limit:, offset:, reversed, cols:) needs careful byte-level tokenization
-- Still needs `rest.split` for option parsing — could extract options first then pass collection as region
+## Still Possible (diminishing returns)
 
-### Tag Name Slow Path (~38 allocs)
-- Add `#` and `doc` to common tag table (1-byte and 3-byte fast paths)
-- Add `paginate`, `form`, `endform`, `endpaginate`, `schema`, `section`, `style`, `javascript` for Shopify themes
+### Eliminate tag_name slow path (~38 allocs)
+- Add `#` (length 1) and `doc` (length 3) to `_match_common_tag` byte table
+- Add other Shopify theme tags: `paginate`, `form`, `endform`, `schema`, `section`, `style`, `javascript`
+- Small win but easy
 
-### Materialize Tag Args (~44 allocs)
-- Remaining calls to `materialize_tag_args` for for/tablerow tags
-- Would be eliminated if for/tablerow use region scanning
-
-### Assign from Liquid Tag (~26 allocs)  
-- `_parse_assign_from_string` path still uses byteslice for value_expr
-- Could compute absolute source positions from liquid tag content offsets
-
-## Architecture Ideas
+### Pre-Populated Intern Table
+- Seed with common Liquid identifiers (product, title, name, price, etc.)
+- Would reduce the 563 irreducible by ~200 (common names across templates)
+- Risk: overfitting to specific template patterns
 
 ### Single-Pass Unified Lexer
 - Merge TemplateLexer + ExpressionLexer into one scanner
-- Emit flat token stream: RAW → VAR_START → IDENTIFIER → PIPE → IDENTIFIER → VAR_END → TAG_START → TAG_NAME → ... 
-- Parser would switch between template and expression grammar based on delimiters
+- Emit flat token stream: RAW → VAR_START → IDENTIFIER → PIPE → VAR_END → ...
 - Eliminates ALL content extraction/substring passing
-- BIG refactor — would need to redesign the parser significantly
+- BIG refactor — would need to redesign parser significantly
+- Potential to reduce the 563 irreducible since same source = same intern table across all scanning
 
-### StringView in IL Instructions
-- Already done for WRITE_RAW; could extend to other instructions
-- CONST_STRING, FIND_VAR, ASSIGN, etc. could all carry StringViews
-- Materialization deferred to structured compiler
-- Risk: every IL consumer/pass needs to handle StringView
-
-### Pre-Populated Intern Table
-- Seed the intern table with common identifiers: product, title, name, price, size, etc.
-- Zero alloc for the most common names even on first occurrence
-- Minimal overhead (a few frozen strings in a hash)
+### StringView in More IL Instructions
+- Currently only WRITE_RAW uses StringView in IL
+- CONST_STRING, FIND_VAR, ASSIGN, etc. could carry StringViews
+- Would defer materialization to structured compiler for ALL string operands
+- Saves first-occurrence intern allocs during parse (materialize in compile phase)
+- But increases complexity in IL passes (merge, fold_const, etc.)

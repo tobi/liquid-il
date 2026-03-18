@@ -102,7 +102,7 @@ module LiquidIL
     COMMON_TAGS = %w[if elsif else endif unless endunless for endfor case when endcase
                      assign capture endcapture comment endcomment raw endraw render include
                      increment decrement tablerow endtablerow cycle ifchanged break continue
-                     liquid echo].each_with_object({}) { |t, h| h[t] = t.freeze }.freeze
+                     liquid echo paginate endpaginate doc].each_with_object({}) { |t, h| h[t] = t.freeze }.freeze
 
     def tag_name
       src = @source
@@ -142,12 +142,17 @@ module LiquidIL
     # Returns frozen string from COMMON_TAGS or nil.
     def _match_common_tag(src, start, len, first_byte) # :nodoc:
       case len
+      when 1
+        # # (inline comment)
+        return "#" if first_byte == 35
       when 2
         # if
         return "if" if first_byte == 105 && (src.getbyte(start + 1) | 32) == 102
         # do — not a tag, but handle "or" length match
       when 3
         case first_byte
+        when 100 # doc
+          return "doc" if (src.getbyte(start + 1) | 32) == 111 && (src.getbyte(start + 2) | 32) == 99
         when 102 # for
           return "for" if (src.getbyte(start + 1) | 32) == 111 && (src.getbyte(start + 2) | 32) == 114
         when 114 # raw
@@ -210,8 +215,8 @@ module LiquidIL
         end
       when 8
         case first_byte
-        when 101 # endunless — no, that's 9
-          return "tablerow" if _bytes_match_ci?(src, start, "tablerow")
+        when 112 # paginate
+          return "paginate" if _bytes_match_ci?(src, start, "paginate")
         when 116 # tablerow
           return "tablerow" if _bytes_match_ci?(src, start, "tablerow")
         end
@@ -238,7 +243,9 @@ module LiquidIL
       when 11
         # endtablerow
         return "endtablerow" if first_byte == 101 && _bytes_match_ci?(src, start, "endtablerow")
-        # ifchanged is 9, endifchanged — nope
+      when 13
+        # endpaginate
+        return "endpaginate" if first_byte == 101 && _bytes_match_ci?(src, start, "endpaginate")
       end
       nil
     end
