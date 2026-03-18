@@ -395,12 +395,22 @@ module LiquidIL
     # Pre-compiled patterns
     WHITESPACE = /\s+/
 
-    def initialize(source)
+    def initialize(source = "")
       @source = source
       @scanner = StringScanner.new(source)
       @current_token = nil
       @current_value = nil
       @peeked = false
+    end
+
+    def reset_source(source)
+      @source = source
+      @scanner.string = source
+      @scanner.pos = 0
+      @current_token = nil
+      @current_value = nil
+      @peeked = false
+      self
     end
 
     def reset

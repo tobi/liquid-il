@@ -121,6 +121,7 @@ module LiquidIL
       @context = context
       @compiled_proc = compiled_result.proc
       @compiled_source = compiled_result.source
+      @partial_constants = compiled_result.partial_constants
     end
 
     # Render the template with the given variables.
@@ -132,7 +133,11 @@ module LiquidIL
       scope.file_system = ctx&.file_system
       scope.render_errors = render_errors
 
-      @compiled_proc.call(scope, @spans, @source)
+      if @partial_constants
+        @compiled_proc.call(scope, @spans, @source, @partial_constants)
+      else
+        @compiled_proc.call(scope, @spans, @source)
+      end
     rescue LiquidIL::RuntimeError => e
       raise unless render_errors
       output = e.partial_output || ""

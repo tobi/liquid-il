@@ -6,6 +6,22 @@ A high-performance [Liquid](https://shopify.github.io/liquid/) template engine t
 
 Templates are parsed into an IL instruction set, optimized through multiple passes (constant folding, dead code elimination, partial inlining, etc.), then compiled to YJIT-friendly Ruby with native control flow — no interpreter loop, no VM.
 
+## Why It's Fast
+
+LiquidIL achieves its performance through a combination of compile-time decisions and runtime optimizations:
+
+**Compile to native Ruby, not interpret.** Instead of walking an AST or dispatching bytecodes at runtime, LiquidIL compiles each template to a Ruby proc with real `if/else`, `each`, and local variables. YJIT then compiles *that* to machine code. The result is two levels of compilation — Liquid → Ruby → native — with zero interpreter overhead.
+
+**Solve problems at the right level.** Constant folding happens during IL optimization (`"hello" | upcase` becomes `"HELLO"` at parse time). Filter dispatch is resolved during structured compilation (common filters like `upcase`, `escape`, `size` compile to direct Ruby calls, not method_missing). Type checks are eliminated at code generation when the compiler can prove a value's type.
+
+**Zero-allocation hot paths.** The lexer uses `StringScanner#skip` instead of `scan`, deferring string extraction until needed. Expression lexers are reused (one instance per parse, reset via `reset_source`). IL instructions for zero-argument opcodes are pre-frozen constants. Frozen string tables avoid `Integer#to_s` for small numbers. Filter arguments are hoisted as frozen constants outside loops.
+
+**Inline everything that can be inlined.** Comparisons (`==`, `<`, `>`) compile to native Ruby operators with a Numeric fast path. Filters compile to direct method calls. Partial templates compile as inline lambdas. The escape filter skips `CGI.escapeHTML` entirely when the input contains no special characters.
+
+**Cache aggressively.** ISeq binaries are cached by source hash — repeated compilation of the same template loads from a binary cache instead of re-parsing Ruby source.
+
+See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for detailed profiling data and future optimization paths.
+
 ## Quick Start
 
 ```ruby

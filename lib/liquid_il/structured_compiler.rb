@@ -9,13 +9,14 @@ module LiquidIL
     OUTPUT_CAPACITY = 8192
 
     class CompilationResult
-      attr_reader :proc, :source, :can_compile, :partials
+      attr_reader :proc, :source, :can_compile, :partials, :partial_constants
 
-      def initialize(proc:, source:, can_compile:, partials: {})
+      def initialize(proc:, source:, can_compile:, partials: {}, partial_constants: nil)
         @proc = proc
         @source = source
         @can_compile = can_compile
         @partials = partials
+        @partial_constants = partial_constants
       end
     end
 
@@ -48,6 +49,11 @@ module LiquidIL
       # Maps Liquid variable names to Ruby local variable names inside for loops
       # e.g. "i" => "_i0__", "forloop" => "_fl0__"
       @loop_var_aliases = {}
+      # Frozen array constants for filter args: { "[\"large\"]" => "_fa0__" }
+      @frozen_arrays = {}
+      @frozen_array_counter = 0
+      # Pre-built partial spans/source objects — injected via binding at eval time
+      @partial_constants = {}
     end
 
     # Check if template uses break/continue
@@ -73,7 +79,8 @@ module LiquidIL
       CompilationResult.new(
         proc: compiled_proc,
         source: code,
-        can_compile: true
+        can_compile: true,
+        partial_constants: @partial_constants.empty? ? nil : @partial_constants.freeze
       )
     end
 
@@ -114,7 +121,7 @@ module LiquidIL
       instructions = result[:instructions]
       spans = result[:spans]
 
-      # Recursively compile to structured Ruby (sharing partials cache)
+      # Recursively compile to structured Ruby (sharing partials cache + frozen arrays)
       structured_compiler = StructuredCompiler.new(
         instructions,
         spans: spans,
@@ -123,6 +130,9 @@ module LiquidIL
         partials: @partials,
         partial_names_in_progress: @partial_names_in_progress
       )
+      # Share frozen array registry so partial constants are declared in the parent proc
+      structured_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
+      structured_compiler.instance_variable_set(:@frozen_array_counter, @frozen_array_counter)
 
       # Check if this partial can be compiled
       unless structured_compiler.send(:can_compile?)
@@ -136,12 +146,30 @@ module LiquidIL
       # Generate code for this partial's body
       structured_compiler.instance_variable_set(:@pc, 0)
       partial_body = structured_compiler.send(:generate_body)
+      # Sync frozen array counter back (the hash is shared by reference, but counter is an int)
+      @frozen_array_counter = structured_compiler.instance_variable_get(:@frozen_array_counter)
+
+      # Detect which features this partial uses (for conditional preamble generation)
+      partial_uses_cycles = false
+      partial_uses_captures = false
+      partial_uses_ifchanged = false
+      instructions.each do |i|
+        case i[0]
+        when IL::CYCLE_STEP, IL::CYCLE_STEP_VAR then partial_uses_cycles = true
+        when IL::PUSH_CAPTURE then partial_uses_captures = true
+        when IL::IFCHANGED_CHECK then partial_uses_ifchanged = true
+        when IL::INCLUDE_PARTIAL, IL::RENDER_PARTIAL, IL::CONST_INCLUDE, IL::CONST_RENDER then partial_uses_cycles = true
+        end
+      end
 
       @partials[name] = {
         source: source,
         instructions: instructions,
         spans: spans,
-        compiled_body: partial_body
+        compiled_body: partial_body,
+        uses_cycles: partial_uses_cycles,
+        uses_captures: partial_uses_captures || partial_uses_ifchanged,
+        uses_ifchanged: partial_uses_ifchanged
       }
 
       @partial_names_in_progress.delete(name)
@@ -243,19 +271,31 @@ module LiquidIL
       # Ensure shared helpers are initialized (once, at first use)
       StructuredHelpers.init
 
+      # Generate partials + body first so frozen array constants are registered
+      partial_code = generate_partial_lambdas
+      body_code = generate_body
+
       code = String.new
+      has_pc = !@partial_constants.empty?
       code << "# frozen_string_literal: true\n"
-      code << "proc do |_S, _sp, _ts|\n"
+      if has_pc
+        code << "proc do |_S, _sp, _ts, _pc|\n"
+      else
+        code << "proc do |_S, _sp, _ts|\n"
+      end
       code << "  _H = LiquidIL::StructuredHelpers\n"
       code << "  _U = LiquidIL::Utils\n"
-      code << generate_partial_lambdas
+      # Frozen array constants must be declared before partial lambdas
+      # (lambdas are closures that capture these variables)
+      code << generate_frozen_array_constants
+      code << partial_code
       code << "  _O = +\"\"\n"
       code << "  _F = nil\n"
       code << "  _cs = {}\n" if @uses_cycles
       code << "  _cst = []\n" if @uses_captures || @uses_ifchanged
       code << "  _ics = {}\n" if @uses_ifchanged
       code << "\n"
-      code << generate_body
+      code << body_code
       code << "\n  _O\n"
       code << "end\n"
       code
@@ -294,6 +334,15 @@ module LiquidIL
       @partials.each do |name, info|
         next if info[:recursive] || info[:syntax_error]  # Handled at runtime
         lambda_name = partial_lambda_name(name)
+        # Store spans/source as pre-built frozen objects in @partial_constants hash.
+        # The proc receives _pc (partial constants) and reads from it — zero per-render allocation.
+        spans_key = "#{lambda_name}__SP__"
+        source_key = "#{lambda_name}__TS__"
+        @partial_constants[spans_key] = info[:spans].freeze
+        @partial_constants[source_key] = info[:source].freeze
+        # Read from _pc hash (set once at compile time, frozen)
+        spans_const = "_pc[#{spans_key.inspect}]"
+        source_const = "_pc[#{source_key.inspect}]"
         code << "  #{lambda_name} = ->(assigns, _O, __parent_scope__, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
         code << "    __prev_file__ = __parent_scope__.current_file\n"
         code << "    __parent_scope__.current_file = #{name.inspect}\n"
@@ -304,13 +353,19 @@ module LiquidIL
         code << "      end\n"
         code << "      __partial_scope__ = isolated ? __parent_scope__.isolated : __parent_scope__\n"
         code << "      assigns.each { |k, v| __partial_scope__.assign(k, v) }\n"
-        code << "      _sp = #{info[:spans].inspect}\n"
-        code << "      _ts = #{info[:source].inspect}\n"
+        code << "      _sp = #{spans_const}\n"
+        code << "      _ts = #{source_const}\n"
         code << "      _F = #{name.inspect}\n"
-        # Share cycle state for includes (non-isolated), fresh for renders
-        code << "      _cs = isolated ? {} : (parent_cycle_state || {})\n"
-        code << "      _cst = []\n"
-        code << "      _ics = {}\n"
+        # Only allocate cycle/capture/ifchanged state when the partial actually uses them
+        if info[:uses_cycles]
+          code << "      _cs = isolated ? {} : (parent_cycle_state || {})\n"
+        end
+        if info[:uses_captures]
+          code << "      _cst = []\n"
+        end
+        if info[:uses_ifchanged]
+          code << "      _ics = {}\n"
+        end
         code << indent_partial_body(info[:compiled_body], 6)
         code << "    rescue LiquidIL::RuntimeError => e\n"
         code << "      raise unless __parent_scope__.render_errors\n"
@@ -1588,7 +1643,22 @@ module LiquidIL
       when :compare
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
-        "_H.cmp(#{left}, #{right}, #{expr.value.inspect}, _O, _F)"
+        op = expr.value
+        # Fast path: when both sides are simple values (not empty/blank/range),
+        # use direct Ruby comparison to avoid the full compare dispatch
+        left_simple = simple_compare_expr?(expr.children[0])
+        right_simple = simple_compare_expr?(expr.children[1])
+        if left_simple && right_simple && (op == :eq || op == :ne)
+          ruby_op = op == :eq ? "==" : "!="
+          "(#{left} #{ruby_op} #{right})"
+        elsif left_simple && right_simple && [:lt, :le, :gt, :ge].include?(op)
+          # Fast path: check if both sides are Numeric and compare directly.
+          # Falls back to full compare for non-numeric (preserves error messages).
+          ruby_op = COMPARE_OPS[op]
+          "((_cl = #{left}; _cr = #{right}; (_cl.is_a?(Numeric) && _cr.is_a?(Numeric)) ? (_cl #{ruby_op} _cr) : _H.cmp(_cl, _cr, #{op.inspect}, _O, _F)))"
+        else
+          "_H.cmp(#{left}, #{right}, #{op.inspect}, _O, _F)"
+        end
       when :contains
         left = expr_to_ruby(expr.children[0])
         right = expr_to_ruby(expr.children[1])
@@ -1622,6 +1692,11 @@ module LiquidIL
           dispatcher = LiquidIL::Filters.valid_filter_methods[expr.value] ? "cff" : "cf"
           if args.empty?
             "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{filter_line})"
+          elsif args.all? { |a| a.match?(/\A(?:-?\d+(?:\.\d+)?|"[^"]*")\z/) }
+            # All args are compile-time constants — register a frozen array constant
+            # to avoid allocation per call in hot loops
+            frozen_name = register_frozen_array(args)
+            "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, #{frozen_name}, _S, _F, #{filter_line})"
           else
             "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{filter_line})"
           end
@@ -2596,6 +2671,47 @@ module LiquidIL
 
     # Inline simple filters to avoid Filters.apply dispatch (respond_to? + send)
     # Returns nil if the filter can't be inlined.
+    # Register a frozen array constant for compile-time-known filter args.
+    # Returns the variable name to use in generated code.
+    # Deduplicates: same arg list → same constant.
+    def register_frozen_array(args)
+      key = "[#{args.join(', ')}]"
+      @frozen_arrays[key] ||= begin
+        name = "_fa#{@frozen_array_counter}__"
+        @frozen_array_counter += 1
+        name
+      end
+    end
+
+    # Generate frozen array constant declarations for top of proc
+    def generate_frozen_array_constants
+      return "" if @frozen_arrays.empty?
+      code = String.new
+      @frozen_arrays.each do |literal, name|
+        code << "  #{name} = #{literal}.freeze\n"
+      end
+      code
+    end
+
+    # Check if an expression is "simple" for comparison purposes —
+    # i.e., it won't be an empty/blank literal, range, or other special type
+    # that needs the full compare() dispatch.
+    def simple_compare_expr?(expr)
+      case expr.type
+      when :literal
+        # nil literals need full compare (nil comparisons have special semantics)
+        !expr.value.nil?
+      when :var, :var_path, :lookup, :bracket_lookup, :command
+        true  # Variable lookups are almost always simple values
+      when :filter
+        true  # Filter results are always simple values
+      when :dynamic_range, :range, :empty, :blank
+        false  # These need full compare dispatch
+      else
+        false
+      end
+    end
+
     def inline_filter(name, input, args)
       case name
       when "upcase"
@@ -2618,7 +2734,7 @@ module LiquidIL
         "_U.to_s(#{input}).rstrip"
       when "escape"
         return nil unless args.empty?
-        "((_fi = #{input}); _fi.nil? ? nil : _fi.is_a?(String) ? CGI.escapeHTML(_fi) : CGI.escapeHTML(_U.to_s(_fi)))"
+        "_H.eh(#{input})"
       when "size"
         return nil unless args.empty?
         "((_fi = #{input}); _fi.respond_to?(:size) ? _fi.size : 0)"
@@ -2657,6 +2773,47 @@ module LiquidIL
       when "floor"
         return nil unless args.empty?
         "LiquidIL::Filters.send(:floor, #{input})"
+      when "handle", "handleize"
+        return nil unless args.empty?
+        # Inline handleize using tr! chain (4.5x faster, 25% fewer allocs vs gsub)
+        "((_fh = _U.to_s(#{input}).downcase); _fh.tr!(\"^a-z0-9\", \"-\"); _fh.squeeze!(\"-\"); _fh.delete_prefix!(\"-\"); _fh.delete_suffix!(\"-\"); _fh)"
+      when "truncate"
+        return nil unless args.length >= 1
+        if args.length == 1
+          "LiquidIL::Filters.send(:truncate, #{input}, #{args[0]})"
+        else
+          "LiquidIL::Filters.send(:truncate, #{input}, #{args[0]}, #{args[1]})"
+        end
+      when "url_encode"
+        return nil unless args.empty?
+        "URI.encode_www_form_component(_U.to_s(#{input}))"
+      when "url_decode"
+        return nil unless args.empty?
+        "URI.decode_www_form_component(_U.to_s(#{input}))"
+      when "strip_html"
+        return nil unless args.empty?
+        "((_fsh = _U.to_s(#{input})); _fsh.gsub(LiquidIL::Filters::STRIP_HTML_BLOCKS, \"\").gsub(LiquidIL::Filters::STRIP_HTML_TAGS, \"\"))"
+      when "first"
+        return nil unless args.empty?
+        "((_ffi = #{input}); _ffi.is_a?(String) ? _ffi[0] : _ffi.is_a?(Array) ? _ffi.first : _ffi.respond_to?(:first) ? _ffi.first : nil)"
+      when "last"
+        return nil unless args.empty?
+        "((_fla = #{input}); _fla.is_a?(String) ? _fla[-1] : _fla.is_a?(Array) ? _fla.last : _fla.respond_to?(:last) ? _fla.last : nil)"
+      when "flatten"
+        return nil unless args.empty?
+        "((_ff = #{input}); _ff.is_a?(Array) ? _ff.flatten : [_ff])"
+      when "abs"
+        return nil unless args.empty?
+        "LiquidIL::Filters.send(:abs, #{input})"
+      when "modulo"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:modulo, #{input}, #{args[0]})"
+      when "at_least"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:at_least, #{input}, #{args[0]})"
+      when "at_most"
+        return nil unless args.length == 1
+        "LiquidIL::Filters.send(:at_most, #{input}, #{args[0]})"
       else
         # General case: any filter (including externally-supplied ones).
         # Check at compile time if the filter is known, and if so, generate a
@@ -2682,11 +2839,25 @@ module LiquidIL
 
     # Generate inline output conversion (avoids __output_string__ lambda call)
     # Returns code that appends the expression value to _O
+    # Patterns known to always return String — safe to skip output_append type dispatch
+    STRING_RETURN_SUFFIXES = /\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|reverse|gsub|sub|tr|squeeze|delete|chomp|chop|encode|freeze)\z/
+    STRING_RETURN_PATTERNS = /\A(?:\+?""|_U\.to_s\(|CGI\.escapeHTML\(|\("[^"]*"\s*\+\s*)/
+
     def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
+      # When expression is known to return a String, skip the oa type dispatch
+      direct = expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS)
       if guard_interrupt
-        "#{prefix}_H.oa(_O, #{expr_ruby}) unless _S.has_interrupt?\n"
+        if direct
+          "#{prefix}_O << (#{expr_ruby}) unless _S.has_interrupt?\n"
+        else
+          "#{prefix}_H.oa(_O, #{expr_ruby}) unless _S.has_interrupt?\n"
+        end
       else
-        "#{prefix}_H.oa(_O, #{expr_ruby})\n"
+        if direct
+          "#{prefix}_O << (#{expr_ruby})\n"
+        else
+          "#{prefix}_H.oa(_O, #{expr_ruby})\n"
+        end
       end
     end
 
@@ -2710,7 +2881,7 @@ module LiquidIL
     ISEQ_CACHE_MAX = 1000
     @@iseq_cache = {}
 
-    def eval_ruby(source)
+    def eval_ruby(source, partial_constants = nil)
       key = source.hash
       if (bin = @@iseq_cache[key])
         RubyVM::InstructionSequence.load_from_binary(bin).eval

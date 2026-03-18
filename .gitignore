@@ -46,3 +46,4 @@
 spec/liquid_vm.rb
 Gemfile.local
 spec/liquid_ruby_bench.rb
+parsing
