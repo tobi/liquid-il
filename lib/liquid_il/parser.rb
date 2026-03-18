@@ -291,14 +291,44 @@ module LiquidIL
       inst_before = @builder.instructions.size
       parse_expression(expr_lexer)
 
-      # Fuse simple FIND_VAR + WRITE_VALUE → WRITE_VAR at parse time
-      # Saves one instruction array allocation for the common {{ var }} case
-      if expr_lexer.current != ExpressionLexer::PIPE &&
-         @builder.instructions.size == inst_before + 1 &&
-         @builder.instructions.last[0] == IL::FIND_VAR
-        # Simple variable with no filters — emit WRITE_VAR directly
-        var_name = @builder.instructions.last[1]
-        @builder.instructions[-1] = [IL::WRITE_VAR, var_name]
+      # Fuse common patterns at parse time — saves instruction array allocations
+      inst_count = @builder.instructions.size - inst_before
+      if expr_lexer.current != ExpressionLexer::PIPE
+        if inst_count == 1 && @builder.instructions.last[0] == IL::FIND_VAR
+          # {{ var }} → WRITE_VAR
+          var_name = @builder.instructions.last[1]
+          @builder.instructions[-1] = [IL::WRITE_VAR, var_name]
+        elsif inst_count >= 2 && @builder.instructions[inst_before][0] == IL::FIND_VAR
+          # Check if all remaining instructions are LOOKUP_CONST_KEY
+          all_const_keys = true
+          i = inst_before + 1
+          while i < @builder.instructions.size
+            unless @builder.instructions[i][0] == IL::LOOKUP_CONST_KEY
+              all_const_keys = false
+              break
+            end
+            i += 1
+          end
+          if all_const_keys
+            # {{ var.a.b }} → WRITE_VAR_PATH
+            var_name = @builder.instructions[inst_before][1]
+            path = []
+            j = inst_before + 1
+            while j < @builder.instructions.size
+              path << @builder.instructions[j][1]
+              j += 1
+            end
+            # Replace all instructions with single WRITE_VAR_PATH
+            @builder.instructions.slice!(inst_before, inst_count)
+            @builder.spans.slice!(inst_before, inst_count)
+            @builder.instructions << [IL::WRITE_VAR_PATH, var_name, path]
+            @builder.spans << @builder.instance_variable_get(:@current_span)
+          else
+            @builder.write_value
+          end
+        else
+          @builder.write_value
+        end
       else
         parse_filters(expr_lexer)
         @builder.write_value
