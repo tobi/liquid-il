@@ -49,6 +49,7 @@ module LiquidIL
       @trim_right = false
       @content_start = 0
       @content_end = 0
+      @_cached_tag_name = nil
     end
 
     def reset
@@ -111,6 +112,7 @@ module LiquidIL
                      liquid echo paginate endpaginate doc].each_with_object({}) { |t, h| h[t] = t.freeze }.freeze
 
     def tag_name
+      return @_cached_tag_name if @_cached_tag_name
       src = @source
       pos = @content_start
       limit = @content_end
@@ -137,11 +139,11 @@ module LiquidIL
       # All common tags are lowercase ASCII, so we can match bytes directly
       first_byte = src.getbyte(name_start) | 32  # downcase
       tag = _match_common_tag(src, name_start, len, first_byte)
-      return tag if tag
+      return (@_cached_tag_name = tag) if tag
 
       # Slow path: extract and downcase (unknown tags only — very rare)
       name = src.byteslice(name_start, len)
-      name.downcase
+      @_cached_tag_name = name.downcase
     end
 
     # Match common tag names by byte comparison — zero allocation.
@@ -292,6 +294,7 @@ module LiquidIL
     # Advance to next token. Returns token type symbol.
     # Access token_start, token_end, trim_left, trim_right, token_content after.
     def next_token
+      @_cached_tag_name = nil
       if @scanner.eos?
         @token_type = EOF
         @token_start = @scanner.pos
