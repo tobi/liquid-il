@@ -27,10 +27,10 @@
 - 38 StringScanner + 38 ExpressionLexer + 38 TemplateLexer + 38 Builder per-parse objects
 - Pool or reuse lexer/builder objects across parses
 
-### Speed improvements
-- parse_µs currently ~3250 vs baseline ~3100 (5% overhead from intern hash + byte scanning)
-- Could profile hotspots in byte-scanning code
-- Could optimize _bytes_eq? and _bytes_match_ci? with word-sized comparisons
+### Speed improvements (DONE — no regression remaining)
+- ~~parse_µs currently ~3250 vs baseline ~3100 (5% overhead from intern hash + byte scanning)~~
+- Fixed by removing intern collision verification (40 bits of entropy makes collisions vanishingly rare)
+- parse_µs now ~3040 vs baseline ~3062 (slightly faster!)
 
 ### Architecture
 - Single-pass unified lexer (merge Template + Expression lexers)

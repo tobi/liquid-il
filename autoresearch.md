@@ -51,8 +51,8 @@ Total parse allocs: ~9,507 per pass (38 benchmark templates)
 ## Results
 - **Baseline**: 2,378 string allocs
 - **Final**: 0 string allocs (**-100%**) — zero String allocations during parse with warm intern cache
-- parse_µs: ~3100→~3260 (slight overhead from intern hash, within acceptable range)
-- render_µs: unchanged
+- parse_µs: ~3062→~3046 (no regression — actually slightly faster than baseline)
+- render_µs: ~194→~196 (unchanged)
 - All liquid-spec checks pass
 
 ## What Was Done
@@ -67,8 +67,18 @@ Total parse allocs: ~9,507 per pass (38 benchmark templates)
 9. **For/tablerow byte scanning** — options parsed by scanning bytes (no .split), var_name interned, collection via region
 10. **Common tag fast path** — added paginate/endpaginate/doc/# to byte-matching table
 
+## Additional Optimizations (post-zero)
+11. **Paginate tag byte scanning** — first-class parser method, eliminates regex captures
+12. **When clause byte scanning** — scan commas/or by bytes, use expr_lexer_for_region
+13. **Cycle identity hash key** — hash-based intern key avoids join allocation
+14. **Fixed tag lengths** — unless (was 7, correct 6), endpaginate (was 13, correct 11)
+15. **Loop_name object_id pair keys** — zero-alloc cache lookup for for/tablerow loop names
+16. **Limit/offset/cols as source regions** — for/tablerow option values as (offset, length) pairs
+17. **Removed intern collision verification** — FNV-1a+length key = 40 bits entropy, verification was the entire source of parse_µs regression
+
 ## What Was Tried But Didn't Help
 - **Lazy value extraction** — deferred byteslice until value read. Same alloc count (all values consumed)
 - **Packed integer keys for intern** — collision-free but no alloc improvement
 - **StringView as expression value** — Array#include? breaks with StringView (String#== doesn't know about it)
+- **StringView.match?** — materializes the string, defeats the purpose
 
