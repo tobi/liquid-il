@@ -278,7 +278,7 @@ module LiquidIL
 
     # Pretty-print IL instructions (for debugging).
     def dump_il(io = $stdout, color: true)
-      PrettyPrinter.new(@instructions, color: color, source: @source, spans: @spans).dump(io)
+      PrettyPrinter.new(@instructions, color: color, source: @source, spans: @spans).print(io)
     end
 
     def il_to_s(color: true)
