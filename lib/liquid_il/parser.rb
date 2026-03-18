@@ -37,7 +37,7 @@ module LiquidIL
       @template_lexer = TemplateLexer.new(source)
       @builder = IL::Builder.new
       @current_token = nil
-      @loop_stack = []
+      # @loop_stack removed — was dead code (pushed/popped but never read)
       @blank_raw_indices_stack = []
       @intern_table = (@@shared_intern_table ||= {})  # Class-level intern table for dedup across parses
       @expr_lexer = ExpressionLexer.new("", intern_table: @intern_table)
@@ -1210,9 +1210,7 @@ module LiquidIL
       @builder.assign_local(var_name)
 
       # Render body
-      @loop_stack.push({ break: label_break, continue: label_continue })
       parse_block_body(ET_ELSE_ENDFOR); end_tag = @_bb_tag; body_blank = @_bb_blank; body_raws = @_bb_raws
-      @loop_stack.pop
 
       # Check for interrupts
       @builder.jump_if_interrupt(label_break)
@@ -1327,9 +1325,7 @@ module LiquidIL
       @builder.assign_local(var_name)
 
       # Render body
-      @loop_stack.push({ break: label_break, continue: label_continue })
       parse_block_body(ET_ENDTABLEROW); body_blank = @_bb_blank
-      @loop_stack.pop
 
       # Check for interrupts
       @builder.jump_if_interrupt(label_break)
@@ -2223,10 +2219,7 @@ module LiquidIL
       @builder.label(label_loop)
       @builder.for_next(label_continue, label_break)
       @builder.assign_local(var_name)
-
-      @loop_stack.push({ break: label_break, continue: label_continue })
       parse_liquid_tag(body_lines.join("\n")) unless body_lines.empty?
-      @loop_stack.pop
 
       @builder.jump_if_interrupt(label_break)
       @builder.label(label_continue)
