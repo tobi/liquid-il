@@ -49,3 +49,15 @@ From off-limits code (~17,600):
 - ✗ I_CONST_TRUE/FALSE in fold_const_ops: fires rarely
 - ✗ unshift → push+reverse: speed-only, no alloc change
 - ✗ Pre-sizing arrays: Ruby Array growth reallocs aren't counted as allocs
+
+## StringView C Extension vs Pure Ruby Polyfill
+Tested a pure Ruby polyfill for StringView::Strict (lib/liquid_il/string_view_polyfill.rb).
+**Result: Identical performance.** The C extension provides zero measurable benefit under YJIT.
+- Parse allocs: identical (22,109-22,112 both)
+- Parse time: within noise (~2-5% variance between runs for BOTH)
+- Render time: within noise
+- Full liquid-spec: 4055 passed, 6 failed (same as C ext)
+
+The polyfill is ~120 lines of Ruby implementing: new, materialize, empty?, length, getbyte,
+include?, ==, hash, rstrip, lstrip, strip, inspect, to_s (raises WouldAllocate), freeze.
+Activated via LIQUID_IL_POLYFILL_STRINGVIEW=1 or auto-fallback on LoadError.
