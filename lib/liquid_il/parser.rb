@@ -1083,11 +1083,12 @@ module LiquidIL
       while ve > vs && src.getbyte(ve - 1) == 32; ve -= 1; end
       var_name = _intern_from(src, vs, ve - vs)
 
-      limit_expr, offset_expr, offset_continue, reversed, collection_expr =
+      limit_expr, offset_expr, offset_continue, reversed, coll_off, coll_len =
         _parse_for_options(src, in_pos + 4, limit_off)
 
-      # Generate loop name for offset:continue
-      loop_name = "#{var_name}-#{collection_expr}"
+      # Build loop name from interned collection string
+      collection_str = coll_len > 0 ? _intern_from(src, coll_off, coll_len) : ""
+      loop_name = "#{var_name}-#{collection_str}"
 
       # Labels
       label_loop = @builder.new_label
@@ -1096,8 +1097,8 @@ module LiquidIL
       label_else = @builder.new_label
       label_end = @builder.new_label
 
-      # Evaluate collection
-      expr_lexer = expr_lexer_for(collection_expr)
+      # Evaluate collection using region scan — zero alloc
+      expr_lexer = coll_len > 0 ? expr_lexer_for_region(coll_off, coll_len) : expr_lexer_for("")
       parse_expression(expr_lexer)
 
       # Check for empty BEFORE initializing iterator - jump_if_empty peeks then pops if empty
@@ -1191,11 +1192,12 @@ module LiquidIL
       var_name = _intern_from(src, vs, ve - vs)
 
       # Parse rest after ' in ' using byte scanning
-      limit_expr, offset_expr, _, _, collection_expr, cols, cols_expr =
+      limit_expr, offset_expr, _, _, coll_off, coll_len, cols, cols_expr =
         _parse_tablerow_options(src, in_pos + 4, limit_off)
 
+      collection_str = coll_len > 0 ? _intern_from(src, coll_off, coll_len) : ""
       # Generate loop name
-      loop_name = "#{var_name}-#{collection_expr}"
+      loop_name = "#{var_name}-#{collection_str}"
 
       # Labels
       label_loop = @builder.new_label
@@ -1204,8 +1206,8 @@ module LiquidIL
       label_else = @builder.new_label
       label_end = @builder.new_label
 
-      # Evaluate collection
-      expr_lexer = expr_lexer_for(collection_expr)
+      # Evaluate collection using region scan — zero alloc
+      expr_lexer = coll_len > 0 ? expr_lexer_for_region(coll_off, coll_len) : expr_lexer_for("")
       parse_expression(expr_lexer)
 
       # Note: Unlike for loops, tablerow should NOT jump_if_empty
@@ -1393,9 +1395,8 @@ module LiquidIL
       while ce > start && src.getbyte(ce - 1) == 32; ce -= 1; end
       cs = start
       while cs < ce && src.getbyte(cs) == 32; cs += 1; end
-      collection_expr = cs < ce ? src.byteslice(cs, ce - cs) : ""
 
-      [limit_expr, offset_expr, offset_continue, reversed, collection_expr]
+      [limit_expr, offset_expr, offset_continue, reversed, cs, [ce - cs, 0].max]
     end
 
     # Parse tablerow options — like _parse_for_options but with cols: support.
@@ -1478,9 +1479,8 @@ module LiquidIL
       while ce > start && src.getbyte(ce - 1) == 32; ce -= 1; end
       cs = start
       while cs < ce && src.getbyte(cs) == 32; cs += 1; end
-      collection_expr = cs < ce ? src.byteslice(cs, ce - cs) : ""
 
-      [limit_expr, offset_expr, false, false, collection_expr, cols, cols_expr]
+      [limit_expr, offset_expr, false, false, cs, [ce - cs, 0].max, cols, cols_expr]
     end
 
     # Check if bytes at `pos` match `str` for `len` bytes (or full str length)
