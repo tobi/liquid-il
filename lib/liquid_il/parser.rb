@@ -472,6 +472,7 @@ module LiquidIL
     end
 
     def strip_blank_raws(indices)
+      return unless indices
       indices.each do |idx|
         inst = @builder.instructions[idx]
         next unless inst && inst[0] == IL::WRITE_RAW
@@ -1158,13 +1159,12 @@ module LiquidIL
       while ve > vs && src.getbyte(ve - 1) == 32; ve -= 1; end
       var_name = _intern_from(src, vs, ve - vs)
 
-      lo, ll, oo, ol, offset_continue, reversed, coll_off, coll_len =
-        _parse_for_options(src, in_pos + 4, limit_off)
-      has_limit = ll > 0
-      has_offset = ol > 0
+      _parse_for_options(src, in_pos + 4, limit_off)
+      has_limit = @_fo_ll > 0
+      has_offset = @_fo_ol > 0
 
       # Build loop name — use object_id pair as key (both strings are interned/frozen)
-      collection_str = coll_len > 0 ? _intern_from(src, coll_off, coll_len) : ""
+      collection_str = @_fo_cl > 0 ? _intern_from(src, @_fo_cs, @_fo_cl) : ""
       # Since both are frozen interned strings, object_id is stable
       lnk = (var_name.object_id << 32) | collection_str.object_id
       loop_name = @intern_table[lnk] || (@intern_table[lnk] = "#{var_name}-#{collection_str}".freeze)
@@ -1177,7 +1177,7 @@ module LiquidIL
       label_end = @builder.new_label
 
       # Evaluate collection using region scan — zero alloc
-      expr_lexer = coll_len > 0 ? expr_lexer_for_region(coll_off, coll_len) : expr_lexer_for("")
+      expr_lexer = @_fo_cl > 0 ? expr_lexer_for_region(@_fo_cs, @_fo_cl) : expr_lexer_for("")
       parse_expression(expr_lexer)
 
       # Check for empty BEFORE initializing iterator - jump_if_empty peeks then pops if empty
@@ -1186,18 +1186,18 @@ module LiquidIL
       # Emit offset first, then limit (IL order matches application order)
       # Sequential readers can apply: offset first (drop N), then limit (take M)
       if has_offset
-        offset_lexer = expr_lexer_for_region(oo, ol)
+        offset_lexer = expr_lexer_for_region(@_fo_oo, @_fo_ol)
         parse_expression(offset_lexer)
       end
 
       if has_limit
-        limit_lexer = expr_lexer_for_region(lo, ll)
+        limit_lexer = expr_lexer_for_region(@_fo_lo, @_fo_ll)
         parse_expression(limit_lexer)
       end
 
       # Initialize for loop (pops collection, creates iterator)
       # Pass label_end for error recovery - on error, output error message and jump past the for block
-      @builder.for_init(var_name, loop_name, has_limit, has_offset, offset_continue, reversed, label_end)
+      @builder.for_init(var_name, loop_name, has_limit, has_offset, @_fo_oc, @_fo_rev, label_end)
 
       @builder.push_scope
       @builder.push_forloop
@@ -1269,12 +1269,12 @@ module LiquidIL
       var_name = _intern_from(src, vs, ve - vs)
 
       # Parse rest after ' in ' using byte scanning — returns regions (zero alloc)
-      lo, ll, oo, ol, _, _, coll_off, coll_len, cols, co, cl =
-        _parse_tablerow_options(src, in_pos + 4, limit_off)
-      has_limit = ll > 0
-      has_offset = ol > 0
+      _parse_tablerow_options(src, in_pos + 4, limit_off)
+      has_limit = @_fo_ll > 0
+      has_offset = @_fo_ol > 0
+      cols = @_fo_cols
 
-      collection_str = coll_len > 0 ? _intern_from(src, coll_off, coll_len) : ""
+      collection_str = @_fo_cl > 0 ? _intern_from(src, @_fo_cs, @_fo_cl) : ""
       # Generate loop name — use object_id pair for zero-alloc cache lookup
       lnk = (var_name.object_id << 32) | collection_str.object_id
       loop_name = @intern_table[lnk] || (@intern_table[lnk] = "#{var_name}-#{collection_str}".freeze)
@@ -1287,25 +1287,25 @@ module LiquidIL
       label_end = @builder.new_label
 
       # Evaluate collection using region scan — zero alloc
-      expr_lexer = coll_len > 0 ? expr_lexer_for_region(coll_off, coll_len) : expr_lexer_for("")
+      expr_lexer = @_fo_cl > 0 ? expr_lexer_for_region(@_fo_cs, @_fo_cl) : expr_lexer_for("")
       parse_expression(expr_lexer)
 
       # Note: Unlike for loops, tablerow should NOT jump_if_empty
       # because even empty tablerows output <tr class="row1"></tr>
 
       if has_limit
-        limit_lexer = expr_lexer_for_region(lo, ll)
+        limit_lexer = expr_lexer_for_region(@_fo_lo, @_fo_ll)
         parse_expression(limit_lexer)
       end
 
       if has_offset
-        offset_lexer = expr_lexer_for_region(oo, ol)
+        offset_lexer = expr_lexer_for_region(@_fo_oo, @_fo_ol)
         parse_expression(offset_lexer)
       end
 
       # Handle dynamic cols expression
-      if cl > 0
-        cols_lexer = expr_lexer_for_region(co, cl)
+      if @_fo_colen > 0
+        cols_lexer = expr_lexer_for_region(@_fo_co, @_fo_colen)
         parse_expression(cols_lexer)
         cols = :dynamic  # Signal that cols value is on the stack
       end
@@ -1480,13 +1480,15 @@ module LiquidIL
       cs = start
       while cs < ce && src.getbyte(cs) == 32; cs += 1; end
 
-      [limit_off, limit_len, offset_off, offset_len, offset_continue, reversed, cs, [ce - cs, 0].max]
+      # Store results in ivars — zero alloc return
+      @_fo_lo = limit_off; @_fo_ll = limit_len
+      @_fo_oo = offset_off; @_fo_ol = offset_len
+      @_fo_oc = offset_continue; @_fo_rev = reversed
+      @_fo_cs = cs; @_fo_cl = [ce - cs, 0].max
     end
 
     # Parse tablerow options — like _parse_for_options but with cols: support.
-    # Returns [limit_off, limit_len, offset_off, offset_len, offset_continue, reversed,
-    #          coll_start, coll_len, cols, cols_off, cols_len]
-    # limit/offset/cols are returned as source regions (offset, length) — zero allocation.
+    # Stores results in @_fo_* + @_fo_cols/@_fo_co/@_fo_colen ivars — zero alloc return.
     def _parse_tablerow_options(src, start, scan_limit = nil)
       limit_off = 0; limit_len = 0
       offset_off = 0; offset_len = 0
@@ -1585,7 +1587,12 @@ module LiquidIL
       cs = start
       while cs < ce && src.getbyte(cs) == 32; cs += 1; end
 
-      [limit_off, limit_len, offset_off, offset_len, false, false, cs, [ce - cs, 0].max, cols, cols_off, cols_len]
+      # Store in ivars — zero alloc return (shares @_fo_* namespace with _parse_for_options)
+      @_fo_lo = limit_off; @_fo_ll = limit_len
+      @_fo_oo = offset_off; @_fo_ol = offset_len
+      @_fo_oc = false; @_fo_rev = false
+      @_fo_cs = cs; @_fo_cl = [ce - cs, 0].max
+      @_fo_cols = cols; @_fo_co = cols_off; @_fo_colen = cols_len
     end
 
     # Check if bytes at `pos` match `str` for `len` bytes (or full str length)
