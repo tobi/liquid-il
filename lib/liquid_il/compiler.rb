@@ -1394,22 +1394,29 @@ module LiquidIL
       "base64_url_safe_decode" => true
     }.freeze
 
+    CONST_VALUE_NIL = [:const, nil].freeze
+    CONST_VALUE_TRUE = [:const, true].freeze
+    CONST_VALUE_FALSE = [:const, false].freeze
+    # Cache for [:const, v] where v is an interned/frozen value (Integer, String, Float)
+    @@const_value_cache = {}
+
     def const_value(inst)
       case inst[0]
       when IL::CONST_NIL
-        [:const, nil]
+        CONST_VALUE_NIL
       when IL::CONST_TRUE
-        [:const, true]
+        CONST_VALUE_TRUE
       when IL::CONST_FALSE
-        [:const, false]
+        CONST_VALUE_FALSE
       when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING
-        [:const, inst[1]]
+        v = inst[1]
+        @@const_value_cache[v.object_id] ||= [:const, v].freeze
       when IL::CONST_RANGE
         [:const, RangeValue.new(inst[1], inst[2])]
       when IL::CONST_EMPTY
-        [:const, EmptyLiteral.instance]
+        @@const_value_cache[:empty] ||= [:const, EmptyLiteral.instance].freeze
       when IL::CONST_BLANK
-        [:const, BlankLiteral.instance]
+        @@const_value_cache[:blank] ||= [:const, BlankLiteral.instance].freeze
       else
         nil
       end
