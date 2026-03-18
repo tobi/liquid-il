@@ -43,6 +43,7 @@ module LiquidIL
       @template_source = template_source
       @context = context
       @loop_depth = 0 # Track nested loop depth for parentloop support
+      @has_resource_limits = !!context&.resource_limits
       @partials = partials || {}
       @partial_names_in_progress = partial_names_in_progress || Set.new
       @uses_interrupts = detect_uses_interrupts
@@ -1682,24 +1683,38 @@ module LiquidIL
         args = expr.children[1..].map { |a| expr_to_ruby(a) }
         # Compute line number from filter's PC for error reporting
         filter_line = expr.pc ? line_for_pc(expr.pc) : 1
-        # Try to inline simple filters to avoid Filters.apply dispatch overhead
-        inlined = inline_filter(expr.value, input, args)
-        if inlined
-          inlined
-        else
-          # Use fast dispatch (cff) for filters known at compile time,
-          # regular dispatch (cf) for unknown filters that may be added later.
-          dispatcher = LiquidIL::Filters.valid_filter_methods[expr.value] ? "cff" : "cf"
-          if args.empty?
-            "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{filter_line})"
-          elsif args.all? { |a| a.match?(/\A(?:-?\d+(?:\.\d+)?|"[^"]*")\z/) }
-            # All args are compile-time constants — register a frozen array constant
-            # to avoid allocation per call in hot loops
-            frozen_name = register_frozen_array(args)
-            "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, #{frozen_name}, _S, _F, #{filter_line})"
+
+        filter_name = expr.value
+        is_builtin = LiquidIL::Filters.valid_filter_methods[filter_name]
+        custom_info = @context&.custom_filters&.[](filter_name)
+
+        if is_builtin
+          # Built-in filter — try inlining, fall back to fast dispatch
+          inlined = inline_filter(filter_name, input, args)
+          if inlined
+            inlined
           else
-            "_H.#{dispatcher}(#{expr.value.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{filter_line})"
+            emit_filter_dispatch("cff", filter_name, input, args, filter_line)
           end
+        elsif custom_info
+          if custom_info[:pure]
+            # Pure custom filter — direct call to the module method (no scope overhead)
+            mod_name = custom_info[:module].name || custom_info[:module].inspect
+            if args.empty?
+              "_H.ccf(#{filter_name.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{filter_line})"
+            else
+              "_H.ccf(#{filter_name.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{filter_line})"
+            end
+          else
+            # Impure custom filter — dispatch through ccf with scope access
+            emit_filter_dispatch("ccf", filter_name, input, args, filter_line)
+          end
+        elsif @context&.strict_filters
+          # strict_filters: unknown filter raises at render time
+          "(raise LiquidIL::UndefinedFilter, #{("undefined filter " + filter_name).inspect})"
+        else
+          # Unknown filter — use slow dispatch (cf) which checks at runtime
+          emit_filter_dispatch("cf", filter_name, input, args, filter_line)
         end
       when :case_compare
         left = expr_to_ruby(expr.children[0])
@@ -2075,6 +2090,10 @@ module LiquidIL
       if !needs_forloop && !needs_scope_sync && !needs_catch && !needs_error_handling &&
          !reversed && !needs_slicing && !offset_continue && else_code.empty?
         code << "#{prefix}_H.each_iter(#{coll_ruby}, #{loop_name.inspect}, _S) do |#{item_var_internal}|\n"
+        if @has_resource_limits
+          code << "#{prefix}  _S.increment_render_score!\n"
+          code << "#{prefix}  _S.check_output_limit!(_O)\n"
+        end
         code << body_code
         code << "#{prefix}end\n"
         @loop_depth -= 1
@@ -2148,6 +2167,11 @@ module LiquidIL
       if needs_scope_sync
         code << "#{inner_prefix}      _S.assign_local('forloop', #{forloop_var})\n"
         code << "#{inner_prefix}      _S.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
+      end
+      # Resource limit checks — only emitted when limits are configured
+      if @has_resource_limits
+        code << "#{inner_prefix}      _S.increment_render_score!\n"
+        code << "#{inner_prefix}      _S.check_output_limit!(_O)\n"
       end
       # Adjust body_code indentation if we have error handling
       if needs_error_handling
@@ -2445,6 +2469,10 @@ module LiquidIL
       code << "#{prefix}    #{tablerowloop_var}.index0 = #{idx_var}\n"
       code << "#{prefix}    _S.assign_local('tablerowloop', #{tablerowloop_var})\n"
       code << "#{prefix}    _S.assign_local(#{item_var.inspect}, #{item_var_internal})\n"
+      if @has_resource_limits
+        code << "#{prefix}    _S.increment_render_score!\n"
+        code << "#{prefix}    _S.check_output_limit!(_O)\n"
+      end
 
       # Output HTML tags before body content
       code << "#{prefix}    if #{idx_var} > 0\n"
@@ -2674,6 +2702,18 @@ module LiquidIL
     # Register a frozen array constant for compile-time-known filter args.
     # Returns the variable name to use in generated code.
     # Deduplicates: same arg list → same constant.
+    # Emit a standard filter dispatch call (cff, cf, or ccf)
+    def emit_filter_dispatch(dispatcher, name, input, args, line)
+      if args.empty?
+        "_H.#{dispatcher}(#{name.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{line})"
+      elsif args.all? { |a| a.match?(/\A(?:-?\d+(?:\.\d+)?|"[^"]*")\z/) }
+        frozen_name = register_frozen_array(args)
+        "_H.#{dispatcher}(#{name.inspect}, #{input}, #{frozen_name}, _S, _F, #{line})"
+      else
+        "_H.#{dispatcher}(#{name.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{line})"
+      end
+    end
+
     def register_frozen_array(args)
       key = "[#{args.join(', ')}]"
       @frozen_arrays[key] ||= begin

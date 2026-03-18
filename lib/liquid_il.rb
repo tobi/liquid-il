@@ -70,13 +70,62 @@ module LiquidIL
   #   template = ctx.parse("{% include 'header' %}")
   #   template.render(title: "Home")
   #
+  # Error raised when strict_filters is enabled and an undefined filter is used
+  class UndefinedFilter < Error; end
+
+  # Error raised when strict_variables is enabled and an undefined variable is accessed
+  class UndefinedVariable < Error; end
+
+  # Error raised when resource limits are exceeded
+  class ResourceLimitError < Error; end
+
   class Context
     attr_accessor :file_system, :strict_errors, :registers
+    attr_reader :custom_filters, :strict_variables, :strict_filters, :resource_limits
 
-    def initialize(file_system: nil, strict_errors: false, registers: {})
+    def initialize(file_system: nil, strict_errors: false, registers: {},
+                   strict_variables: false, strict_filters: false,
+                   resource_limits: nil)
       @file_system = file_system
       @strict_errors = strict_errors
       @registers = registers
+      @strict_variables = strict_variables
+      @strict_filters = strict_filters
+      @resource_limits = resource_limits  # { output_limit: N, render_score_limit: N }
+      @custom_filters = {}  # name_str => { module: Module, pure: bool, method: UnboundMethod }
+    end
+
+    # Register custom filter methods from a module.
+    #
+    #   ctx.register_filter(MoneyFilters)              # impure (can access scope)
+    #   ctx.register_filter(MathFilters, pure: true)   # pure (no scope access, inlineable)
+    #
+    # Pure filters are called directly at render time with zero dispatch overhead.
+    # Impure filters go through the standard filter dispatch with scope access.
+    #
+    def register_filter(mod, pure: false)
+      methods = if mod.is_a?(Module)
+        mod.instance_methods(false)
+      else
+        raise ArgumentError, "register_filter expects a Module, got #{mod.class}"
+      end
+
+      methods.each do |name|
+        name_s = name.to_s
+        @custom_filters[name_s] = {
+          module: mod,
+          pure: pure,
+          method: mod.instance_method(name),
+        }
+      end
+
+      # Invalidate template cache since filter availability changed
+      clear_cache
+    end
+
+    # Check if a filter name is known (built-in or custom)
+    def filter_known?(name)
+      LiquidIL::Filters.valid_filter_methods[name] || @custom_filters.key?(name)
     end
 
     # Parse a template string, returning a compiled Template.
@@ -125,19 +174,43 @@ module LiquidIL
     end
 
     # Render the template with the given variables.
-    def render(assigns = {}, render_errors: true, **extra_assigns)
+    #
+    #   template.render(name: "World")
+    #   template.render({ "x" => 1 }, registers: { page_type: "product" })
+    #   template.render({ "x" => 1 }, strict_variables: true, strict_filters: true)
+    #
+    def render(assigns = {}, render_errors: true, registers: nil,
+               strict_variables: nil, strict_filters: nil,
+               **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       ctx = @context
-      regs = ctx&.registers
-      scope = Scope.new(assigns, registers: regs ? regs.dup : EMPTY_HASH, strict_errors: ctx&.strict_errors || false)
+      # Merge context-level and render-time registers
+      base_regs = ctx&.registers
+      if registers
+        regs = base_regs ? base_regs.merge(registers) : registers
+      else
+        regs = base_regs ? base_regs.dup : EMPTY_HASH
+      end
+      scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false)
       scope.file_system = ctx&.file_system
       scope.render_errors = render_errors
+      # strict_variables: render-time overrides context-level
+      scope.strict_variables = strict_variables.nil? ? (ctx&.strict_variables || false) : strict_variables
+      # strict_filters: render-time overrides context-level
+      scope.strict_filters = strict_filters.nil? ? (ctx&.strict_filters || false) : strict_filters
+      # Custom filters from context
+      scope.custom_filters = ctx&.custom_filters if ctx&.custom_filters && !ctx.custom_filters.empty?
+      # Resource limits from context
+      scope.resource_limits = ctx&.resource_limits if ctx&.resource_limits
 
       if @partial_constants
         @compiled_proc.call(scope, @spans, @source, @partial_constants)
       else
         @compiled_proc.call(scope, @spans, @source)
       end
+    rescue LiquidIL::ResourceLimitError => e
+      raise unless render_errors
+      "Liquid error: #{e.message}"
     rescue LiquidIL::RuntimeError => e
       raise unless render_errors
       output = e.partial_output || ""
@@ -146,6 +219,11 @@ module LiquidIL
     rescue StandardError => e
       raise unless render_errors
       "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
+    end
+
+    # Strict render — raises on any error instead of rendering inline.
+    def render!(assigns = {}, **options)
+      render(assigns, render_errors: false, **options)
     end
 
     # Generate standalone Ruby source code as a module.

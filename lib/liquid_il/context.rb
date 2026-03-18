@@ -4,8 +4,9 @@ module LiquidIL
   # Minimal scope for isolated render - just locals + static_environments
   # Optimized for hot-path performance with direct ivars instead of hash lookups
   class RenderScope
-    attr_accessor :file_system, :render_errors, :current_file
-    attr_reader :strict_errors
+    attr_accessor :file_system, :render_errors, :current_file,
+                  :strict_variables, :strict_filters, :custom_filters, :resource_limits
+    attr_reader :strict_errors, :user_registers
 
     def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true, locals: nil)
       @static_environments = static_environments
@@ -30,10 +31,15 @@ module LiquidIL
     def lookup(key)
       key = key.to_s unless key.is_a?(String)
       if @locals.key?(key)
-        @locals[key]
-      else
-        @static_environments&.[](key)
+        return @locals[key]
       end
+      if @static_environments&.key?(key)
+        return @static_environments[key]
+      end
+      if @strict_variables
+        raise LiquidIL::UndefinedVariable, "undefined variable #{key}"
+      end
+      nil
     end
 
     # Alias for cleaner generated code
@@ -57,13 +63,52 @@ module LiquidIL
     def isolated
       scope = RenderScope.new(@static_environments, @file_system, @depth, strict_errors: @strict_errors, render_errors: @render_errors)
       scope.current_file = @current_file
+      scope.strict_variables = @strict_variables
+      scope.strict_filters = @strict_filters
+      scope.custom_filters = @custom_filters
+      scope.resource_limits = @resource_limits
       scope
     end
 
     def isolated_with(assigns)
       scope = RenderScope.new(@static_environments, @file_system, @depth, strict_errors: @strict_errors, render_errors: @render_errors, locals: assigns)
       scope.current_file = @current_file
+      scope.strict_variables = @strict_variables
+      scope.strict_filters = @strict_filters
+      scope.custom_filters = @custom_filters
+      scope.resource_limits = @resource_limits
       scope
+    end
+
+    # Resource limit tracking (delegated to Scope if called on RenderScope)
+    def check_output_limit!(output)
+      return unless @resource_limits
+      limit = @resource_limits[:output_limit] || @resource_limits["output_limit"]
+      return unless limit
+      if output.bytesize > limit
+        raise LiquidIL::ResourceLimitError, "Memory limits exceeded"
+      end
+    end
+
+    def increment_render_score!(count = 1)
+      return unless @resource_limits
+      limit = @resource_limits[:render_score_limit] || @resource_limits["render_score_limit"]
+      return unless limit
+      @render_score = (@render_score || 0) + count
+      if @render_score > limit
+        raise LiquidIL::ResourceLimitError, "Rendering limits exceeded"
+      end
+    end
+
+    def apply_custom_filter(name, input, args)
+      return nil unless @custom_filters
+      info = @custom_filters[name]
+      return nil unless info
+      info[:method].bind_call(info[:module], input, *args)
+    end
+
+    def custom_filter?(name)
+      @custom_filters&.key?(name)
     end
 
     # Legacy registers accessor for compatibility
@@ -130,10 +175,13 @@ module LiquidIL
   class Scope
     attr_reader :strict_errors, :static_environments
     def scopes; @scopes || [@root_scope]; end
-    attr_accessor :file_system, :disable_include, :render_errors, :current_file
+    attr_accessor :file_system, :disable_include, :render_errors, :current_file,
+                  :strict_variables, :strict_filters, :custom_filters, :resource_limits
 
     MAX_RENDER_DEPTH = 100
 
+
+    attr_reader :user_registers
 
     def initialize(assigns = {}, registers: {}, strict_errors: false, static_environments: nil)
       if static_environments
@@ -165,6 +213,12 @@ module LiquidIL
       @has_counters = false  # Fast flag: set true when increment/decrement used
       @render_depth = 0
       @current_file = nil
+      @strict_variables = false
+      @strict_filters = false
+      @custom_filters = nil
+      @resource_limits = nil
+      @render_score = 0
+      @user_registers = registers.empty? ? nil : registers
       # Lazy-init: only allocate when used
       @assigned_vars = nil
       @interrupts = nil
@@ -254,7 +308,16 @@ module LiquidIL
         end
       end
       # Check static_environments (shared with render)
-      @static_environments[key] if @static_environments&.key?(key)
+      if @static_environments&.key?(key)
+        return @static_environments[key]
+      end
+
+      # strict_variables: raise if variable not found anywhere
+      if @strict_variables
+        raise LiquidIL::UndefinedVariable, "undefined variable #{key}"
+      end
+
+      nil
     end
 
     # Alias for cleaner generated code
@@ -416,17 +479,61 @@ module LiquidIL
       }
     end
 
+    # --- Resource limit tracking ---
+
+    def check_output_limit!(output)
+      return unless @resource_limits
+      limit = @resource_limits[:output_limit] || @resource_limits["output_limit"]
+      return unless limit
+      if output.bytesize > limit
+        raise LiquidIL::ResourceLimitError, "Memory limits exceeded"
+      end
+    end
+
+    def increment_render_score!(count = 1)
+      return unless @resource_limits
+      limit = @resource_limits[:render_score_limit] || @resource_limits["render_score_limit"]
+      return unless limit
+      @render_score += count
+      if @render_score > limit
+        raise LiquidIL::ResourceLimitError, "Rendering limits exceeded"
+      end
+    end
+
+    # --- Custom filter dispatch ---
+
+    def apply_custom_filter(name, input, args)
+      return nil unless @custom_filters
+      info = @custom_filters[name]
+      return nil unless info
+      # Bind and call the filter method
+      bound = info[:method].bind_call(info[:module], input, *args)
+      bound
+    end
+
+    def custom_filter?(name)
+      @custom_filters&.key?(name)
+    end
+
     # --- Isolation for render ---
 
     def isolated
       scope = RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors, render_errors: @render_errors)
       scope.current_file = @current_file
+      scope.strict_variables = @strict_variables
+      scope.strict_filters = @strict_filters
+      scope.custom_filters = @custom_filters
+      scope.resource_limits = @resource_limits
       scope
     end
 
     def isolated_with(assigns)
       scope = RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors, render_errors: @render_errors, locals: assigns)
       scope.current_file = @current_file
+      scope.strict_variables = @strict_variables
+      scope.strict_filters = @strict_filters
+      scope.custom_filters = @custom_filters
+      scope.resource_limits = @resource_limits
       scope
     end
 

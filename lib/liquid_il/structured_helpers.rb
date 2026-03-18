@@ -132,7 +132,22 @@ module LiquidIL
     LOOKUP = method(:lookup)
 
     def self.call_filter(name, input, args, scope, current_file = nil, line = 1)
-      LiquidIL::Filters.apply(name, input, args, scope)
+      # Try built-in filters first
+      if LiquidIL::Filters.valid_filter_methods[name]
+        return LiquidIL::Filters.apply(name, input, args, scope)
+      end
+      # Try custom filters from scope
+      if scope.custom_filter?(name)
+        return scope.apply_custom_filter(name, input, args)
+      end
+      # strict_filters: raise on unknown filter
+      if scope.strict_filters
+        raise LiquidIL::UndefinedFilter, "undefined filter #{name}"
+      end
+      # Unknown filter — return input unchanged
+      input
+    rescue LiquidIL::UndefinedFilter
+      raise  # Always propagate
     rescue LiquidIL::FilterError
       nil
     rescue LiquidIL::FilterRuntimeError => e
@@ -149,6 +164,22 @@ module LiquidIL
     rescue LiquidIL::FilterRuntimeError => e
       location = current_file ? "#{current_file} line #{line}" : "line #{line}"
       LiquidIL::ErrorMarker.new(e.message, location)
+    end
+
+    # Custom filter call — dispatches to a custom filter module registered via register_filter.
+    # Pure filters get direct dispatch (no scope). Impure filters receive scope.
+    def self.call_custom_filter(name, input, args, scope, current_file = nil, line = 1)
+      scope.apply_custom_filter(name, input, args)
+    rescue LiquidIL::FilterError
+      nil
+    rescue LiquidIL::FilterRuntimeError => e
+      location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+      LiquidIL::ErrorMarker.new(e.message, location)
+    rescue ArgumentError => e
+      raise scope.strict_errors ? e : LiquidIL::FilterRuntimeError.new(e.message)
+    rescue => e
+      raise e if scope.strict_errors || e.is_a?(LiquidIL::FilterRuntimeError)
+      raise LiquidIL::FilterRuntimeError.new("internal")
     end
 
     def self.compare(left, right, op, output = nil, current_file = nil)
@@ -460,6 +491,7 @@ module LiquidIL
       alias_method :oa, :output_append
       alias_method :cf, :call_filter
       alias_method :cff, :call_filter_fast
+      alias_method :ccf, :call_custom_filter
       alias_method :cmp, :compare
       alias_method :ct, :contains
       alias_method :ti, :to_iterable
