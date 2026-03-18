@@ -51,6 +51,13 @@ module LiquidIL
       @expr_lexer
     end
 
+    # Zero-alloc: scan a region of the original template source directly.
+    def expr_lexer_for_region(offset, length)
+      @expr_lexer.reset_region(@source, offset, length)
+      @expr_lexer.advance
+      @expr_lexer
+    end
+
     def current_template_type
       @template_lexer.token_type
     end
@@ -123,8 +130,29 @@ module LiquidIL
       content.split(/\s+/, 2).first&.downcase
     end
 
-    # Extract tag arguments from current token — everything after the tag name.
-    # Uses byte scanning on source to avoid content.split allocation.
+    # Compute the byte range of tag arguments — zero allocation.
+    # Returns [offset, length] into @source.
+    def tag_args_region
+      src = @source
+      pos = @template_lexer.content_start
+      limit = @template_lexer.content_end
+      while pos < limit && (b = src.getbyte(pos)) && (b == 32 || b == 9 || b == 10 || b == 13)
+        pos += 1
+      end
+      while pos < limit && (b = src.getbyte(pos)) && b > 32
+        pos += 1
+      end
+      while pos < limit && (b = src.getbyte(pos)) && (b == 32 || b == 9 || b == 10 || b == 13)
+        pos += 1
+      end
+      e = limit
+      while e > pos && (b = src.getbyte(e - 1)) && (b == 32 || b == 9 || b == 10 || b == 13)
+        e -= 1
+      end
+      [pos, e - pos]
+    end
+
+    # Extract tag arguments as a String — for tag parsers that do string ops.
     def extract_tag_args
       src = @source
       pos = @template_lexer.content_start
@@ -192,10 +220,12 @@ module LiquidIL
         return true  # Blank output
       end
 
-      # Unstripped — ExpressionLexer handles whitespace internally.
-      # Saves 1 alloc (no .strip) per variable token.
-      content = @template_lexer.token_content_unstripped
-      expr_lexer = expr_lexer_for(content)
+      # Zero-alloc region scan: ExpressionLexer scans the original source
+      # string directly by position. No byteslice, no strip.
+      expr_lexer = expr_lexer_for_region(
+        @template_lexer.content_start,
+        @template_lexer.content_end - @template_lexer.content_start
+      )
 
       parse_expression(expr_lexer)
       parse_filters(expr_lexer)

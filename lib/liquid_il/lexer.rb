@@ -51,31 +51,35 @@ module LiquidIL
       @token_type = nil
     end
 
-    # Extract token content as StringView — zero-copy view into source.
-    # For RAW tokens: the raw text (materialized with trim applied if needed)
-    # For TAG/VAR tokens: the markup between delimiters (stripped — must materialize)
+    # Extract token content as a String.
+    # For RAW tokens: the raw text (with trim applied if needed)
+    # For TAG/VAR tokens: the markup between delimiters (stripped)
     def token_content
       if @token_type == RAW
         s = @source.byteslice(@content_start, @content_end - @content_start)
-        # Apply trim from previous token
         @_needs_lstrip ? s.lstrip : s
       else
-        # TAG/VAR content needs strip — must materialize
         @source.byteslice(@content_start, @content_end - @content_start).strip
       end
     end
 
-    # Unstripped content — single byteslice, no strip allocation.
-    # Use when the consumer handles whitespace itself (ExpressionLexer skips
-    # leading/trailing whitespace internally). Saves 1 alloc vs token_content.
-    def token_content_unstripped
-      @source.byteslice(@content_start, @content_end - @content_start)
-    end
-
-    # Zero-copy view of token content — no strip, no allocation.
-    # Use when the consumer will do its own byte scanning (e.g., ExpressionLexer).
-    def token_content_view
-      StringView.new(@source, @content_start, @content_end - @content_start)
+    # Zero-copy StringView of RAW content — no allocation for the string itself.
+    # Trim still needs byteslice when lstrip is required.
+    def raw_content_view
+      if @_needs_lstrip
+        # Advance past leading whitespace in the view
+        pos = @content_start
+        limit = @content_end
+        while pos < limit
+          b = @source.getbyte(pos)
+          break unless b == 32 || b == 9 || b == 10 || b == 13
+          pos += 1
+        end
+        pos < limit ? StringView.new(@source, pos, limit - pos) : nil
+      else
+        len = @content_end - @content_start
+        len > 0 ? StringView.new(@source, @content_start, len) : nil
+      end
     end
 
     # Check if content region is all whitespace — zero allocation.
@@ -553,15 +557,26 @@ module LiquidIL
       @current_token = nil
       @current_value = nil
       @peeked = false
-      @view = StringView.new(source, 0, 0)  # Reusable view for reset_source
     end
 
-    # Reset to scan a new source. Accepts String or StringView — zero alloc
-    # when called with a StringView (uses reset! on the internal view).
+    # Reset to scan a new source substring.
     def reset_source(source)
       @source = source
       @source_len = source.bytesize
       @pos = 0
+      @current_token = nil
+      @current_value = nil
+      @peeked = false
+      self
+    end
+
+    # Reset to scan a region of a source string — zero allocation.
+    # Uses absolute positions: @pos starts at offset, stops at offset+length.
+    # getbyte/byteslice work because @source is the full string.
+    def reset_region(source, offset, length)
+      @source = source
+      @pos = offset
+      @source_len = offset + length
       @current_token = nil
       @current_value = nil
       @peeked = false

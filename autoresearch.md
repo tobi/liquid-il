@@ -4,8 +4,8 @@
 Use the `string_view` gem (C extension) to eliminate string allocations during Liquid template parsing. StringView provides zero-copy views into a source string — `getbyte`, `bytesize`, `length`, `empty?`, `reset!`, and `hash` are all zero-alloc. The goal is to pass StringViews through the entire lex→parse→IL pipeline, deferring materialization (`to_s`) to the latest possible point.
 
 ## Metrics
-- **Primary**: `parse_allocs` (count, lower is better) — total object allocations during parse
-- **Secondary**: `parse_µs` (must not regress), `render_µs` (should not regress), `render_allocs`
+- **Primary**: `string_allocs` (count, lower is better) — String object allocations during parse (in liquid_il code only)
+- **Secondary**: `parse_allocs` (total allocs), `parse_µs` (must not regress), `render_µs` (should not regress)
 
 ## How to Run
 `./autoresearch.sh` — outputs `METRIC name=number` lines via `auto/parse_and_metrics.sh`.

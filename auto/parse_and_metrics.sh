@@ -49,6 +49,44 @@ echo "METRIC render_µs=${RENDER_US}"
 echo "METRIC parse_allocs=${PARSE_ALLOCS}"
 echo "METRIC render_allocs=${RENDER_ALLOCS}"
 
+# Count String allocations specifically during parse
+STRING_ALLOCS=$(RUBY_YJIT_ENABLE=1 ruby -Ilib -e '
+require "yaml"
+require "liquid_il"
+require "objspace"
+
+SPEC_DIR = File.join(`bundle info liquid-spec --path 2>/dev/null`.strip, "specs", "benchmarks")
+spec_files = Dir[File.join(SPEC_DIR, "*.yml")].reject { |f| f.end_with?("suite.yml") }
+templates = []
+spec_files.each do |file|
+  data = YAML.load_file(file, aliases: true)
+  next unless data["specs"]
+  data["specs"].each do |spec|
+    next unless spec["template"]
+    templates << spec["template"]
+  end
+end
+
+# Warmup
+templates.each { |t| 3.times { LiquidIL::Parser.new(t).parse rescue nil } }
+
+GC.start; GC.disable
+ObjectSpace.trace_object_allocations_start
+templates.each { |t| LiquidIL::Parser.new(t).parse rescue nil }
+ObjectSpace.trace_object_allocations_stop
+
+count = 0
+ObjectSpace.each_object(String) do |s|
+  f = ObjectSpace.allocation_sourcefile(s)
+  count += 1 if f && f.include?("liquid_il")
+end
+GC.enable
+puts count
+' 2>/dev/null) || true
+if [ -n "$STRING_ALLOCS" ]; then
+  echo "METRIC string_allocs=${STRING_ALLOCS}"
+fi
+
 # Parse pipeline breakdown — measures each stage independently
 PIPELINE=$(RUBY_YJIT_ENABLE=1 ruby -Ilib -e '
 require "yaml"
