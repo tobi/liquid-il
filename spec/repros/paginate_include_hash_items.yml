@@ -1,0 +1,25 @@
+---
+_metadata:
+  hint: Minimal repro for collection page include+paginate behavior with hash products
+  required_features:
+    - shopify_tags
+specs:
+- name: shopify_paginate_include_hash_items_repro
+  template: |
+    {% assign _products = collection.products %}
+    {% paginate _products by 12 %}
+      {% for product in _products %}
+        {% include 'product-card' %}
+      {% endfor %}
+    {% endpaginate %}
+  filesystem:
+    product-card.liquid: |
+      {{ product.url }}
+  environment:
+    collection:
+      products:
+        - url: /a
+        - url: /b
+  expected: |
+    /a
+    /b
