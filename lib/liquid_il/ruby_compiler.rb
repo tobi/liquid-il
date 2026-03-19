@@ -1771,7 +1771,8 @@ module LiquidIL
 
         case inst[0]
         when IL::JUMP_IF_EMPTY
-          # After JUMP_IF_EMPTY, look for FOR_INIT (may have hoisted expressions in between)
+          # After JUMP_IF_EMPTY, look for FOR_INIT (may have hoisted expressions
+          # or offset/limit expressions in between — including dotted lookups)
           j = i + 1
           while j < @instructions.length
             next_inst = @instructions[j]
@@ -1779,8 +1780,11 @@ module LiquidIL
             case next_inst[0]
             when IL::FOR_INIT
               return true
-            when IL::FIND_VAR, IL::CONST_INT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE,
-                 IL::STORE_TEMP, IL::LOAD_TEMP
+            when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::CONST_INT, IL::CONST_FLOAT,
+                 IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_NIL,
+                 IL::CONST_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
+                 IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::NEW_RANGE,
+                 IL::STORE_TEMP, IL::LOAD_TEMP, IL::DUP
               j += 1
             else
               break
@@ -1906,32 +1910,26 @@ module LiquidIL
       # Count how many values need to be on stack for offset/limit
       values_needed = (has_offset ? 1 : 0) + (has_limit ? 1 : 0)
 
-      # Handle any pre-loop setup (optimizer may hoist expressions before FOR_INIT)
-      # But ONLY look for FIND_VAR + STORE_TEMP patterns, not bare constants
-      # (bare constants before FOR_INIT are offset/limit values)
+      # Skip any pre-loop hoisted expressions (FIND_VAR + STORE_TEMP patterns).
+      # Everything else before FOR_INIT is offset/limit values — leave for
+      # build_single_value_expression to consume.
       while @pc < @instructions.length && @instructions[@pc][0] != IL::FOR_INIT
         inst = @instructions[@pc]
         case inst[0]
         when IL::FIND_VAR
-          # Check if this is a hoisted variable followed by STORE_TEMP
           next_inst = @instructions[@pc + 1]
           if next_inst && next_inst[0] == IL::STORE_TEMP
-            # This is a hoisted FIND_VAR -> STORE_TEMP pattern
             var_name = inst[1]
             slot = next_inst[1]
             @pc += 2
             pre_loop_code << "#{prefix}__temp_#{slot}__ = _S.lookup(#{var_name.inspect})\n"
           else
-            # Not followed by STORE_TEMP, this is an offset/limit expression
-            break
+            break  # offset/limit expression starts here
           end
         when IL::STORE_TEMP
-          @pc += 1 # Skip orphaned STORE_TEMP
-        when IL::CONST_INT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_FLOAT, IL::CONST_NIL
-          # Bare constants before FOR_INIT are offset/limit values, stop here
-          break
+          @pc += 1
         else
-          break
+          break  # offset/limit expression starts here
         end
       end
 
