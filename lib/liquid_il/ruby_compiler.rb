@@ -278,12 +278,12 @@ module LiquidIL
       end
       code << "  _H = LiquidIL::RuntimeHelpers\n"
       code << "  _U = LiquidIL::Utils\n"
+      code << "  _F = nil\n"
       # Frozen array constants must be declared before partial lambdas
       # (lambdas are closures that capture these variables)
       code << generate_frozen_array_constants
       code << partial_code
       code << "  _O = +\"\"\n"
-      code << "  _F = nil\n"
       code << "  _cs = {}\n" if @uses_cycles
       code << "  _cst = []\n" if @uses_captures || @uses_ifchanged
       code << "  _ics = {}\n" if @uses_ifchanged
@@ -338,6 +338,7 @@ module LiquidIL
         source_const = "_pc[#{source_key.inspect}]"
         code << "  #{lambda_name} = ->(assigns, _O, __parent_scope__, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
         code << "    __prev_file__ = __parent_scope__.current_file\n"
+        code << "    __prev_f__ = _F\n"
         code << "    __parent_scope__.current_file = #{name.inspect}\n"
         code << "    __parent_scope__.push_render_depth\n"
         code << "    begin\n"
@@ -373,6 +374,7 @@ module LiquidIL
         code << "      _O << \"Liquid error (#{name} line 1): \#{LiquidIL.clean_error_message(e.message)}\"\n"
         code << "    ensure\n"
         code << "      __parent_scope__.current_file = __prev_file__\n"
+        code << "      _F = __prev_f__\n"
         code << "      __parent_scope__.pop_render_depth\n"
         code << "    end\n"
         code << "  }\n\n"
@@ -805,7 +807,7 @@ module LiquidIL
       # Handle include being disabled inside render context
       unless isolated
         code << "#{prefix}if _S.disable_include\n"
-        code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"include usage is not allowed in this context\", file: _F, line: #{line_num}, partial_output: _O.dup)\n"
+        code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"include usage is not allowed in this context\", file: _F, line: #{line_num})\n"
         code << "#{prefix}else\n"
         prefix = "  " * (indent + 1)
       end
@@ -940,19 +942,11 @@ module LiquidIL
       tag_type = isolated ? "render" : "include"
       line_num = line_for_pc(pc)
 
-      # The partial name comes from a variable
+      # The partial name comes from a runtime expression/variable.
       dyn_var = args["__dynamic_name__"] || inst[1]
-      # Handle dotted paths like "item.template"
-      parts = dyn_var.to_s.split(".")
-      if parts.length == 1
-        name_lookup = "_S.lookup(#{parts[0].inspect})"
-      else
-        name_lookup = "_S.lookup(#{parts[0].inspect})"
-        parts[1..].each { |p| name_lookup = "_H.lp(#{name_lookup}, #{p.inspect})" }
-      end
 
       code = String.new
-      code << "#{prefix}__dyn_name__ = #{name_lookup}\n"
+      code << "#{prefix}__dyn_name__ = #{generate_var_lookup(dyn_var)}\n"
 
       # Build assigns hash from args
       code << "#{prefix}__dyn_assigns__ = {}\n"
@@ -970,6 +964,19 @@ module LiquidIL
       with_expr = args["__with__"]
       as_alias = args["__as__"]
 
+      interrupt_check = ""
+      unless isolated || @loop_depth <= 0
+        interrupt_check = "#{prefix}    if _S.has_interrupt?\n" \
+          "#{prefix}      __int__ = _S.peek_interrupt\n" \
+          "#{prefix}      _S.pop_interrupt\n" \
+          "#{prefix}      if __int__ == :break\n" \
+          "#{prefix}        throw(:loop_break_#{@loop_depth - 1})\n" \
+          "#{prefix}      else\n" \
+          "#{prefix}        next\n" \
+          "#{prefix}      end\n" \
+          "#{prefix}    end\n"
+      end
+
       if for_expr
         # for clause: iterate over collection, render partial once per item
         expr = generate_var_lookup(for_expr)
@@ -979,10 +986,12 @@ module LiquidIL
         code << "#{prefix}  __for_coll__.each do |_i_|\n"
         code << "#{prefix}    __dyn_assigns__[#{item_var_expr}] = _i_\n"
         code << "#{prefix}    _H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << interrupt_check
         code << "#{prefix}  end\n"
         code << "#{prefix}else\n"
         code << "#{prefix}  __dyn_assigns__[#{item_var_expr}] = __for_coll__\n"
         code << "#{prefix}  _H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << interrupt_check
         code << "#{prefix}end\n"
       elsif with_expr
         # with clause: pass value (iterate if array for include)
@@ -995,17 +1004,21 @@ module LiquidIL
           code << "#{prefix}  __with_val__.each do |_i_|\n"
           code << "#{prefix}    __dyn_assigns__[#{item_var_expr}] = _i_\n"
           code << "#{prefix}    _H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << interrupt_check
           code << "#{prefix}  end\n"
           code << "#{prefix}else\n"
           code << "#{prefix}  __dyn_assigns__[#{item_var_expr}] = __with_val__\n"
           code << "#{prefix}  _H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << interrupt_check
           code << "#{prefix}end\n"
         else
           code << "#{prefix}__dyn_assigns__[#{item_var_expr}] = __with_val__\n"
           code << "#{prefix}_H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << interrupt_check
         end
       else
         code << "#{prefix}_H.execute_dynamic_partial(__dyn_name__, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << interrupt_check
       end
 
       unless isolated

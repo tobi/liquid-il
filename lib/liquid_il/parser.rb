@@ -51,6 +51,13 @@ module LiquidIL
       @expr_lexer
     end
 
+    def expr_lexer_for_partial_tag(source)
+      # Liquid's strict2 parsing is permissive for include/render markup noise
+      # like "!!!" or "~~~" between arguments.
+      sanitized = source.to_s.gsub(/[!~]+/, " ")
+      expr_lexer_for(sanitized)
+    end
+
     def current_template_type
       @template_lexer.token_type
     end
@@ -1441,6 +1448,9 @@ module LiquidIL
         when 'for'
           idx = parse_for_in_liquid(tag_args, lines, idx)
           blank = false
+        when 'case'
+          idx = parse_case_in_liquid(tag_args, lines, idx)
+          blank = false
         when 'break'
           emit_loop_jump(:break)
           blank = false
@@ -1551,14 +1561,16 @@ module LiquidIL
       idx
     end
 
-    # Parse an if block within a liquid tag, returning the new line index
+    # Parse an if block within a liquid tag, returning the new line index.
+    # Handles if/elsif/else/endif chains by collecting branches and emitting
+    # nested if/else IL directly.
     def parse_if_in_liquid(condition, lines, idx)
-      # Collect body lines until endif/else/elsif
-      body_lines = []
-      else_lines = []
+      # Collect branches: [{cond: "...", lines: [...]}, ...]
+      # Last entry with cond=nil is the else branch.
+      branches = [{ cond: condition, lines: [] }]
+      current = branches.last
       depth = 1
       comment_depth = 0
-      in_else = false
 
       while idx < lines.length && depth > 0
         line = lines[idx].strip
@@ -1567,67 +1579,79 @@ module LiquidIL
 
         tag_name = line.split(/\s+/, 2)[0]
 
-        # Track comment blocks
         if tag_name == 'comment'
           comment_depth += 1
-          (in_else ? else_lines : body_lines) << line
+          current[:lines] << line
           next
         elsif tag_name == 'endcomment'
           comment_depth -= 1 if comment_depth > 0
-          (in_else ? else_lines : body_lines) << line
+          current[:lines] << line
           next
         end
 
-        # Skip other tag processing if inside comment
         if comment_depth > 0
-          (in_else ? else_lines : body_lines) << line
+          current[:lines] << line
           next
         end
 
         case tag_name
         when 'if', 'unless', 'for', 'case'
           depth += 1
-          (in_else ? else_lines : body_lines) << line
+          current[:lines] << line
         when 'endif', 'endunless', 'endfor', 'endcase'
           depth -= 1
-          (in_else ? else_lines : body_lines) << line if depth > 0
+          current[:lines] << line if depth > 0
+        when 'elsif'
+          if depth == 1
+            current = { cond: line.split(/\s+/, 2)[1], lines: [] }
+            branches << current
+          else
+            current[:lines] << line
+          end
         when 'else'
           if depth == 1
-            in_else = true
+            current = { cond: nil, lines: [] }
+            branches << current
           else
-            (in_else ? else_lines : body_lines) << line
-          end
-        when 'elsif'
-          # Treat elsif as end of this if + new if in else
-          if depth == 1
-            # This is a simplification - proper elsif handling would be more complex
-            in_else = true
-            else_lines << "if #{line.split(/\s+/, 2)[1]}"
-          else
-            (in_else ? else_lines : body_lines) << line
+            current[:lines] << line
           end
         else
-          (in_else ? else_lines : body_lines) << line
+          current[:lines] << line
         end
       end
 
-      # Generate if code
-      label_else = @builder.new_label
-      label_end = @builder.new_label
-
-      expr_lexer = expr_lexer_for(condition)
-      parse_expression(expr_lexer)
-      @builder.jump_if_false(label_else)
-
-      parse_liquid_tag(body_lines.join("\n")) unless body_lines.empty?
-
-      @builder.jump(label_end)
-      @builder.label(label_else)
-
-      parse_liquid_tag(else_lines.join("\n")) unless else_lines.empty?
-
-      @builder.label(label_end)
+      # Emit nested if/else chain
+      emit_if_chain(branches, 0)
       idx
+    end
+
+    # Recursively emit if/elsif/else chain as nested if/else IL
+    def emit_if_chain(branches, index)
+      return if index >= branches.length
+
+      branch = branches[index]
+
+      if branch[:cond].nil?
+        # else branch — emit body directly
+        parse_liquid_tag(branch[:lines].join("\n")) unless branch[:lines].empty?
+      else
+        label_else = @builder.new_label
+        label_end = @builder.new_label
+
+        expr_lexer = expr_lexer_for(branch[:cond])
+        parse_expression(expr_lexer)
+        @builder.jump_if_false(label_else)
+
+        parse_liquid_tag(branch[:lines].join("\n")) unless branch[:lines].empty?
+
+        @builder.jump(label_end)
+        @builder.label(label_else)
+
+        # Remaining branches become the else body
+        emit_if_chain(branches, index + 1)
+
+        @builder.label(label_end)
+      end
     end
 
     # Parse an unless block within a liquid tag
@@ -1662,6 +1686,98 @@ module LiquidIL
       parse_liquid_tag(body_lines.join("\n")) unless body_lines.empty?
 
       @builder.label(label_end)
+      idx
+    end
+
+    # Parse a case block within a liquid tag.
+    # Converts case/when/else to equivalent if/elsif/else in liquid tag format
+    # so the existing parse_if_in_liquid handles code generation correctly.
+    # Liquid case has fall-through semantics: ALL matching when clauses execute.
+    def parse_case_in_liquid(case_expr_str, lines, idx)
+      # Collect when/else branches until matching endcase
+      branches = []  # [{cond: "val", lines: [...]}]
+      else_lines = []
+      current_lines = nil
+      depth = 1
+      comment_depth = 0
+
+      while idx < lines.length && depth > 0
+        line = lines[idx].strip
+        idx += 1
+        next if line.empty?
+
+        parts = line.split(/\s+/, 2)
+        tag_name = parts[0]
+
+        if tag_name == 'comment'
+          comment_depth += 1
+          current_lines << line if current_lines
+          next
+        elsif tag_name == 'endcomment'
+          comment_depth -= 1 if comment_depth > 0
+          current_lines << line if current_lines
+          next
+        end
+        next if comment_depth > 0
+
+        case tag_name
+        when 'case'
+          depth += 1
+          current_lines << line if current_lines
+        when 'endcase'
+          depth -= 1
+          current_lines << line if depth > 0
+        when 'when'
+          if depth == 1
+            branches << { cond: (parts[1] || ''), lines: [] }
+            current_lines = branches[-1][:lines]
+          else
+            current_lines << line if current_lines
+          end
+        when 'else'
+          if depth == 1
+            current_lines = else_lines
+          else
+            current_lines << line if current_lines
+          end
+        else
+          current_lines << line if current_lines
+        end
+      end
+
+      # Convert to equivalent liquid-tag lines using assign + if blocks.
+      # This reuses the existing if/unless parsing which the Ruby compiler handles.
+      #
+      # Liquid case semantics: ALL matching when clauses execute (fall-through).
+      # else only runs if NO when matched.
+      @case_temp_counter = (@case_temp_counter || 0) + 1
+      case_var = "__case_#{@case_temp_counter}__"
+      flag_var = "__case_matched_#{@case_temp_counter}__"
+
+      synthetic = []
+      synthetic << "assign #{case_var} = #{case_expr_str}"
+
+      has_else = !else_lines.empty?
+      synthetic << "assign #{flag_var} = false" if has_else
+
+      branches.each do |branch|
+        vals = branch[:cond].split(/\s*(?:,|\bor\b)\s*/).map(&:strip).reject(&:empty?)
+        cond = vals.map { |v| "#{case_var} == #{v}" }.join(" or ")
+        next if cond.empty?
+
+        synthetic << "if #{cond}"
+        synthetic << "assign #{flag_var} = true" if has_else
+        synthetic.concat(branch[:lines])
+        synthetic << "endif"
+      end
+
+      if has_else
+        synthetic << "unless #{flag_var}"
+        synthetic.concat(else_lines)
+        synthetic << "endunless"
+      end
+
+      parse_liquid_tag(synthetic.join("\n"))
       idx
     end
 
@@ -1864,7 +1980,7 @@ module LiquidIL
 
     def parse_render_tag(tag_args)
       # Parse: 'partial_name' [with expr | for expr] [as alias] [, var1: val1]
-      lexer = expr_lexer_for(tag_args)
+      lexer = expr_lexer_for_partial_tag(tag_args)
 
       # Get partial name (must be quoted string)
       raise SyntaxError, 'Syntax Error: Template name must be a quoted string' unless lexer.current == ExpressionLexer::STRING
@@ -2113,7 +2229,7 @@ module LiquidIL
 
     def parse_include_tag(tag_args)
       # Use expression lexer for proper tokenization
-      lexer = expr_lexer_for(tag_args)
+      lexer = expr_lexer_for_partial_tag(tag_args)
 
       # First token is the partial name (string, identifier expression, nil, or number)
       if lexer.current == :STRING

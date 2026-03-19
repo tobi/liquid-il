@@ -227,6 +227,10 @@ module LiquidIL
         Utils.to_s(input).gsub(/\r?\n/, "")
       end
 
+      def squish(input)
+        Utils.to_s(input).gsub(/[[:space:]]+/, " ").strip
+      end
+
       def newline_to_br(input)
         Utils.to_s(input).gsub(/\r?\n/, "<br />\n")
       end

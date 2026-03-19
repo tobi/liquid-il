@@ -8,7 +8,7 @@ GIT
 
 GIT
   remote: https://github.com/Shopify/liquid-spec
-  revision: 1aef1014566c0be65a0a406a0e8d340091eadf17
+  revision: 9a5b765385e4f9f5e09b3d790625ed71567afb21
   specs:
     liquid-spec (0.9.1)
       super_diff (~> 0.18)

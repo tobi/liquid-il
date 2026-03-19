@@ -443,26 +443,38 @@ module LiquidIL
     # Runtime dynamic partial execution — used when partial name is a variable.
     # Compiles and runs the partial on-the-fly.
     def self.execute_dynamic_partial(name, assigns, output, scope, isolated:, tag_type: "include", caller_line: 1, parent_cycle_state: nil)
-      # Validate the name
-      unless name.is_a?(String) && !name.empty?
-        location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
-        output << "Liquid error (#{location}): Argument error in tag '#{tag_type}' - Illegal template name"
-        return
+      # Validate the name (empty string is allowed here and treated as not-found)
+      unless name.is_a?(String)
+        message = "Argument error in tag '#{tag_type}' - Illegal template name"
+        if scope.render_errors
+          location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
+          output << "Liquid error (#{location}): #{message}"
+          return
+        end
+        raise LiquidIL::RuntimeError.new(message, file: scope.current_file, line: caller_line)
       end
 
       fs = scope.file_system
       unless fs
-        location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
-        output << "Liquid error (#{location}): Could not find partial '#{name}'"
-        return
+        message = "Could not find partial '#{name}'"
+        if scope.render_errors
+          location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
+          output << "Liquid error (#{location}): #{message}"
+          return
+        end
+        raise LiquidIL::RuntimeError.new(message, file: scope.current_file, line: caller_line)
       end
 
       # Load source
       source = read_partial_source(fs, name, scope)
       unless source
-        location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
-        output << "Liquid error (#{location}): Could not find partial '#{name}'"
-        return
+        message = "Could not find partial '#{name}'"
+        if scope.render_errors
+          location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
+          output << "Liquid error (#{location}): #{message}"
+          return
+        end
+        raise LiquidIL::RuntimeError.new(message, file: scope.current_file, line: caller_line)
       end
 
       # Compile and execute
