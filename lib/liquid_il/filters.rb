@@ -140,10 +140,6 @@ module LiquidIL
         res
       end
 
-      def asset_url(input)
-        Utils.to_s(input)
-      end
-
       def read_current_tags(_input)
         context.lookup("current_tags")
       end
@@ -192,11 +188,6 @@ module LiquidIL
 
       def upcase(input)
         Utils.to_s(input).upcase
-      end
-
-      # Translation filter - wraps string for testing
-      def t(input)
-        "translated-#{Utils.to_s(input)}-"
       end
 
       # Test filter that raises an error
