@@ -200,8 +200,8 @@ module LiquidIL
     rescue LiquidIL::FilterRuntimeError => e
       location = current_file ? "#{current_file} line #{line}" : "line #{line}"
       LiquidIL::ErrorMarker.new(e.message, location)
-    rescue ArgumentError => e
-      raise scope.strict_errors ? e : LiquidIL::FilterRuntimeError.new(e.message)
+    rescue ArgumentError, Liquid::ArgumentError => e
+      raise scope.strict_errors ? e : LiquidIL::FilterRuntimeError.new(LiquidIL.clean_error_message(e.message))
     rescue => e
       raise e if scope.strict_errors || e.is_a?(LiquidIL::FilterRuntimeError)
       raise LiquidIL::FilterRuntimeError.new("internal")
@@ -230,6 +230,7 @@ module LiquidIL
       end
       if right.is_a?(LiquidIL::BlankLiteral)
         is_blank = left.nil? || left == false ||
+                   (left.respond_to?(:blank?) && left.blank?) ||
                    (left.is_a?(String) && left.strip.empty?) ||
                    (left.respond_to?(:empty?) && left.empty?)
         return op == :eq ? is_blank : !is_blank if [:eq, :ne].include?(op)
@@ -240,6 +241,7 @@ module LiquidIL
       end
       if left.is_a?(LiquidIL::BlankLiteral)
         is_blank = right.nil? || right == false ||
+                   (right.respond_to?(:blank?) && right.blank?) ||
                    (right.is_a?(String) && right.strip.empty?) ||
                    (right.respond_to?(:empty?) && right.empty?)
         return op == :eq ? is_blank : !is_blank if [:eq, :ne].include?(op)
@@ -567,6 +569,16 @@ module LiquidIL
       return nil if value.nil?
       s = value.is_a?(String) ? value : LiquidIL::Utils.to_s(value)
       s.match?(NEEDS_ESCAPE_RE) ? CGI.escapeHTML(s) : s
+    end
+
+    # Format an error from a {{ ... }} output expression, matching liquid-vm behavior.
+    # Returns the error message string to append to output.
+    def self.output_error(exc, current_file, line, scope)
+      raise exc unless scope.render_errors
+      raise exc if exc.is_a?(NoMemoryError)
+      msg = LiquidIL.clean_error_message(exc.message)
+      location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+      "Liquid error (#{location}): #{msg}"
     end
 
     # Short aliases for generated code compactness (saves ~10% code size)

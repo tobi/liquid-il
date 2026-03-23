@@ -1388,7 +1388,6 @@ module LiquidIL
       "truncatewords" => true,
       "default" => true,
       "json" => true,
-      "t" => true,
       "base64_encode" => true,
       "base64_decode" => true,
       "base64_url_safe_encode" => true,
