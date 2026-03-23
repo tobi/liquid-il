@@ -297,7 +297,7 @@ module LiquidIL
         scope.custom_filters = global unless global.empty?
       end
       # Build strainer instance for filter dispatch
-      strainer_class = ctx&.strainer_class || Class.new(LiquidIL::StrainerTemplate)
+      strainer_class = ctx&.strainer_class || LiquidIL::Filters.global_strainer_class
       scope.strainer = strainer_class.new(scope)
       # Resource limits from context
       scope.resource_limits = ctx&.resource_limits if ctx&.resource_limits
@@ -340,7 +340,7 @@ module LiquidIL
         scope.custom_filters = global unless global.empty?
       end
       # Build strainer instance for filter dispatch
-      strainer_class = ctx&.strainer_class || Class.new(LiquidIL::StrainerTemplate)
+      strainer_class = ctx&.strainer_class || LiquidIL::Filters.global_strainer_class
       scope.strainer = strainer_class.new(scope)
       # Resource limits from context
       scope.resource_limits = ctx&.resource_limits if ctx&.resource_limits

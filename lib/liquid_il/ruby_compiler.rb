@@ -1256,22 +1256,83 @@ module LiquidIL
         return "LiquidIL::RangeValue.new(#{Regexp.last_match(1)}, #{Regexp.last_match(2)})"
       end
 
-      # Parse variable path
-      parts = expr_str.scan(/(\w+)|\[(\d+)\]|\[['"](\w+)['"]\]/)
-      return "nil" if parts.empty?
+      # Tokenize the expression into segments, respecting brackets
+      # e.g. "data[config.key].values" -> ["data", [:bracket, "config.key"], "values"]
+      segments = tokenize_var_path(expr_str)
+      return "nil" if segments.empty?
 
-      if parts.size == 1
-        "_S.lookup(#{parts[0][0].inspect})"
+      first = segments[0]
+      result = if first.is_a?(String)
+        "_S.lookup(#{first.inspect})"
       else
-        first_var = parts[0][0]
-        rest_keys = parts[1..].map do |match|
-          key = match[0] || match[1] || match[2]
-          key.to_s =~ /^\d+$/ ? key.to_i : key.inspect
-        end
-        result = "_S.lookup(#{first_var.inspect})"
-        rest_keys.each { |k| result = "_H.lookup(#{result}, #{k}, _S)" }
-        result
+        "nil"
       end
+
+      segments[1..].each do |seg|
+        if seg.is_a?(Array) && seg[0] == :bracket
+          inner = seg[1]
+          if inner =~ /\A\d+\z/
+            # Numeric index
+            result = "_H.lookup(#{result}, #{inner.to_i}, _S)"
+          elsif inner =~ /\A['"](\w+)['"]\z/
+            # Quoted string key
+            result = "_H.lookup(#{result}, #{Regexp.last_match(1).inspect}, _S)"
+          else
+            # Dynamic variable expression inside brackets — recurse
+            result = "_H.lookup(#{result}, #{generate_var_lookup(inner)}, _S)"
+          end
+        elsif seg.is_a?(String)
+          key = seg =~ /\A\d+\z/ ? seg.to_i : seg.inspect
+          result = "_H.lookup(#{result}, #{key}, _S)"
+        end
+      end
+
+      result
+    end
+
+    # Tokenize a variable path string into segments.
+    # Returns array of String (property names) and [:bracket, content] for bracket access.
+    # e.g. "data[config.key].values" -> ["data", [:bracket, "config.key"], "values"]
+    def tokenize_var_path(expr_str)
+      segments = []
+      i = 0
+      current = +""
+
+      while i < expr_str.length
+        ch = expr_str[i]
+        case ch
+        when '.'
+          segments << current unless current.empty?
+          current = +""
+          i += 1
+        when '['
+          segments << current unless current.empty?
+          current = +""
+          i += 1
+          # Find matching closing bracket
+          depth = 1
+          bracket_content = +""
+          while i < expr_str.length && depth > 0
+            if expr_str[i] == '['
+              depth += 1
+              bracket_content << expr_str[i]
+            elsif expr_str[i] == ']'
+              depth -= 1
+              bracket_content << expr_str[i] if depth > 0
+            else
+              bracket_content << expr_str[i]
+            end
+            i += 1
+          end
+          segments << [:bracket, bracket_content]
+        else
+          current << ch
+          i += 1
+        end
+      end
+
+      segments << current unless current.empty?
+      segments
     end
 
     # Build an expression tree from IL instructions
@@ -1899,8 +1960,9 @@ module LiquidIL
           nil
         end
 
-      when IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_NIL
-        # Variable followed by constant - likely a comparison (e.g., b == false)
+      when IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_NIL,
+           IL::CONST_BLANK, IL::CONST_EMPTY
+        # Variable followed by constant - likely a comparison (e.g., b == false, x == blank)
         # Build the expression: FIND_VAR, CONST_*, COMPARE
         # We already have the var on expr, now get the constant
         const_expr = case next_inst[0]
@@ -1910,6 +1972,8 @@ module LiquidIL
         when IL::CONST_FLOAT then Expr.new(type: :literal, value: next_inst[1])
         when IL::CONST_STRING then Expr.new(type: :literal, value: next_inst[1])
         when IL::CONST_NIL then Expr.new(type: :literal, value: nil)
+        when IL::CONST_BLANK then Expr.new(type: :blank)
+        when IL::CONST_EMPTY then Expr.new(type: :empty)
         end
         @pc += 1
 

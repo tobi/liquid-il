@@ -2008,6 +2008,8 @@ module LiquidIL
             case lexer.current
             when :NUMBER, :STRING, :IDENTIFIER
               parts << lexer.value
+            when :DOT
+              parts << '.'
             else
               parts << lexer.current.to_s
             end
@@ -2044,6 +2046,8 @@ module LiquidIL
             case lexer.current
             when :NUMBER, :STRING, :IDENTIFIER
               parts << lexer.value
+            when :DOT
+              parts << '.'
             else
               parts << lexer.current.to_s
             end
