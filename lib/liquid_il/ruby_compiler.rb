@@ -3025,7 +3025,7 @@ module LiquidIL
       cond_truthy = inline_truthy(cond_ruby)
       cid = cond_start_pc  # unique id per if/unless
       code << "#{prefix}_ce#{cid} = false\n"
-      code << "#{prefix}_cd#{cid} = begin; #{cond_truthy}; rescue => _oe; _O << _H.output_error(_oe, _F, #{error_line}, _S); _ce#{cid} = true; nil; end\n"
+      code << "#{prefix}_cd#{cid} = begin; #{cond_truthy}; rescue LiquidIL::RuntimeError; raise; rescue StandardError => _oe; _O << _H.output_error(_oe, _F, #{error_line}, _S); _ce#{cid} = true; nil; end\n"
       code << "#{prefix}unless _ce#{cid}\n"
 
       inner_prefix = INDENT[indent + 1]
@@ -3346,7 +3346,9 @@ module LiquidIL
         code = String.new
         code << "#{prefix}begin\n"
         code << "  " << write_code
-        code << "#{prefix}rescue => _oe\n"
+        code << "#{prefix}rescue LiquidIL::RuntimeError\n"
+        code << "#{prefix}  raise\n"
+        code << "#{prefix}rescue StandardError => _oe\n"
         code << "#{prefix}  _O << _H.output_error(_oe, _F, #{error_line}, _S) if _S.render_errors\n"
         code << "#{prefix}end\n"
         code

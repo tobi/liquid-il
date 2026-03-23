@@ -598,6 +598,7 @@ module LiquidIL
       scope.custom_filters = @custom_filters
       scope.strainer = @strainer
       scope.resource_limits = @resource_limits
+      scope.render_errors = @render_errors
       scope.disable_include = true
       scope.instance_variable_set(:@render_depth, @render_depth)
       scope
@@ -612,6 +613,7 @@ module LiquidIL
       scope.custom_filters = @custom_filters
       scope.strainer = @strainer
       scope.resource_limits = @resource_limits
+      scope.render_errors = @render_errors
       scope.disable_include = true
       scope.instance_variable_set(:@render_depth, @render_depth)
       scope
