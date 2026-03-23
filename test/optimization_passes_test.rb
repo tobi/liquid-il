@@ -275,9 +275,10 @@ class Pass2FoldConstFiltersTest < Minitest::Test
     assert_filter_folded "{{ 'hello  ' | rstrip }}", "hello"
   end
 
-  def test_json_folded
-    assert_filter_folded "{{ 'hello' | json }}", '"hello"'
-  end
+  # json filter is not built-in — provided by host app (e.g., storefront)
+  # def test_json_folded
+  #   assert_filter_folded "{{ 'hello' | json }}", '"hello"'
+  # end
 
   def test_chained_filters_folded
     # Both upcase and append are in the safe fold list
