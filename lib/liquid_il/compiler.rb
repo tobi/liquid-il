@@ -37,7 +37,8 @@ module LiquidIL
     def compile
       parser = Parser.new(@source,
         error_mode: @options[:error_mode] || :lax,
-        warnings: @options[:warnings]
+        warnings: @options[:warnings],
+        parse_context: @options[:parse_context]
       )
       instructions = parser.parse
       spans = parser.builder.spans
@@ -1386,8 +1387,7 @@ module LiquidIL
       "truncate" => true,
       "truncatewords" => true,
       "default" => true,
-      "json" => true,
-      "t" => true,
+
       "base64_encode" => true,
       "base64_decode" => true,
       "base64_url_safe_encode" => true,

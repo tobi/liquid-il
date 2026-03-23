@@ -27,6 +27,10 @@ bundle exec liquid-spec eval adapter.rb -l "{{ 'hi' | upcase }}"
 
 # List available specs
 bundle exec liquid-spec run adapter.rb --list
+
+# Record parity tests as liquid-spec YAML (writes timestamped files to test/specs/)
+# Run this after adding new assert_parity_with_liquid_ruby tests.
+LIQUID_IL_RECORD_SPECS=1 bundle exec rake test
 ```
 
 ## Architecture

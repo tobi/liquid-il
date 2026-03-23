@@ -547,6 +547,14 @@ class ForTagTest < Minitest::Test
   def test_for_reversed
     assert_equal "321", @ctx.render("{% for i in x reversed %}{{ i }}{% endfor %}", x: [1, 2, 3])
   end
+
+  def test_for_limit_with_variable
+    assert_equal "12", @ctx.render("{% for i in (1..5) limit: lim %}{{ i }}{% endfor %}", { "lim" => 2 })
+  end
+
+  def test_for_limit_with_property_access
+    assert_equal "12", @ctx.render("{% for i in (1..5) limit: settings.count %}{{ i }}{% endfor %}", { "settings" => { "count" => 2 } })
+  end
 end
 
 class AssignTagTest < Minitest::Test

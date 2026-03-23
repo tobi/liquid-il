@@ -16,6 +16,7 @@ TEST_FILES = %w[
   test/dynamic_partials_performance_test.rb
   test/iseq_cache_test.rb
   test/iseq_persistence_test.rb
+  test/liquid_tag_test.rb
 ].freeze
 
 require_relative "lib/liquid_il/passes"
@@ -25,7 +26,8 @@ task :test do
   puts "\n#{"=" * 60}\nRunning unit tests\n#{"=" * 60}"
   TEST_FILES.each do |f|
     puts "\n--- #{f} ---"
-    system("bundle exec ruby -Ilib #{f}") || exit(1)
+    ok = system("bundle exec ruby -Ilib #{f}")
+    exit(1) if !ok && !ENV["LIQUID_IL_RECORD_SPECS"]
   end
 
   puts "\n#{"=" * 60}\nRunning liquid-spec\n#{"=" * 60}"

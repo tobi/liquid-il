@@ -478,6 +478,8 @@ module LiquidIL
         scan_comparison(comp)
       elsif byte == 39 || byte == 34  # ' or "
         scan_string(byte)
+      elsif byte == 0xE2 && scan_smart_quote_string_if_applicable
+        # handled by scan_smart_quote_string_if_applicable
       elsif byte >= 48 && byte <= 57 || byte == 45  # 0-9 or -
         scan_number
       else
@@ -601,6 +603,58 @@ module LiquidIL
       else
         raise SyntaxError, "Unterminated string at position #{start - 1}"
       end
+    end
+
+    # Handle Unicode smart/curly quotes as string delimiters.
+    # Merchants sometimes paste templates from word processors that auto-replace
+    # ASCII quotes with typographic ones:
+    #   U+201C \xE2\x80\x9C  " LEFT DOUBLE QUOTATION MARK
+    #   U+201D \xE2\x80\x9D  " RIGHT DOUBLE QUOTATION MARK
+    #   U+2018 \xE2\x80\x98  ' LEFT SINGLE QUOTATION MARK
+    #   U+2019 \xE2\x80\x99  ' RIGHT SINGLE QUOTATION MARK
+    #
+    # Returns true if a smart quote was found and scanned, false otherwise
+    # (so the caller can fall through to other token types).
+    def scan_smart_quote_string_if_applicable
+      pos = @scanner.pos
+      b2 = @source.getbyte(pos + 1)
+      return false unless b2 == 0x80
+
+      b3 = @source.getbyte(pos + 2)
+      if b3 == 0x9C || b3 == 0x9D      # U+201C or U+201D (smart double quotes)
+        scan_smart_quote_string(0x9C, 0x9D)
+        true
+      elsif b3 == 0x98 || b3 == 0x99    # U+2018 or U+2019 (smart single quotes)
+        scan_smart_quote_string(0x98, 0x99)
+        true
+      else
+        false
+      end
+    end
+
+    # Scan a string delimited by 3-byte smart quotes (E2 80 xx).
+    # Accepts either the left or right variant as the closing delimiter.
+    def scan_smart_quote_string(close_b3_left, close_b3_right)
+      @scanner.pos += 3  # skip opening smart quote (3 UTF-8 bytes)
+      start = @scanner.pos
+      src = @source
+      limit = src.bytesize
+
+      pos = start
+      while pos + 2 < limit
+        if src.getbyte(pos) == 0xE2 && src.getbyte(pos + 1) == 0x80
+          b3 = src.getbyte(pos + 2)
+          if b3 == close_b3_left || b3 == close_b3_right
+            @current_value = src.byteslice(start, pos - start)
+            @scanner.pos = pos + 3  # skip closing smart quote
+            @current_token = STRING
+            return
+          end
+        end
+        pos += 1
+      end
+
+      raise SyntaxError, "Unterminated string at position #{start - 3}"
     end
 
     def scan_number

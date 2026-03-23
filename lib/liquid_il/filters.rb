@@ -53,6 +53,7 @@ module LiquidIL
             method: mod.instance_method(name),
           }
         end
+        @global_strainer_class = nil  # invalidate cached class
       end
 
       def global_registry
@@ -65,6 +66,25 @@ module LiquidIL
 
       def clear_global_registry!
         @global_registry.clear
+        @global_strainer_class = nil
+      end
+
+      # Returns a cached StrainerTemplate subclass with all globally registered
+      # filter modules already included. Built once on first call and reused on
+      # every subsequent render, avoiding Class.new + Module#append_features per
+      # request. Invalidated whenever a new filter is registered globally.
+      def global_strainer_class
+        @global_strainer_class ||= begin
+          klass = Class.new(LiquidIL::StrainerTemplate)
+          seen = {}
+          @global_registry.each_value do |info|
+            mod = info[:module]
+            next if seen.key?(mod.object_id)
+            seen[mod.object_id] = true
+            klass.add_filter(mod)
+          end
+          klass
+        end
       end
       # Private methods that shouldn't be callable as filters
       INTERNAL_METHODS = %w[to_number to_integer to_safe_integer clamp_i64 strftime_filter apply].freeze
@@ -140,10 +160,6 @@ module LiquidIL
         res
       end
 
-      def asset_url(input)
-        Utils.to_s(input)
-      end
-
       def read_current_tags(_input)
         context.lookup("current_tags")
       end
@@ -192,11 +208,6 @@ module LiquidIL
 
       def upcase(input)
         Utils.to_s(input).upcase
-      end
-
-      # Translation filter - wraps string for testing
-      def t(input)
-        "translated-#{Utils.to_s(input)}-"
       end
 
       # Test filter that raises an error
@@ -602,11 +613,7 @@ module LiquidIL
         false_check || (input.respond_to?(:empty?) && input.empty?) ? default_value : input
       end
 
-      def json(input)
-        JSON.generate(input)
-      rescue
-        Utils.to_s(input)
-      end
+
 
       # --- Utility ---
 

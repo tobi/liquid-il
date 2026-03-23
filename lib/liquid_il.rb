@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "liquid_il/lexer"
+require_relative "liquid_il/liquid_body_lexer"
 require_relative "liquid_il/tags"
 require_relative "liquid_il/parser"
 require_relative "liquid_il/il"
@@ -12,6 +13,7 @@ require_relative "liquid_il/drops"
 require_relative "liquid_il/filters"
 require_relative "liquid_il/pretty_printer"
 require_relative "liquid_il/ruby_compiler"
+require_relative "liquid_il/strainer_template"
 
 module LiquidIL
   EMPTY_ARRAY = [].freeze
@@ -96,7 +98,21 @@ module LiquidIL
       # Seed custom filters from global registry; per-context register_filter can override
       global = LiquidIL::Filters.global_registry
       @custom_filters = global.empty? ? {} : global.dup
+      # Strainer class for filter dispatch — filter modules are included into this
+      @strainer_class = Class.new(LiquidIL::StrainerTemplate)
+      # Register global filter modules into the strainer class so they are invokable
+      unless global.empty?
+        seen = {}
+        global.each_value do |info|
+          mod = info[:module]
+          next if seen.key?(mod.object_id)
+          seen[mod.object_id] = true
+          @strainer_class.add_filter(mod)
+        end
+      end
     end
+
+    attr_reader :strainer_class
 
     # Register custom filter methods from a module.
     #
@@ -112,6 +128,8 @@ module LiquidIL
       else
         raise ArgumentError, "register_filter expects a Module, got #{mod.class}"
       end
+
+      @strainer_class.add_filter(mod)
 
       methods.each do |name|
         name_s = name.to_s
@@ -146,9 +164,11 @@ module LiquidIL
     # This registers on the global Tags registry (tags affect parsing, which
     # is global). For per-context isolation, use separate processes.
     #
-    def register_tag(name, end_tag: nil, mode: :passthrough, setup: nil, teardown: nil)
-      end_tag ||= "end#{name}"
-      Tags.register(name, end_tag: end_tag, mode: mode, setup: setup, teardown: teardown)
+    def register_tag(name, end_tag: nil, mode: :passthrough, setup: nil, teardown: nil,
+                     on_parse: nil, handler: nil, parse_args: nil)
+      end_tag ||= "end#{name}" if mode != :custom || (mode == :custom && handler&.respond_to?(:before_block))
+      Tags.register(name, end_tag: end_tag, mode: mode, setup: setup, teardown: teardown,
+                    on_parse: on_parse, handler: handler, parse_args: parse_args)
       clear_cache
     end
 
@@ -249,6 +269,7 @@ module LiquidIL
     #
     def render(assigns = {}, render_errors: true, registers: nil,
                strict_variables: nil, strict_filters: nil,
+               liquid_context: nil,
                **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       ctx = @context
@@ -259,8 +280,9 @@ module LiquidIL
       else
         regs = base_regs ? base_regs.dup : EMPTY_HASH
       end
-      scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false)
-      scope.file_system = ctx&.file_system
+      scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false,
+                        liquid_context: liquid_context)
+      scope.file_system = ctx&.file_system || liquid_context&.registers&.[](:file_system)
       scope.render_errors = render_errors
       # strict_variables: render-time overrides context-level
       scope.strict_variables = strict_variables.nil? ? (ctx&.strict_variables || false) : strict_variables
@@ -274,6 +296,52 @@ module LiquidIL
         global = LiquidIL::Filters.global_registry
         scope.custom_filters = global unless global.empty?
       end
+      # Build strainer instance for filter dispatch
+      strainer_class = ctx&.strainer_class || LiquidIL::Filters.global_strainer_class
+      scope.strainer = strainer_class.new(scope)
+      # Resource limits from context
+      scope.resource_limits = ctx&.resource_limits if ctx&.resource_limits
+
+      if @partial_constants
+        @compiled_proc.call(scope, @spans, @source, @partial_constants)
+      else
+        @compiled_proc.call(scope, @spans, @source)
+      end
+    rescue LiquidIL::ResourceLimitError => e
+      raise unless render_errors
+      "Liquid error: #{e.message}"
+    rescue LiquidIL::RuntimeError => e
+      raise unless render_errors
+      output = e.partial_output || ""
+      location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
+      output + "Liquid error (#{location}): #{e.message}"
+    rescue StandardError => e
+      raise unless render_errors
+      "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
+    end
+
+    # Render the template with a pre-built Scope. Used when the caller
+    # (e.g. Storefront's LiquidIlRenderable) has already constructed a Scope
+    # via Scope.wrap and doesn't want the assigns-extraction overhead.
+    def render_scope(scope, render_errors: true)
+      ctx = @context
+
+      scope.render_errors = render_errors
+      # strict_variables: render-time overrides context-level
+      scope.strict_variables = ctx&.strict_variables || false
+      # strict_filters: render-time overrides context-level
+      scope.strict_filters = ctx&.strict_filters || false
+      # Custom filters from context, falling back to global registry (needed for from_cache templates where @context is nil)
+      custom_filters = ctx&.custom_filters
+      if custom_filters && !custom_filters.empty?
+        scope.custom_filters = custom_filters
+      else
+        global = LiquidIL::Filters.global_registry
+        scope.custom_filters = global unless global.empty?
+      end
+      # Build strainer instance for filter dispatch
+      strainer_class = ctx&.strainer_class || LiquidIL::Filters.global_strainer_class
+      scope.strainer = strainer_class.new(scope)
       # Resource limits from context
       scope.resource_limits = ctx&.resource_limits if ctx&.resource_limits
 
