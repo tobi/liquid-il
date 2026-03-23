@@ -171,9 +171,13 @@ module LiquidIL
 
       def build_single_and_operand_ruby(end_target)
         inst = @instructions[@pc]
-        return nil unless inst&.[](0) == IL::FIND_VAR
+        return nil unless inst && (inst[0] == IL::FIND_VAR || inst[0] == IL::FIND_VAR_PATH)
 
-        expr_ruby = ruby_var_reference(inst[1])
+        expr_ruby = if inst[0] == IL::FIND_VAR_PATH
+          generate_var_path_expr(inst[1], inst[2])
+        else
+          ruby_var_reference(inst[1])
+        end
         @pc += 1
         expr_ruby = consume_property_chain_ruby(expr_ruby)
 
@@ -211,8 +215,12 @@ module LiquidIL
               break if nested_inst.nil?
 
               case nested_inst[0]
-              when IL::FIND_VAR
-                operand = ruby_var_reference(nested_inst[1])
+              when IL::FIND_VAR, IL::FIND_VAR_PATH
+                operand = if nested_inst[0] == IL::FIND_VAR_PATH
+                  generate_var_path_expr(nested_inst[1], nested_inst[2])
+                else
+                  ruby_var_reference(nested_inst[1])
+                end
                 @pc += 1
                 operand = consume_property_chain_ruby(operand)
                 nested_or_operands << operand
@@ -242,7 +250,7 @@ module LiquidIL
           break if inst.nil? || inst[0] == IL::JUMP
 
           case inst[0]
-          when IL::FIND_VAR
+          when IL::FIND_VAR, IL::FIND_VAR_PATH
             operand = build_single_and_operand_ruby(end_target)
             and_operands << operand if operand
           when IL::CONST_TRUE
@@ -272,7 +280,17 @@ module LiquidIL
         var_ruby = ruby_var_reference(var_name)
         @pc += 1
         var_ruby = consume_property_chain_ruby(var_ruby)
+        build_or_operand_tail_ruby(var_ruby)
+      end
 
+      def build_or_operand_path_ruby(var_name, path)
+        var_ruby = generate_var_path_expr(var_name, path)
+        @pc += 1
+        var_ruby = consume_property_chain_ruby(var_ruby)
+        build_or_operand_tail_ruby(var_ruby)
+      end
+
+      def build_or_operand_tail_ruby(var_ruby)
         next_inst = @instructions[@pc]
         return nil if next_inst.nil?
 

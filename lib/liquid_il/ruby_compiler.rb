@@ -719,6 +719,7 @@ module LiquidIL
         "#{prefix}_S.pop_scope\n"
 
       when IL::PUSH_CAPTURE
+        @uses_captures = true
         @pc += 1
         "#{prefix}_cst << _O; _O = String.new\n"
 
@@ -731,6 +732,7 @@ module LiquidIL
           @pc += 1
           "#{prefix}__captured__ = _O; _O = _cst.pop; _S.assign(#{var.inspect}, __captured__)\n"
         elsif @instructions[@pc]&.[](0) == IL::IFCHANGED_CHECK
+          @uses_ifchanged = true
           tag_id = @instructions[@pc][1]
           @pc += 1
           # ifchanged: output captured content only if it differs from previous
@@ -747,6 +749,7 @@ module LiquidIL
         end
 
       when IL::CYCLE_STEP
+        @uses_cycles = true
         @pc += 1
         identity = inst[1]
         raw_values = inst[2]
@@ -775,6 +778,7 @@ module LiquidIL
         end
 
       when IL::CYCLE_STEP_VAR
+        @uses_cycles = true
         @pc += 1
         var_name = inst[1]
         raw_values = inst[2]
@@ -1881,6 +1885,11 @@ module LiquidIL
                 or_ruby = build_or_operand_ruby(build_inst[1])
                 or_operands << or_ruby if or_ruby
                 break unless or_ruby
+              when IL::FIND_VAR_PATH
+                # Build Ruby string for this OR operand
+                or_ruby = build_or_operand_path_ruby(build_inst[1], build_inst[2])
+                or_operands << or_ruby if or_ruby
+                break unless or_ruby
               when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_FALSE, IL::CONST_NIL
                 case build_inst[0]
                 when IL::CONST_INT then or_operands << build_inst[1].inspect
@@ -2800,7 +2809,7 @@ module LiquidIL
       cond_truthy = inline_truthy(cond_ruby)
       cid = cond_start_pc  # unique id per if/unless
       code << "#{prefix}_ce#{cid} = false\n"
-      code << "#{prefix}_cd#{cid} = begin; #{cond_truthy}; rescue => _oe; _O << _H.output_error(_oe, _F, #{error_line}, _S); _ce#{cid} = true; nil; end\n"
+      code << "#{prefix}_cd#{cid} = begin; #{cond_truthy}; rescue LiquidIL::RuntimeError; raise; rescue StandardError => _oe; _O << _H.output_error(_oe, _F, #{error_line}, _S); _ce#{cid} = true; nil; end\n"
       code << "#{prefix}unless _ce#{cid}\n"
 
       inner_prefix = INDENT[indent + 1]
@@ -3181,7 +3190,9 @@ module LiquidIL
         code = String.new
         code << "#{prefix}begin\n"
         code << "  " << write_code
-        code << "#{prefix}rescue => _oe\n"
+        code << "#{prefix}rescue LiquidIL::RuntimeError\n"
+        code << "#{prefix}  raise\n"
+        code << "#{prefix}rescue StandardError => _oe\n"
         code << "#{prefix}  _O << _H.output_error(_oe, _F, #{error_line}, _S) if _S.render_errors\n"
         code << "#{prefix}end\n"
         code
