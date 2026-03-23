@@ -116,7 +116,9 @@ module LiquidIL
 
       unless source
         @partial_names_in_progress.delete(name)
-        raise "Cannot load partial '#{name}'"
+        # Store as missing for runtime resolution (like syntax errors)
+        @partials[name] = { missing: true, name: name }
+        return
       end
 
       # Compile the partial to IL
@@ -362,15 +364,15 @@ module LiquidIL
       code << "\n  # Compiled partial lambdas\n"
       # Forward-declare all lambda variables so mutual references work
       @partials.each do |name, info|
-        next if info[:recursive] || info[:syntax_error]
+        next if info[:recursive] || info[:syntax_error] || info[:missing]
         code << "  #{partial_lambda_name(name)} = nil\n"
       end
       code << "\n"
 
       @partials.each do |name, info|
-        next if info[:recursive] || info[:syntax_error] || !info[:compiled_body]
-        # Skip generating lambda body if partial is fully inlined
-        # The forward declaration (nil) is already generated above
+        next if info[:recursive] || info[:syntax_error] || info[:missing] || !info[:compiled_body]
+        # Skip generating lambda body if partial is fully inlined.
+        # The forward declaration (nil) is already generated above.
         next if @inlined_partials.include?(name)
         lambda_name = partial_lambda_name(name)
         # Store spans/source as pre-built frozen objects in @partial_constants hash.
@@ -395,6 +397,7 @@ module LiquidIL
         code << "      _sp = #{spans_const}\n"
         code << "      _ts = #{source_const}\n"
         code << "      _F = #{name.inspect}\n"
+
         # Only allocate cycle/capture/ifchanged state when the partial actually uses them
         if info[:uses_cycles]
           code << "      _cs = isolated ? {} : (parent_cycle_state || {})\n"
@@ -615,18 +618,20 @@ module LiquidIL
         end
 
       when IL::WRITE_VAR
+        write_pc = @pc
         @pc += 1
         var_expr = if (alias_var = @loop_var_aliases[inst[1]])
                      alias_var
                    else
                      "_S.lookup(#{inst[1].inspect})"
                    end
-        inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts)
+        inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts, error_line: line_for_pc(write_pc))
 
       when IL::WRITE_VAR_PATH
+        write_pc = @pc
         @pc += 1
         var_expr = generate_var_path_expr(inst[1], inst[2])
-        inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts)
+        inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts, error_line: line_for_pc(write_pc))
 
       when IL::FIND_VAR, IL::FIND_VAR_PATH
         if peek_for_loop?
@@ -903,6 +908,9 @@ module LiquidIL
       prefix = INDENT[indent]
       @temp_assignments = nil
 
+      # Track expression start PC for error line reporting
+      expr_start_pc = @pc
+
       # build_expression now returns Ruby string directly (not Expr)
       expr_ruby, terminator = build_expression
 
@@ -918,7 +926,8 @@ module LiquidIL
 
       case terminator
       when :write_value
-        temp_code + inline_output_append(expr_ruby, prefix, guard_interrupt: @uses_interrupts)
+        # Inline output conversion with ErrorMarker support
+        temp_code + inline_output_append(expr_ruby, prefix, guard_interrupt: @uses_interrupts, error_line: line_for_pc(expr_start_pc))
       when :assign
         var = @instructions[@pc - 1][1]
         temp_code + "#{prefix}_v = #{expr_ruby}; _S.assign(#{var.inspect}, _v) unless _v.is_a?(LiquidIL::ErrorMarker)\n"
@@ -1102,6 +1111,7 @@ module LiquidIL
       tag_type = isolated ? "render" : "include"
       line_num = line_for_pc(pc)
 
+
       # Handle invalid/dynamic partial names — emit inline error
       if args["__invalid_name__"]
         return "#{prefix}# #{tag_type} with invalid name\n" \
@@ -1119,6 +1129,15 @@ module LiquidIL
       if @partials[name]&.[](:syntax_error)
         code = String.new
         code << "#{prefix}# #{tag_type} '#{name}' (syntax error)\n"
+        code << "#{prefix}__dyn_assigns__ = {}\n"
+        code << "#{prefix}_H.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        return code
+      end
+
+      # Missing partial — use dynamic execution to handle at runtime
+      if @partials[name]&.[](:missing)
+        code = String.new
+        code << "#{prefix}# #{tag_type} '#{name}' (missing — runtime resolution)\n"
         code << "#{prefix}__dyn_assigns__ = {}\n"
         code << "#{prefix}_H.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
         return code
@@ -2646,6 +2665,7 @@ module LiquidIL
 
       # Build condition expression
       @temp_assignments = nil
+      cond_start_pc = @pc
       cond_expr, _ = build_expression
 
       # Emit any temp assignments generated during condition expression building
@@ -2725,20 +2745,32 @@ module LiquidIL
       # Generate code
       code = temp_code
       cond_ruby = cond_expr || "nil"
+      error_line = line_for_pc(cond_start_pc)
 
+      # Wrap only the condition in error handling to match liquid-vm behavior:
+      # if the condition raises, output the error and skip both branches.
+      # Body errors are handled per-statement (not swallowed by this block).
+      cond_truthy = inline_truthy(cond_ruby)
+      cid = cond_start_pc  # unique id per if/unless
+      code << "#{prefix}_ce#{cid} = false\n"
+      code << "#{prefix}_cd#{cid} = begin; #{cond_truthy}; rescue => _oe; _O << _H.output_error(_oe, _F, #{error_line}, _S); _ce#{cid} = true; nil; end\n"
+      code << "#{prefix}unless _ce#{cid}\n"
+
+      inner_prefix = INDENT[indent + 1]
       if jump_type == IL::JUMP_IF_FALSE
-        code << "#{prefix}if #{inline_truthy(cond_ruby)}\n"
+        code << "#{inner_prefix}if _cd#{cid}\n"
       else
-        code << "#{prefix}unless #{inline_truthy(cond_ruby)}\n"
+        code << "#{inner_prefix}unless _cd#{cid}\n"
       end
 
       code << then_code
 
       unless else_code.empty?
-        code << "#{prefix}else\n"
+        code << "#{inner_prefix}else\n"
         code << else_code
       end
 
+      code << "#{inner_prefix}end\n"
       code << "#{prefix}end\n"
       code
     end
@@ -3048,7 +3080,7 @@ module LiquidIL
       'rstrip' => '_RSTRIP__'
     }
 
-    def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
+    def inline_output_append(expr_ruby, prefix, guard_interrupt: false, error_line: nil)
       # When expression is known to return a String, skip the oa type dispatch
       # For simple inline filters, use a per-filter cache to avoid repeated method calls
       # e.g., input.to_s.capitalize -> (_CAP__ ||= {})[(_v = input.to_s)] ||= _v.capitalize
@@ -3067,7 +3099,7 @@ module LiquidIL
       numeric_safe = !direct && expr_ruby.match?(SAFE_NUMERIC_FILTERS)
       # Simple loop variable hash lookups and simple loop vars: use .to_s instead of oa
       simple_loop = !direct && !numeric_safe && (expr_ruby.match?(SIMPLE_LOOP_LOOKUP) || expr_ruby.match?(SIMPLE_LOOP_VAR))
-      if guard_interrupt
+      write_code = if guard_interrupt
         if direct
           output_expr = cache_pattern || expr_ruby
           "#{prefix}_O << #{output_expr} unless _S.has_interrupt?\n"
@@ -3085,6 +3117,20 @@ module LiquidIL
         else
           "#{prefix}_H.oa(_O, #{expr_ruby})\n"
         end
+      end
+
+      # Wrap in error handling to match liquid-vm behavior: errors in {{ ... }}
+      # expressions are output as "Liquid error" messages, not template-killing exceptions.
+      if error_line
+        code = String.new
+        code << "#{prefix}begin\n"
+        code << "  " << write_code
+        code << "#{prefix}rescue => _oe\n"
+        code << "#{prefix}  _O << _H.output_error(_oe, _F, #{error_line}, _S) if _S.render_errors\n"
+        code << "#{prefix}end\n"
+        code
+      else
+        write_code
       end
     end
 
