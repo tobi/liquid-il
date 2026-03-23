@@ -3,178 +3,19 @@
 module LiquidIL
   # Minimal scope for isolated render - just locals + static_environments
   # Optimized for hot-path performance with direct ivars instead of hash lookups
-  class RenderScope
-    attr_accessor :file_system, :render_errors, :current_file,
-                  :strict_variables, :strict_filters, :custom_filters, :resource_limits,
-                  :strainer
-    attr_reader :strict_errors, :user_registers
+  # Shared Proc evaluation logic for Scope.
+  # Matches Liquid::Context#lookup_and_evaluate: if a value is a Proc,
+  # call it (passing liquid_context if arity > 0), cache the result
+  # back into the hash, and return the result.
+  module ProcEvaluation
+    private
 
-    def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true, locals: nil)
-      @static_environments = static_environments
-      @locals = locals || {}
-      @file_system = file_system
-      @depth = depth
-      @strict_errors = strict_errors
-      @render_errors = render_errors
-      @current_file = nil
-      # Lazy-init everything else
-      @interrupts = nil
-      @capture_stack = nil
-      @for_stack = nil
-      @temps = nil
-      @for_offsets = nil
-      @counters = nil
-      @cycles = nil
+    def evaluate_proc(obj, key, value)
+      return value unless value.is_a?(Proc)
+      result = value.arity == 0 ? value.call : value.call(liquid_context)
+      obj[key] = result if obj.respond_to?(:[]=)
+      result
     end
-
-    def disable_include = true
-
-    def lookup(key)
-      key = key.to_s unless key.is_a?(String)
-      if @locals.key?(key)
-        return @locals[key]
-      end
-      if @static_environments&.key?(key)
-        return @static_environments[key]
-      end
-      if @strict_variables
-        raise LiquidIL::UndefinedVariable, "undefined variable #{key}"
-      end
-      nil
-    end
-
-    # Alias for cleaner generated code
-    alias [] lookup
-
-    def assign(key, value)
-      key = key.to_s unless key.is_a?(String)
-      @locals[key] = value
-    end
-
-    alias assign_local assign
-
-    def push_scope(scope = {}) = nil
-    def pop_scope = nil
-
-    # Render depth - needed for nested render calls
-    def push_render_depth = @depth += 1
-    def pop_render_depth; @depth -= 1 if @depth > 0; end
-    def render_depth_exceeded?(strict: false) = strict ? @depth >= 100 : @depth > 100
-
-    def isolated
-      scope = RenderScope.new(@static_environments, @file_system, @depth, strict_errors: @strict_errors, render_errors: @render_errors)
-      scope.current_file = @current_file
-      scope.strict_variables = @strict_variables
-      scope.strict_filters = @strict_filters
-      scope.custom_filters = @custom_filters
-      scope.strainer = @strainer
-      scope.resource_limits = @resource_limits
-      scope
-    end
-
-    def isolated_with(assigns)
-      scope = RenderScope.new(@static_environments, @file_system, @depth, strict_errors: @strict_errors, render_errors: @render_errors, locals: assigns)
-      scope.current_file = @current_file
-      scope.strict_variables = @strict_variables
-      scope.strict_filters = @strict_filters
-      scope.custom_filters = @custom_filters
-      scope.strainer = @strainer
-      scope.resource_limits = @resource_limits
-      scope
-    end
-
-    # Resource limit tracking (delegated to Scope if called on RenderScope)
-    def check_output_limit!(output)
-      return unless @resource_limits
-      limit = @resource_limits[:output_limit] || @resource_limits["output_limit"]
-      return unless limit
-      if output.bytesize > limit
-        raise LiquidIL::ResourceLimitError, "Memory limits exceeded"
-      end
-    end
-
-    def increment_render_score!(count = 1)
-      return unless @resource_limits
-      limit = @resource_limits[:render_score_limit] || @resource_limits["render_score_limit"]
-      return unless limit
-      @render_score = (@render_score || 0) + count
-      if @render_score > limit
-        raise LiquidIL::ResourceLimitError, "Rendering limits exceeded"
-      end
-    end
-
-    def apply_custom_filter(name, input, args)
-      if @strainer
-        @strainer.invoke(name, input, *args)
-      else
-        return nil unless @custom_filters
-        info = @custom_filters[name]
-        return nil unless info
-        info[:method].bind_call(info[:module], input, *args)
-      end
-    end
-
-    def custom_filter?(name)
-      @custom_filters&.key?(name)
-    end
-
-    # Legacy registers accessor for compatibility
-    def registers
-      @registers ||= {
-        "for" => (@for_offsets ||= {}),
-        "for_stack" => (@for_stack ||= []),
-        "counters" => (@counters ||= {}),
-        "cycles" => (@cycles ||= {}),
-        "temps" => (@temps ||= []),
-        "capture_stack" => (@capture_stack ||= [])
-      }
-    end
-
-    # Interrupt handling - lazy init
-    def push_interrupt(type) = (@interrupts ||= []).push(type)
-    def pop_interrupt = @interrupts&.pop
-    def has_interrupt? = @interrupts ? !@interrupts.empty? : false
-    def peek_interrupt = @interrupts&.last
-
-    # Forloop - lazy init
-    def for_stack = (@for_stack ||= [])
-    def push_forloop(f) = (@for_stack ||= []).push(f)
-    def pop_forloop = @for_stack&.pop
-    def current_forloop = @for_stack&.last
-    def parent_forloop = (@for_stack && @for_stack.length >= 2) ? @for_stack[-2] : nil
-
-    # Counters - lazy hash init
-    def increment(n)
-      counters = (@counters ||= {})
-      (counters[n] ||= 0).tap { counters[n] += 1 }
-    end
-
-    def decrement(n)
-      counters = (@counters ||= {})
-      counters[n] = (counters[n] || 0) - 1
-    end
-
-    # Cycles - lazy hash init
-    def cycle_step(id, vals)
-      return nil if vals.empty?
-      cycles = (@cycles ||= {})
-      cycles[id] ||= 0
-      vals[cycles[id] % vals.length].tap { cycles[id] += 1 }
-    end
-
-    # For offset - lazy hash init
-    def for_offset(n) = (@for_offsets ||= {})[n] || 0
-    def set_for_offset(n, o) = (@for_offsets ||= {})[n] = o
-
-    # Temps - lazy init
-    def store_temp(i, v) = (@temps ||= [])[i] = v
-    def load_temp(i) = @temps ? @temps[i] : nil
-
-    # Capture - lazy init
-    def push_capture = (@capture_stack ||= []).push(String.new(capacity: 128))
-    def pop_capture = @capture_stack ? (@capture_stack.pop || "") : ""
-    def current_capture = @capture_stack&.last
-    def capturing? = @capture_stack ? !@capture_stack.empty? : false
   end
 
   # Internal execution state with scope stack and registers.
@@ -194,6 +35,8 @@ module LiquidIL
   # This mirrors the liquid-vm pattern where State owns LiquidContext and
   # ContextShim bridges the two — except here Scope IS the bridge.
   class Scope
+    include ProcEvaluation
+
     attr_reader :strict_errors, :static_environments
     def scopes; @scopes || [@root_scope]; end
     attr_accessor :file_system, :disable_include, :render_errors, :current_file,
@@ -203,6 +46,41 @@ module LiquidIL
     MAX_RENDER_DEPTH = 100
 
     attr_reader :user_registers
+
+    # Build a Scope from a Liquid::Context, extracting all variable layers
+    # and wiring up the liquid_context reference. This is the single entry
+    # point for converting a LiquidContext into a Scope — used by both
+    # wrap_context (initial render) and new_isolated_subcontext.
+    def self.wrap(liquid_context)
+      assigns = {}
+
+      # Static environments (outermost layer — global drops like shop, settings)
+      if liquid_context.respond_to?(:static_environments)
+        liquid_context.static_environments.each do |env|
+          env.each { |k, v| assigns[k.to_s] = v } if env.is_a?(Hash)
+        end
+      end
+
+      # Environments (global assigns)
+      if liquid_context.respond_to?(:environments)
+        liquid_context.environments.each do |env|
+          env.each { |k, v| assigns[k.to_s] = v } if env.is_a?(Hash)
+        end
+      end
+
+      # Scopes (local assigns — innermost wins)
+      if liquid_context.respond_to?(:scopes)
+        liquid_context.scopes.reverse_each do |scope|
+          scope.each { |k, v| assigns[k.to_s] = v } if scope.is_a?(Hash)
+        end
+      end
+
+      scope = new(assigns, liquid_context: liquid_context)
+      scope.file_system = liquid_context.registers[:file_system] if liquid_context.respond_to?(:registers)
+      scope.template_name = liquid_context.template_name if liquid_context.respond_to?(:template_name)
+
+      scope
+    end
 
     def initialize(assigns = {}, registers: {}, strict_errors: false, static_environments: nil, liquid_context: nil)
       if static_environments
@@ -310,18 +188,18 @@ module LiquidIL
       v = top[key]
       if !v.nil? || top.key?(key)
         # Ultra-fast path: no counters active (most common case)
-        return v unless @has_counters
+        return evaluate_proc(top, key, v) unless @has_counters
         # But assigned vars take precedence over counters, check that
-        return v if (@assigned_vars && @assigned_vars[key]) || !@counters.key?(key)
+        return evaluate_proc(top, key, v) if (@assigned_vars && @assigned_vars[key]) || !@counters.key?(key)
       end
       # Check if this was explicitly assigned - assigned vars take precedence over counters
       if @has_counters && @assigned_vars && @assigned_vars[key]
         if @scopes
           @scopes.each do |scope|
-            return scope[key] if scope.key?(key)
+            return evaluate_proc(scope, key, scope[key]) if scope.key?(key)
           end
         else
-          return top[key] if top.key?(key)
+          return evaluate_proc(top, key, top[key]) if top.key?(key)
         end
       end
       # Check counters - they shadow environment variables (but not assigned ones)
@@ -330,12 +208,12 @@ module LiquidIL
       if @scopes
         @scopes.each_with_index do |scope, i|
           next if i == 0 # already checked
-          return scope[key] if scope.key?(key)
+          return evaluate_proc(scope, key, scope[key]) if scope.key?(key)
         end
       end
       # Check static_environments (shared with render)
       if @static_environments&.key?(key)
-        return @static_environments[key]
+        return evaluate_proc(@static_environments, key, @static_environments[key])
       end
 
       # strict_variables: raise if variable not found anywhere
@@ -505,13 +383,12 @@ module LiquidIL
     def new_isolated_subcontext
       if @liquid_context && @liquid_context.respond_to?(:new_isolated_subcontext)
         new_ctx = @liquid_context.new_isolated_subcontext
-        sub_assigns = new_ctx.respond_to?(:scopes) ? (new_ctx.scopes.first || {}) : {}
-        sub_static = new_ctx.respond_to?(:static_environments) ? new_ctx.static_environments.first : nil
-        sub = Scope.new(sub_assigns, static_environments: sub_static, liquid_context: new_ctx)
+        sub = Scope.wrap(new_ctx)
         sub.file_system = @file_system
         sub.strict_variables = @strict_variables
         sub.strict_filters = @strict_filters
         sub.custom_filters = @custom_filters
+        sub.strainer = @strainer
         sub
       else
         isolated
@@ -696,6 +573,13 @@ module LiquidIL
         return nil unless info
         info[:method].bind_call(info[:module], input, *args)
       end
+    rescue ArgumentError => e
+      # Convert ArgumentError to FilterRuntimeError so it shows in output
+      raise @strict_errors ? e : FilterRuntimeError.new(e.message)
+    rescue => e
+      # Re-raise in strict mode, raise FilterRuntimeError("internal") otherwise
+      raise e if @strict_errors || e.is_a?(FilterRuntimeError)
+      raise FilterRuntimeError.new("internal")
     end
 
     def custom_filter?(name)
@@ -705,24 +589,28 @@ module LiquidIL
     # --- Isolation for render ---
 
     def isolated
-      scope = RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors, render_errors: @render_errors)
+      scope = Scope.new({}, static_environments: @static_environments, liquid_context: @liquid_context)
+      scope.file_system = @file_system
       scope.current_file = @current_file
       scope.strict_variables = @strict_variables
       scope.strict_filters = @strict_filters
       scope.custom_filters = @custom_filters
       scope.strainer = @strainer
       scope.resource_limits = @resource_limits
+      scope.disable_include = true
       scope
     end
 
     def isolated_with(assigns)
-      scope = RenderScope.new(@static_environments, @file_system, @render_depth, strict_errors: @strict_errors, render_errors: @render_errors, locals: assigns)
+      scope = Scope.new(assigns, static_environments: @static_environments, liquid_context: @liquid_context)
+      scope.file_system = @file_system
       scope.current_file = @current_file
       scope.strict_variables = @strict_variables
       scope.strict_filters = @strict_filters
       scope.custom_filters = @custom_filters
       scope.strainer = @strainer
       scope.resource_limits = @resource_limits
+      scope.disable_include = true
       scope
     end
 
