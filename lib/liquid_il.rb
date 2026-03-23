@@ -99,6 +99,16 @@ module LiquidIL
       @custom_filters = global.empty? ? {} : global.dup
       # Strainer class for filter dispatch — filter modules are included into this
       @strainer_class = Class.new(LiquidIL::StrainerTemplate)
+      # Register global filter modules into the strainer class so they are invokable
+      unless global.empty?
+        seen = {}
+        global.each_value do |info|
+          mod = info[:module]
+          next if seen.key?(mod.object_id)
+          seen[mod.object_id] = true
+          @strainer_class.add_filter(mod)
+        end
+      end
     end
 
     attr_reader :strainer_class
@@ -271,12 +281,55 @@ module LiquidIL
       end
       scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false,
                         liquid_context: liquid_context)
-      scope.file_system = ctx&.file_system
+      scope.file_system = ctx&.file_system || liquid_context&.registers&.[](:file_system)
       scope.render_errors = render_errors
       # strict_variables: render-time overrides context-level
       scope.strict_variables = strict_variables.nil? ? (ctx&.strict_variables || false) : strict_variables
       # strict_filters: render-time overrides context-level
       scope.strict_filters = strict_filters.nil? ? (ctx&.strict_filters || false) : strict_filters
+      # Custom filters from context, falling back to global registry (needed for from_cache templates where @context is nil)
+      custom_filters = ctx&.custom_filters
+      if custom_filters && !custom_filters.empty?
+        scope.custom_filters = custom_filters
+      else
+        global = LiquidIL::Filters.global_registry
+        scope.custom_filters = global unless global.empty?
+      end
+      # Build strainer instance for filter dispatch
+      strainer_class = ctx&.strainer_class || Class.new(LiquidIL::StrainerTemplate)
+      scope.strainer = strainer_class.new(scope)
+      # Resource limits from context
+      scope.resource_limits = ctx&.resource_limits if ctx&.resource_limits
+
+      if @partial_constants
+        @compiled_proc.call(scope, @spans, @source, @partial_constants)
+      else
+        @compiled_proc.call(scope, @spans, @source)
+      end
+    rescue LiquidIL::ResourceLimitError => e
+      raise unless render_errors
+      "Liquid error: #{e.message}"
+    rescue LiquidIL::RuntimeError => e
+      raise unless render_errors
+      output = e.partial_output || ""
+      location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
+      output + "Liquid error (#{location}): #{e.message}"
+    rescue StandardError => e
+      raise unless render_errors
+      "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
+    end
+
+    # Render the template with a pre-built Scope. Used when the caller
+    # (e.g. Storefront's LiquidIlRenderable) has already constructed a Scope
+    # via Scope.wrap and doesn't want the assigns-extraction overhead.
+    def render_scope(scope, render_errors: true)
+      ctx = @context
+
+      scope.render_errors = render_errors
+      # strict_variables: render-time overrides context-level
+      scope.strict_variables = ctx&.strict_variables || false
+      # strict_filters: render-time overrides context-level
+      scope.strict_filters = ctx&.strict_filters || false
       # Custom filters from context, falling back to global registry (needed for from_cache templates where @context is nil)
       custom_filters = ctx&.custom_filters
       if custom_filters && !custom_filters.empty?
