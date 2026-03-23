@@ -18,28 +18,28 @@ module LiquidIL
 
     # Property lookup — replaces inline_lookup generated code.
     # Hot path: Hash string key (most common in Liquid templates).
-    def self.lookup_prop(obj, key)
+    def self.lookup_prop(obj, key, scope)
       # Fast path: avoid to_liquid call for Hash (most common case)
       if obj.is_a?(Hash)
         if SPECIAL_KEYS[key]
-          lookup(obj, key)
+          lookup(obj, key, scope)
         else
           obj.fetch(key) { obj[key.to_sym] }
         end
       else
-        lookup(obj, key)
+        lookup(obj, key, scope)
       end
     end
 
     # Fast path for hash property access with non-special keys
     # Skips SPECIAL_KEYS check — caller guarantees key isn't size/length/first/last
-    def self.lookup_prop_fast(obj, key)
+    def self.lookup_prop_fast(obj, key, scope)
       if obj.is_a?(Hash)
         # Avoid fetch block allocation: try string key first, sym fallback only if absent
         v = obj[key]
         v.nil? && !obj.key?(key) ? obj[key.to_sym] : v
       else
-        lookup(obj, key)
+        lookup(obj, key, scope)
       end
     end
 
@@ -87,11 +87,14 @@ module LiquidIL
       end
     }
 
-    def self.lookup(obj, key)
+    def self.lookup(obj, key, scope)
       return nil if obj.nil?
 
       # Call to_liquid to unwrap drops/proxies before property access
       obj = obj.to_liquid if obj.respond_to?(:to_liquid)
+
+      # Set the Liquid::Context on drops so they can access registers, locale, shop, etc.
+      obj.context = scope if obj.respond_to?(:context=)
 
       result = case obj
       when Hash
@@ -134,11 +137,12 @@ module LiquidIL
         when "size" then obj.size
         end
       else
-        # Unknown type — check for Drop-style invoke_drop first (Liquid::Drop compat),
-        # then fall back to [] only for Hash-like objects that are known safe.
+        # Use [] for property access on drops — matches liquid-vm's VariableLookup behavior.
+        # This is important because some drops (e.g. ThemeSettingsDrop) override []
+        # without overriding invoke_drop, so invoke_drop would miss those overrides.
         if obj.respond_to?(:invoke_drop)
-          obj.invoke_drop(key.to_s)
-        elsif obj.is_a?(Hash) || (obj.respond_to?(:key?) && obj.respond_to?(:[]))
+          obj[key.to_s]
+        elsif obj.respond_to?(:key?) && obj.respond_to?(:[])
           obj[key.to_s]
         else
           nil
@@ -361,11 +365,15 @@ module LiquidIL
       false
     end
 
-    def self.bracket_lookup(obj, key)
+    def self.bracket_lookup(obj, key, scope)
       return nil if obj.nil?
       return nil if key.is_a?(LiquidIL::RangeValue) || key.is_a?(Range)
       key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
       obj = obj.to_liquid if obj.respond_to?(:to_liquid)
+
+      # Set the Liquid::Context on drops so they can access registers, locale, shop, etc.
+      obj.context = scope if obj.respond_to?(:context=)
+
       case obj
       when Hash
         result = obj[key]
@@ -388,7 +396,9 @@ module LiquidIL
         obj.invoke_drop(key)
       else
         if obj.respond_to?(:invoke_drop)
-          obj.invoke_drop(key.to_s)
+          obj[key.to_s]
+        elsif obj.respond_to?(:key?) && obj.respond_to?(:[])
+          obj[key.to_s]
         else
           nil
         end
