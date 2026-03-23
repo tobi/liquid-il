@@ -505,6 +505,66 @@ else
 endif
 %}', { "x" => false }, "if/else in liquid tag (false branch)")
   end
+
+  # ── AND short-circuit followed by if/else (bug repro) ──────────
+
+  def test_and_condition_followed_by_assign_inside_if_else
+    # Reproduces a bug where `if cond1 and cond2` inside an outer `if`
+    # was miscompiled when the instruction after the inner `endif` was an
+    # assignment (CONST_FALSE + ASSIGN). The CONST_FALSE was falsely
+    # identified as an AND short-circuit pattern, breaking the outer if/else.
+    assert_renders(
+      '{% if product != blank %}' \
+      '{% liquid ' \
+      '  assign x = false ' \
+      '  if a and b ' \
+      '    assign x = true ' \
+      '  endif ' \
+      '  assign y = false ' \
+      '  if c and d ' \
+      '    assign y = true ' \
+      '  endif ' \
+      '%}' \
+      'IF_BRANCH x={{ x }} y={{ y }}' \
+      '{% else %}' \
+      'ELSE_BRANCH' \
+      '{% endif %}',
+      { "product" => "something", "a" => true, "b" => true, "c" => false, "d" => true },
+      "AND inside if/else: should render IF_BRANCH with correct assign values"
+    )
+  end
+
+  def test_and_condition_false_outer_renders_else
+    # When outer condition is false, else branch should be rendered
+    assert_renders(
+      '{% if show %}' \
+      '{% liquid ' \
+      '  assign x = false ' \
+      '  if a and b ' \
+      '    assign x = true ' \
+      '  endif ' \
+      '  assign y = false ' \
+      '%}' \
+      'IF_BRANCH x={{ x }}' \
+      '{% else %}' \
+      'ELSE_BRANCH' \
+      '{% endif %}',
+      { "show" => false, "a" => true, "b" => false },
+      "AND inside if/else: false outer condition should render ELSE_BRANCH"
+    )
+  end
+
+  def test_case_inside_for_does_not_eat_subsequent_content
+    # case/when inside a for loop causes content after endfor to be
+    # compiled inside the last when-clause body. When the for loop
+    # iterates zero times, that content is never emitted.
+    # This is the root cause of the Dawn footer disappearing.
+    assert_renders(
+      '{%- for i in items -%}{%- case i -%}{%- when "a" -%}A{%- endcase -%}{%- endfor -%}AFTER',
+      { "items" => [] },
+      "Content after endfor must render when for loop body is empty"
+    )
+  end
 end
 
 # Tests for custom tags (with handlers) inside {% liquid %}.

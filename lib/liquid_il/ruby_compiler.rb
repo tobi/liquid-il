@@ -134,6 +134,10 @@ module LiquidIL
       # Share frozen array registry so partial constants are declared in the parent proc
       ruby_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
       ruby_compiler.instance_variable_set(:@frozen_array_counter, @frozen_array_counter)
+      # Share partial_constants and custom_tag_counter so inlined partial code
+      # references the correct handlers (avoids key collisions like __custom_handler_0__)
+      ruby_compiler.instance_variable_set(:@partial_constants, @partial_constants)
+      ruby_compiler.instance_variable_set(:@custom_tag_counter, @custom_tag_counter)
 
       # Check if this partial can be compiled
       unless ruby_compiler.send(:can_compile?)
@@ -149,6 +153,8 @@ module LiquidIL
       partial_body = ruby_compiler.send(:generate_body)
       # Sync frozen array counter back (the hash is shared by reference, but counter is an int)
       @frozen_array_counter = ruby_compiler.instance_variable_get(:@frozen_array_counter)
+      # Sync custom tag counter back (same reason as frozen_array_counter)
+      @custom_tag_counter = ruby_compiler.instance_variable_get(:@custom_tag_counter)
 
       # Detect which features this partial uses (for conditional preamble generation)
       partial_uses_cycles = false
@@ -390,7 +396,9 @@ module LiquidIL
     def indent_partial_body(body, spaces)
       indent = " " * spaces
       # Replace _S with __partial_scope__ to avoid closure issues
-      body = body.gsub("_S", "__partial_scope__")
+      # Only replace when _S is used as a variable (followed by method call, comma, paren, etc.)
+      # NOT when it's part of a string literal like "__SWYM__VERSION__"
+      body = body.gsub(/_S(?=[.,)\]\s\n])/, "__partial_scope__")
       body.lines.map { |l| l.strip.empty? ? l : "#{indent}#{l}" }.join
     end
 
@@ -1447,7 +1455,9 @@ module LiquidIL
           is_short_circuit_pattern = next_after_target &&
             next_after_target[0] != IL::STORE_TEMP &&
             next_after_target[0] != IL::WRITE_RAW &&
-            next_after_target[0] != IL::WRITE_VALUE
+            next_after_target[0] != IL::WRITE_VALUE &&
+            next_after_target[0] != IL::ASSIGN &&
+            next_after_target[0] != IL::ASSIGN_LOCAL
           if inst[0] == IL::JUMP_IF_FALSE && target_inst&.[](0) == IL::CONST_FALSE && is_short_circuit_pattern
             # This is 'and' short-circuit - build the full expression
             # Save current position, parse right operand, then return combined expr
@@ -1675,6 +1685,143 @@ module LiquidIL
       end
     end
 
+    # Build the right operand of an AND expression (everything between JUMP_IF_FALSE and CONST_FALSE)
+    # This handles: simple vars, comparisons (var == val), nested ORs, and combinations
+    def build_and_right_operand(end_target)
+      and_operands = []
+      while @pc < end_target
+        and_inst = @instructions[@pc]
+        break if and_inst.nil? || and_inst[0] == IL::JUMP
+
+        case and_inst[0]
+        when IL::FIND_VAR
+          operand = build_single_and_operand(end_target)
+          and_operands << operand if operand
+        when IL::CONST_TRUE
+          and_operands << Expr.new(type: :literal, value: true)
+          @pc += 1
+        when IL::CONST_FALSE
+          and_operands << Expr.new(type: :literal, value: false)
+          @pc += 1
+        when IL::LABEL
+          @pc += 1
+        else
+          @pc += 1
+        end
+      end
+      # Build AND tree from all operands (in case there are multiple ANDs chained)
+      result = and_operands.first || Expr.new(type: :literal, value: false)
+      and_operands[1..].each do |op|
+        result = Expr.new(type: :and, children: [result, op])
+      end
+      result
+    end
+
+    # Build a single operand within an AND's right side
+    # Handles: simple var, comparison, or nested OR (var [CONST COMPARE] [JUMP_IF_TRUE → nested OR])
+    def build_single_and_operand(end_target)
+      inst = @instructions[@pc]
+      return nil unless inst&.[](0) == IL::FIND_VAR
+
+      expr = Expr.new(type: :var, value: inst[1])
+      @pc += 1
+
+      # Follow property chain: LOOKUP_CONST_KEY, LOOKUP_KEY, etc.
+      while @pc < @instructions.length
+        prop_inst = @instructions[@pc]
+        break unless prop_inst
+        case prop_inst[0]
+        when IL::LOOKUP_CONST_KEY
+          expr = Expr.new(type: :lookup, value: prop_inst[1], children: [expr])
+          @pc += 1
+        when IL::LOOKUP_KEY
+          key = Expr.new(type: :var, value: prop_inst[1])
+          expr = Expr.new(type: :lookup, value: nil, children: [expr, key])
+          @pc += 1
+        when IL::LOOKUP_CONST_PATH
+          prop_inst[1].each do |key|
+            expr = Expr.new(type: :lookup, value: key, children: [expr])
+          end
+          @pc += 1
+        else
+          break
+        end
+      end
+
+      # Check for comparison: CONST_* COMPARE
+      next_inst = @instructions[@pc]
+      if next_inst && [IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_INT, IL::CONST_FLOAT,
+                       IL::CONST_STRING, IL::CONST_NIL, IL::CONST_EMPTY, IL::CONST_BLANK].include?(next_inst[0])
+        const_expr = case next_inst[0]
+        when IL::CONST_TRUE then Expr.new(type: :literal, value: true)
+        when IL::CONST_FALSE then Expr.new(type: :literal, value: false)
+        when IL::CONST_INT then Expr.new(type: :literal, value: next_inst[1])
+        when IL::CONST_FLOAT then Expr.new(type: :literal, value: next_inst[1])
+        when IL::CONST_STRING then Expr.new(type: :literal, value: next_inst[1])
+        when IL::CONST_NIL then Expr.new(type: :literal, value: nil)
+        when IL::CONST_EMPTY then Expr.new(type: :empty)
+        when IL::CONST_BLANK then Expr.new(type: :blank)
+        end
+        @pc += 1
+
+        compare_inst = @instructions[@pc]
+        if compare_inst&.[](0) == IL::COMPARE
+          expr = Expr.new(type: :compare, value: compare_inst[1], children: [expr, const_expr])
+          @pc += 1
+        elsif compare_inst&.[](0) == IL::CONTAINS
+          expr = Expr.new(type: :contains, children: [expr, const_expr])
+          @pc += 1
+        end
+      end
+
+      # Check for JUMP_IF_FALSE (continuing AND chain) or JUMP_IF_TRUE (nested OR)
+      check_inst = @instructions[@pc]
+      if check_inst&.[](0) == IL::JUMP_IF_FALSE
+        # Another AND operand follows
+        @pc += 1
+        expr
+      elsif check_inst&.[](0) == IL::JUMP_IF_TRUE
+        # Nested OR within AND: e.g., (d or e) or ((d == true) or e)
+        jit_target = check_inst[1]
+        jit_actual = jit_target
+        while @instructions[jit_actual]&.[](0) == IL::LABEL
+          jit_actual += 1
+        end
+        if @instructions[jit_actual]&.[](0) == IL::CONST_TRUE
+          # Build nested OR expression
+          nested_or_operands = [expr]
+          @pc += 1 # Skip JUMP_IF_TRUE
+          while @pc < end_target
+            nested_inst = @instructions[@pc]
+            break if nested_inst.nil?
+            case nested_inst[0]
+            when IL::FIND_VAR
+              nested_or_operands << Expr.new(type: :var, value: nested_inst[1])
+              @pc += 1
+            when IL::JUMP
+              @pc = nested_inst[1] # follow the jump
+              break
+            when IL::CONST_TRUE, IL::LABEL
+              @pc += 1
+            else
+              @pc += 1
+            end
+          end
+          # Build OR sub-tree
+          or_result = nested_or_operands.first
+          nested_or_operands[1..].each do |op|
+            or_result = Expr.new(type: :or, children: [or_result, op])
+          end
+          or_result
+        else
+          expr
+        end
+      else
+        # Final operand in AND, or JUMP follows
+        expr
+      end
+    end
+
     # Build a complete OR operand expression starting from a FIND_VAR
     # Handles: simple var, var with comparison (var == val), or nested AND
     # Returns the expression or nil if we should stop collecting
@@ -1682,6 +1829,28 @@ module LiquidIL
       # Start with the variable
       expr = Expr.new(type: :var, value: var_name)
       @pc += 1
+
+      # Follow property chain: LOOKUP_CONST_KEY, LOOKUP_KEY, etc.
+      while @pc < @instructions.length
+        prop_inst = @instructions[@pc]
+        break unless prop_inst
+        case prop_inst[0]
+        when IL::LOOKUP_CONST_KEY
+          expr = Expr.new(type: :lookup, value: prop_inst[1], children: [expr])
+          @pc += 1
+        when IL::LOOKUP_KEY
+          key = Expr.new(type: :var, value: prop_inst[1]) # dynamic key
+          expr = Expr.new(type: :lookup, value: nil, children: [expr, key])
+          @pc += 1
+        when IL::LOOKUP_CONST_PATH
+          prop_inst[1].each do |key|
+            expr = Expr.new(type: :lookup, value: key, children: [expr])
+          end
+          @pc += 1
+        else
+          break
+        end
+      end
 
       # Look ahead to see what follows
       next_inst = @instructions[@pc]
@@ -1714,38 +1883,13 @@ module LiquidIL
         if @instructions[jif_actual]&.[](0) == IL::CONST_FALSE
           # Nested AND - build it
           @pc += 1 # Skip JUMP_IF_FALSE
-          and_operands = [expr]
-          while @pc < jif_target
-            and_inst = @instructions[@pc]
-            break if and_inst.nil? || and_inst[0] == IL::JUMP
-            case and_inst[0]
-            when IL::FIND_VAR
-              and_operands << Expr.new(type: :var, value: and_inst[1])
-              @pc += 1
-              if @instructions[@pc]&.[](0) == IL::JUMP_IF_FALSE
-                @pc += 1
-              end
-            when IL::CONST_TRUE
-              and_operands << Expr.new(type: :literal, value: true)
-              @pc += 1
-            when IL::CONST_FALSE
-              and_operands << Expr.new(type: :literal, value: false)
-              @pc += 1
-            when IL::LABEL
-              @pc += 1
-            else
-              @pc += 1
-            end
-          end
+          # Build the AND's right operand by parsing the sub-expression
+          right = build_and_right_operand(jif_target)
           # Skip JUMP that skips CONST_FALSE
           if @instructions[@pc]&.[](0) == IL::JUMP
             @pc = @instructions[@pc][1]
           end
-          # Build AND tree
-          and_result = and_operands.first
-          and_operands[1..].each do |op|
-            and_result = Expr.new(type: :and, children: [and_result, op])
-          end
+          and_result = Expr.new(type: :and, children: [expr, right])
           # Check for trailing CONST_TRUE
           if @instructions[@pc]&.[](0) == IL::CONST_TRUE
             @pc += 1
@@ -2048,7 +2192,8 @@ module LiquidIL
           return following&.[](0) == IL::JUMP_IF_FALSE || following&.[](0) == IL::JUMP_IF_TRUE
         when IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE
           return true
-        when IL::FOR_INIT, IL::HALT, IL::WRITE_VALUE, IL::ASSIGN, IL::ASSIGN_LOCAL
+        when IL::FOR_INIT, IL::HALT, IL::WRITE_VALUE, IL::ASSIGN, IL::ASSIGN_LOCAL,
+             IL::CUSTOM_TAG_RENDER, IL::CUSTOM_TAG_BEFORE
           # These terminate the expression without being an if condition
           return false
         when IL::STORE_TEMP
@@ -2855,7 +3000,10 @@ module LiquidIL
       prefix = INDENT[indent]
       conditions = [first_cond]
 
-      # Collect remaining OR conditions that jump to the same target
+      # Collect remaining OR conditions that jump to the same target.
+      # The final JUMP before success_target is the "no match" jump whose
+      # target marks the end of this when-clause body (label_next).
+      body_end = nil
       while @pc < success_target
         inst = @instructions[@pc]
         break if inst.nil?
@@ -2872,7 +3020,9 @@ module LiquidIL
             break
           end
         when IL::JUMP
-          # No more conditions, this is the "else" jump
+          # No more conditions, this is the "no match" jump to label_next.
+          # Its target is the end boundary for the when-clause body.
+          body_end = inst[1]
           break
         else
           break
@@ -2900,8 +3050,12 @@ module LiquidIL
       # Set the success flag to prevent else branch
       code << "#{prefix}  __temp_#{success_slot}__ = true\n" if success_slot
 
-      # Parse success body until we hit LOAD_TEMP (checking matched flag) or end
+      # Parse success body until we hit the body boundary, LOAD_TEMP (next when/else), or end.
+      # body_end is the target of the "no match" JUMP (label_next) and marks where
+      # the when-clause body stops — without it, structural no-ops from enclosing
+      # constructs (e.g. for-loop cleanup) get swallowed into this if-block.
       while @pc < @instructions.length
+        break if body_end && @pc >= body_end
         inst = @instructions[@pc]
         break if inst.nil?
 
