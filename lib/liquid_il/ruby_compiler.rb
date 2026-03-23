@@ -146,6 +146,10 @@ module LiquidIL
       # Share frozen array registry so partial constants are declared in the parent proc
       ruby_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
       ruby_compiler.instance_variable_set(:@frozen_array_counter, @frozen_array_counter)
+      # Share partial_constants and custom_tag_counter so inlined partial code
+      # references the correct handlers (avoids key collisions like __custom_handler_0__)
+      ruby_compiler.instance_variable_set(:@partial_constants, @partial_constants)
+      ruby_compiler.instance_variable_set(:@custom_tag_counter, @custom_tag_counter)
 
       # Check if this partial can be compiled
       unless ruby_compiler.send(:can_compile?)
@@ -161,6 +165,8 @@ module LiquidIL
       partial_body = ruby_compiler.send(:generate_body)
       # Sync frozen array counter back (the hash is shared by reference, but counter is an int)
       @frozen_array_counter = ruby_compiler.instance_variable_get(:@frozen_array_counter)
+      # Sync custom tag counter back (same reason as frozen_array_counter)
+      @custom_tag_counter = ruby_compiler.instance_variable_get(:@custom_tag_counter)
 
       # Detect which features this partial uses (for conditional preamble generation)
       partial_uses_cycles = false
@@ -439,7 +445,7 @@ module LiquidIL
       return @@indent_partial_body_cache[cache_key] if @@indent_partial_body_cache.key?(cache_key)
 
       # Replace _S with __partial_scope__ to avoid closure issues
-      body = body.gsub("_S", "__partial_scope__")
+      body = body.gsub(/_S(?=[.,)\]\s\n])/, "__partial_scope__")
       # For inlined isolated partials, replace __partial_scope__.lookup(key) with direct access
       if arg_expressions
         # Use temp variables instead of __partial_args__ hash — eliminates hash overhead
@@ -1736,7 +1742,9 @@ module LiquidIL
           is_short_circuit_pattern = next_after_target &&
             next_after_target[0] != IL::STORE_TEMP &&
             next_after_target[0] != IL::WRITE_RAW &&
-            next_after_target[0] != IL::WRITE_VALUE
+            next_after_target[0] != IL::WRITE_VALUE &&
+            next_after_target[0] != IL::ASSIGN &&
+            next_after_target[0] != IL::ASSIGN_LOCAL
           if inst[0] == IL::JUMP_IF_FALSE && target_inst&.[](0) == IL::CONST_FALSE && is_short_circuit_pattern
             left_ruby = stack.pop || "false"
             @pc += 1
@@ -1962,7 +1970,8 @@ module LiquidIL
           return following&.[](0) == IL::JUMP_IF_FALSE || following&.[](0) == IL::JUMP_IF_TRUE
         when IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE
           return true
-        when IL::FOR_INIT, IL::HALT, IL::WRITE_VALUE, IL::ASSIGN, IL::ASSIGN_LOCAL
+        when IL::FOR_INIT, IL::HALT, IL::WRITE_VALUE, IL::ASSIGN, IL::ASSIGN_LOCAL,
+             IL::CUSTOM_TAG_RENDER, IL::CUSTOM_TAG_BEFORE
           # These terminate the expression without being an if condition
           return false
         when IL::STORE_TEMP
@@ -2792,7 +2801,10 @@ module LiquidIL
       prefix = INDENT[indent]
       conditions = [first_cond]
 
-      # Collect remaining OR conditions that jump to the same target
+      # Collect remaining OR conditions that jump to the same target.
+      # The final JUMP before success_target is the "no match" jump whose
+      # target marks the end of this when-clause body (label_next).
+      body_end = nil
       while @pc < success_target
         inst = @instructions[@pc]
         break if inst.nil?
@@ -2809,7 +2821,9 @@ module LiquidIL
             break
           end
         when IL::JUMP
-          # No more conditions, this is the "else" jump
+          # No more conditions, this is the "no match" jump to label_next.
+          # Its target is the end boundary for the when-clause body.
+          body_end = inst[1]
           break
         else
           break
@@ -2837,8 +2851,12 @@ module LiquidIL
       # Set the success flag to prevent else branch
       code << "#{prefix}  __temp_#{success_slot}__ = true\n" if success_slot
 
-      # Parse success body until we hit LOAD_TEMP (checking matched flag) or end
+      # Parse success body until we hit the body boundary, LOAD_TEMP (next when/else), or end.
+      # body_end is the target of the "no match" JUMP (label_next) and marks where
+      # the when-clause body stops — without it, structural no-ops from enclosing
+      # constructs (e.g. for-loop cleanup) get swallowed into this if-block.
       while @pc < @instructions.length
+        break if body_end && @pc >= body_end
         inst = @instructions[@pc]
         break if inst.nil?
 

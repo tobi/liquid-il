@@ -406,4 +406,263 @@ class LazyArgumentIntegrationTest < Minitest::Test
 
     assert_equal "type=blocks,count=3", result
   end
+
+  # Arrays and Hashes should be passed through as lazy arguments (like Procs)
+  # but unlike Procs they are serializable and can be cached.
+  # This is important for tags like {% form 'localization', id: 'my-form' %}
+  # where the attributes are parsed into an Array of [key, value] pairs.
+  def test_array_argument_passed_through_to_handler
+    handler = Module.new do
+      define_method(:before_block) do |scope, output, arguments|
+        type, _variable, tag_attrs = arguments
+        output << "<form type=\"#{type}\""
+        if tag_attrs.is_a?(Array)
+          tag_attrs.each do |key, value|
+            output << " #{key}=\"#{value}\""
+          end
+        end
+        output << ">"
+        scope.push_scope
+        {}
+      end
+      define_method(:after_block) do |scope, output, state|
+        output << "</form>"
+        scope.pop_scope
+      end
+      module_function :before_block, :after_block
+    end
+
+    ctx = LiquidIL::Context.new
+    ctx.register_tag("form", end_tag: "endform", mode: :custom,
+      handler: handler,
+      parse_args: ->(markup) {
+        # Parse: 'localization', id: 'my-form', class: 'custom-class'
+        type = markup.match(/'(\w+)'/)[1]
+        attrs = []
+        markup.scan(/([\w-]+):\s*'([^']*)'/) do |key, value|
+          # Store key-value pairs in an array (like form tag attributes)
+          attrs << [key, value]
+        end
+        # Return type as a quoted expression string so it compiles to a literal
+        ["'#{type}'", nil, attrs]
+      })
+
+    template = ctx.parse("{% form 'localization', id: 'my-form', class: 'custom-class' %}BODY{% endform %}")
+    result = template.render({})
+
+    assert_equal '<form type="localization" id="my-form" class="custom-class">BODY</form>', result
+  end
+
+  # Hash arguments should also be passed through
+  def test_hash_argument_passed_through_to_handler
+    handler = Module.new do
+      define_method(:before_block) do |scope, output, arguments|
+        name, metadata = arguments
+        output << "name=#{name}"
+        if metadata.is_a?(Hash)
+          output << ",method=#{metadata[:method_name]}"
+          output << ",page_size=#{metadata[:page_size]}"
+        end
+        scope.push_scope
+        {}
+      end
+      define_method(:after_block) do |scope, output, state|
+        scope.pop_scope
+      end
+      module_function :before_block, :after_block
+    end
+
+    ctx = LiquidIL::Context.new
+    ctx.register_tag("paginate", end_tag: "endpaginate", mode: :custom,
+      handler: handler,
+      parse_args: ->(markup) {
+        # Parse: collection.products by 4
+        match = markup.match(/(\S+)\s+by\s+(\d+)/)
+        var_name = match[1]
+        page_size = match[2].to_i
+        method_name = var_name.split(".").last
+        # Pass metadata as a hash (serializable unlike Proc)
+        # Return var_name as quoted string so it compiles to literal
+        ["'#{var_name}'", { method_name: method_name, page_size: page_size }]
+      })
+
+    template = ctx.parse("{% paginate collection.products by 4 %}{% endpaginate %}")
+    result = template.render({})
+
+    assert_equal "name=collection.products,method=products,page_size=4", result
+  end
+end
+
+# ── File system for partial rendering tests ──────────────────────
+class HashFileSystem
+  def initialize(partials)
+    @partials = partials
+  end
+
+  def read_template_file(name)
+    @partials.fetch(name) { raise Liquid::FileSystemError, "No such template '#{name}'" }
+  end
+end
+
+class CustomTagPartialCollisionTest < Minitest::Test
+  def teardown
+    LiquidIL::Tags.clear!
+    LiquidIL::Tags.register "style", end_tag: "endstyle", mode: :passthrough
+    LiquidIL::Tags.register "schema", end_tag: "endschema", mode: :discard
+    LiquidIL::Tags.register "form", end_tag: "endform", mode: :passthrough
+  end
+
+  # Regression: when a parent template has {% style %} and a rendered partial
+  # has {% form %}, both custom block tags get compiled with the same
+  # __custom_handler_0__ key. Since the partial's code is inlined, it picks up
+  # the parent's handler (StyleIlHandler) instead of its own (FormIlHandler).
+  def test_partial_custom_tag_handler_does_not_collide_with_parent
+    fs = HashFileSystem.new(
+      "buy-buttons" => "{% form 'product' %}FORM_BODY{% endform %}"
+    )
+
+    ctx = LiquidIL::Context.new(file_system: fs)
+    ctx.register_tag("style", end_tag: "endstyle", mode: :custom,
+      handler: TestStyleHandler)
+    ctx.register_tag("form", end_tag: "endform", mode: :custom,
+      handler: TestFormHandler)
+
+    template = ctx.parse("{% style %}.red{}{% endstyle %}{% render 'buy-buttons' %}")
+    result = template.render({})
+
+    assert_includes result, '<form data-type="product">',
+      "Partial's {% form %} should use FormHandler, not StyleHandler"
+    assert_includes result, "FORM_BODY"
+    assert_includes result, "</form>"
+    assert_includes result, "<style data-shopify>"
+    assert_includes result, "</style>"
+  end
+
+  # Same test but with multiple custom tags in both parent and partial
+  def test_multiple_custom_tags_in_parent_and_partial_no_collision
+    fs = HashFileSystem.new(
+      "snippet" => "{% form 'contact' %}CONTACT{% endform %}{% style %}.inner{}{% endstyle %}"
+    )
+
+    ctx = LiquidIL::Context.new(file_system: fs)
+    ctx.register_tag("style", end_tag: "endstyle", mode: :custom,
+      handler: TestStyleHandler)
+    ctx.register_tag("form", end_tag: "endform", mode: :custom,
+      handler: TestFormHandler)
+
+    template = ctx.parse("{% style %}.outer{}{% endstyle %}{% form 'main' %}MAIN{% endform %}{% render 'snippet' %}")
+    result = template.render({})
+
+    # Parent tags
+    assert_includes result, '<style data-shopify>.outer{}</style>'
+    assert_includes result, '<form data-type="main">MAIN</form>'
+    # Partial tags
+    assert_includes result, '<form data-type="contact">CONTACT</form>'
+    assert_includes result, '<style data-shopify>.inner{}</style>'
+  end
+end
+
+# ════════════════════════════════════════════════════════════════════
+# Custom tags inside control flow structures
+# ════════════════════════════════════════════════════════════════════
+
+# Simple handler that just records the argument passed
+module TestSectionHandler
+  class << self
+    def render(scope, output, arguments)
+      name = arguments[0]
+      output << "[section:#{name.inspect}]"
+    end
+  end
+end
+
+class CustomTagsInControlFlowTest < Minitest::Test
+  def setup
+    LiquidIL::Tags.clear!
+    LiquidIL::Tags.register "section", mode: :custom,
+      handler: TestSectionHandler,
+      parse_args: ->(markup) {
+        name = markup.strip.tr(%('"), "")
+        ["'#{name}'"]
+      }
+  end
+
+  def teardown
+    LiquidIL::Tags.clear!
+    LiquidIL::Tags.register "style", end_tag: "endstyle", mode: :passthrough
+    LiquidIL::Tags.register "schema", end_tag: "endschema", mode: :discard
+    LiquidIL::Tags.register "form", end_tag: "endform", mode: :passthrough
+  end
+
+  # Basic case/when with custom tag should render correct section based on condition
+  def test_custom_tag_in_case_when_single_branch
+    template = LiquidIL.parse(<<~LIQUID)
+      {% case x %}
+        {% when "a" %}
+          {% section 'sec-a' %}
+      {% endcase %}
+    LIQUID
+
+    assert_includes template.render({"x" => "a"}), '[section:"sec-a"]'
+    refute_includes template.render({"x" => "b"}), '[section:'
+  end
+
+  # Multiple when branches with custom tags - each should get correct arguments
+  def test_custom_tag_in_case_when_multiple_branches
+    template = LiquidIL.parse(<<~LIQUID)
+      {% case x %}
+        {% when "a" %}
+          {% section 'sec-a' %}
+        {% when "b" %}
+          {% section 'sec-b' %}
+        {% else %}
+          {% section 'sec-default' %}
+      {% endcase %}
+    LIQUID
+
+    result_a = template.render({"x" => "a"})
+    assert_includes result_a, '[section:"sec-a"]'
+    refute_includes result_a, '[section:"sec-b"]'
+    refute_includes result_a, '[section:"sec-default"]'
+
+    result_b = template.render({"x" => "b"})
+    refute_includes result_b, '[section:"sec-a"]'
+    assert_includes result_b, '[section:"sec-b"]'
+    refute_includes result_b, '[section:"sec-default"]'
+
+    result_other = template.render({"x" => "other"})
+    refute_includes result_other, '[section:"sec-a"]'
+    refute_includes result_other, '[section:"sec-b"]'
+    assert_includes result_other, '[section:"sec-default"]'
+  end
+
+  # Custom tag inside if should only render when condition is true
+  def test_custom_tag_in_if_statement
+    template = LiquidIL.parse(<<~LIQUID)
+      {% if show %}{% section 'header' %}{% endif %}
+    LIQUID
+
+    assert_includes template.render({"show" => true}), '[section:"header"]'
+    refute_includes template.render({"show" => false}), '[section:'
+  end
+
+  # Custom tag arguments should not be nil when inside case/when
+  # This is a regression test for a bug where peek_if_statement? would
+  # look past CUSTOM_TAG_RENDER and find JUMP_IF_TRUE from next when-clause
+  def test_custom_tag_arguments_not_nil_in_case_when
+    template = LiquidIL.parse(<<~LIQUID)
+      {% case x %}
+        {% when "a" %}{% section 'sec-a' %}
+        {% when "b" %}{% section 'sec-b' %}
+      {% endcase %}
+    LIQUID
+
+    # If arguments are nil, the output would show [section:nil] instead of [section:"sec-a"]
+    assert_includes template.render({"x" => "a"}), '[section:"sec-a"]'
+    assert_includes template.render({"x" => "b"}), '[section:"sec-b"]'
+
+    # Verify nil does NOT appear in output
+    refute_includes template.render({"x" => "a"}), 'nil'
+    refute_includes template.render({"x" => "b"}), 'nil'
+  end
 end

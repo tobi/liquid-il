@@ -408,8 +408,9 @@ module LiquidIL
           expr_lexer = expr_lexer_for(arg)
           parse_expression(expr_lexer)
           eager_count += 1
-        when Proc
+        when Proc, Array, Hash
           # Lazy argument — store as constant, pass through at runtime
+          # Arrays and Hashes (unlike Procs) are serializable for caching
           lazy_args[i] = arg
         when Integer, Float
           @builder.const_int(arg) if arg.is_a?(Integer)
