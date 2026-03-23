@@ -52,6 +52,8 @@ module LiquidIL
       @inlined_partials = Set.new
       # Pre-built partial spans/source objects — injected via binding at eval time
       @partial_constants = {}
+      # Counter for unique custom tag state variable names
+      @custom_tag_counter = 0
     end
 
     # Check if template uses break/continue
@@ -850,6 +852,25 @@ module LiquidIL
       when IL::INCLUDE_PARTIAL
         generate_partial_call(inst, @pc, indent, isolated: false)
 
+      when IL::CUSTOM_TAG_BEFORE
+        # No eager args — go directly to block generation
+        generate_custom_tag_block([], indent)
+
+      when IL::CUSTOM_TAG_RENDER
+        generate_custom_tag_nonblock([], indent)
+
+      when IL::DYNAMIC_RENDER
+        # DYNAMIC_RENDER after expression — handled via generate_expression_statement
+        # If we encounter it standalone (shouldn't happen), skip it
+        @pc += 1
+        ""
+
+      when IL::CUSTOM_TAG_AFTER
+        # CUSTOM_TAG_AFTER is handled inside generate_custom_tag_block
+        # If we encounter it standalone (shouldn't happen), skip it
+        @pc += 1
+        ""
+
       when :PAGINATE_SETUP
         @pc += 1
         coll_path = inst[1]
@@ -858,7 +879,7 @@ module LiquidIL
         # Generate runtime paginate setup using helper method
         parts = coll_path.split(".")
         lookup = "_S.lookup(#{parts[0].inspect})"
-        parts[1..].each { |p| lookup = "_H.l(#{lookup}, #{p.inspect})" }
+        parts[1..].each { |p| lookup = "_H.lp(#{lookup}, #{p.inspect}, _S)" }
         code = String.new
         code << "#{prefix}_pc = #{lookup}\n"
         code << "#{prefix}_pc = _pc.respond_to?(:to_a) ? _pc.to_a : Array(_pc) unless _pc.is_a?(Array)\n"
@@ -911,9 +932,163 @@ module LiquidIL
       when :condition
         @pc -= 1
         nil
+      when :custom_tag_before
+        # expr_ruby is the full stack (array of Ruby-source strings) — these are the eager args
+        temp_code + generate_custom_tag_block(expr_ruby, indent)
+      when :custom_tag_render
+        temp_code + generate_custom_tag_nonblock(expr_ruby, indent)
+      when :dynamic_render
+        temp_code + generate_dynamic_render(expr_ruby, indent)
       else
         temp_code + "#{prefix}#{expr_ruby}\n"
       end
+    end
+
+    # Generate code for a custom block tag (before_block + body + after_block).
+    # eager_stack is an array of Ruby-source strings (the compiled argument expressions).
+    def generate_custom_tag_block(eager_stack, indent)
+      prefix = INDENT[indent]
+      inst = @instructions[@pc]
+      @pc += 1  # consume CUSTOM_TAG_BEFORE
+
+      handler = inst[1]
+      argc = inst[2]
+      lazy_args = inst[3]  # { index => proc } or nil
+
+      tag_id = @custom_tag_counter
+      @custom_tag_counter += 1
+
+      # Store handler in partial_constants so the compiled proc can reference it
+      handler_key = "__custom_handler_#{tag_id}__"
+      @partial_constants[handler_key] = handler
+
+      # Store lazy procs in partial_constants too
+      lazy_keys = {}
+      if lazy_args
+        lazy_args.each do |idx, proc_val|
+          lazy_key = "__custom_lazy_#{tag_id}_#{idx}__"
+          @partial_constants[lazy_key] = proc_val
+          lazy_keys[idx] = lazy_key
+        end
+      end
+
+      code = String.new
+
+      # Build the arguments array, interleaving eager (from stack) and lazy (from constants)
+      # Determine total arg count (max of eager positions + lazy positions)
+      max_idx = -1
+      max_idx = [max_idx, argc - 1].max if argc > 0
+      max_idx = [max_idx, *lazy_keys.keys].max if lazy_keys.any?
+      total_args = max_idx + 1
+
+      if total_args > 0
+        code << "#{prefix}__ct_args_#{tag_id}__ = [\n"
+        eager_idx = 0
+        total_args.times do |i|
+          if lazy_keys.key?(i)
+            code << "#{prefix}  _pc[#{lazy_keys[i].inspect}],\n"
+          elsif eager_idx < eager_stack.size
+            code << "#{prefix}  #{eager_stack[eager_idx]},\n"
+            eager_idx += 1
+          else
+            code << "#{prefix}  nil,\n"
+          end
+        end
+        code << "#{prefix}]\n"
+        args_ref = "__ct_args_#{tag_id}__"
+      else
+        args_ref = "[]"
+      end
+
+      # Call before_block
+      state_var = "__ct_state_#{tag_id}__"
+      code << "#{prefix}#{state_var} = _pc[#{handler_key.inspect}].before_block(_S, _O, #{args_ref})\n"
+
+      # Generate body — parse until we hit CUSTOM_TAG_AFTER for this handler
+      while @pc < @instructions.length
+        after_inst = @instructions[@pc]
+        break if after_inst[0] == IL::CUSTOM_TAG_AFTER && after_inst[1] == handler
+        result = generate_statement(indent)
+        break if result.nil?
+        code << result
+      end
+
+      # Consume CUSTOM_TAG_AFTER
+      @pc += 1 if @pc < @instructions.length
+
+      # Call after_block
+      code << "#{prefix}_pc[#{handler_key.inspect}].after_block(_S, _O, #{state_var})\n"
+      code
+    end
+
+    # Generate code for a custom non-block tag (render only, no body).
+    def generate_custom_tag_nonblock(eager_stack, indent)
+      prefix = INDENT[indent]
+      inst = @instructions[@pc]
+      @pc += 1  # consume CUSTOM_TAG_RENDER
+
+      handler = inst[1]
+      argc = inst[2]
+      lazy_args = inst[3]
+
+      tag_id = @custom_tag_counter
+      @custom_tag_counter += 1
+
+      handler_key = "__custom_handler_#{tag_id}__"
+      @partial_constants[handler_key] = handler
+
+      lazy_keys = {}
+      if lazy_args
+        lazy_args.each do |idx, proc_val|
+          lazy_key = "__custom_lazy_#{tag_id}_#{idx}__"
+          @partial_constants[lazy_key] = proc_val
+          lazy_keys[idx] = lazy_key
+        end
+      end
+
+      code = String.new
+
+      max_idx = -1
+      max_idx = [max_idx, argc - 1].max if argc > 0
+      max_idx = [max_idx, *lazy_keys.keys].max if lazy_keys.any?
+      total_args = max_idx + 1
+
+      if total_args > 0
+        code << "#{prefix}__ct_args_#{tag_id}__ = [\n"
+        eager_idx = 0
+        total_args.times do |i|
+          if lazy_keys.key?(i)
+            code << "#{prefix}  _pc[#{lazy_keys[i].inspect}],\n"
+          elsif eager_idx < eager_stack.size
+            code << "#{prefix}  #{eager_stack[eager_idx]},\n"
+            eager_idx += 1
+          else
+            code << "#{prefix}  nil,\n"
+          end
+        end
+        code << "#{prefix}]\n"
+        args_ref = "__ct_args_#{tag_id}__"
+      else
+        args_ref = "[]"
+      end
+
+      code << "#{prefix}_pc[#{handler_key.inspect}].render(_S, _O, #{args_ref})\n"
+      code
+    end
+
+    # Generate code for {% render variable %} with a global dynamic render handler.
+    # The expression (name) has already been compiled as Ruby source.
+    def generate_dynamic_render(expr_ruby, indent)
+      prefix = INDENT[indent]
+      handler = Tags.dynamic_render_handler
+      return "#{prefix}# dynamic render: no handler registered\n" unless handler
+
+      handler_key = "__dynamic_render_handler__"
+      @partial_constants[handler_key] ||= handler
+
+      code = String.new
+      code << "#{prefix}_pc[#{handler_key.inspect}].render(_S, _O, #{expr_ruby})\n"
+      code
     end
 
     # Generate a partial call (render or include)
@@ -1157,6 +1332,14 @@ module LiquidIL
 
       # The partial name comes from a runtime expression/variable.
       dyn_var = args["__dynamic_name__"] || inst[1]
+      # Handle dotted paths like "item.template"
+      parts = dyn_var.to_s.split(".")
+      if parts.length == 1
+        name_lookup = "_S.lookup(#{parts[0].inspect})"
+      else
+        name_lookup = "_S.lookup(#{parts[0].inspect})"
+        parts[1..].each { |p| name_lookup = "_H.lp(#{name_lookup}, #{p.inspect}, _S)" }
+      end
 
       code = String.new
       code << "#{prefix}__dyn_name__ = #{generate_var_lookup(dyn_var)}\n"
@@ -1278,7 +1461,6 @@ module LiquidIL
           key = match[0] || match[1] || match[2]
           key.to_s =~ /^\d+$/ ? key.to_i : key.inspect
         end
-        raw_rest_keys = parts[1..].map { |m| (m[0] || m[1] || m[2]).to_s }
         # Use loop variable alias if available
         result = if @loop_var_aliases[first_var]
           @loop_var_aliases[first_var]
@@ -1290,13 +1472,13 @@ module LiquidIL
           # Skip symbol fallback since loop variables always use string keys
           if rest_keys.size == 1
             key = rest_keys[0]
-            result = key.is_a?(String) ? "#{result}[#{key}]" : "#{result}[#{key}]"
+            result = "#{result}[#{key}]"
           else
             result = "_H.lh(#{result}, #{rest_keys[0]})"
-            rest_keys[1..].each { |k| result = "_H.lookup(#{result}, #{k})" }
+            rest_keys[1..].each { |k| result = "_H.lookup(#{result}, #{k}, _S)" }
           end
         else
-          rest_keys.each { |k| result = "_H.lookup(#{result}, #{k})" }
+          rest_keys.each { |k| result = "_H.lookup(#{result}, #{k}, _S)" }
         end
         result
       end
@@ -1373,7 +1555,7 @@ module LiquidIL
           key_ruby = stack.pop || "nil"
           obj_ruby = stack.pop || "nil"
           # Bracket access uses stricter semantics than property access
-          stack << "_H.bl(#{obj_ruby}, #{key_ruby})"
+          stack << "_H.bl(#{obj_ruby}, #{key_ruby}, _S)"
           @pc += 1
         when IL::LOOKUP_CONST_KEY
           obj_ruby = stack.pop || "nil"
@@ -1396,7 +1578,7 @@ module LiquidIL
           when "last"
             stack << "((__o__ = #{obj_ruby}).respond_to?(:last) ? __o__.last : nil)"
           else
-            stack << "_H.lookup(#{obj_ruby}, #{cmd.inspect})"
+            stack << "_H.lookup(#{obj_ruby}, #{cmd.inspect}, _S)"
           end
           @pc += 1
         when IL::COMPARE
@@ -1503,6 +1685,14 @@ module LiquidIL
         when IL::ASSIGN_LOCAL
           @pc += 1
           return [stack.last, :assign_local]
+        when IL::CUSTOM_TAG_BEFORE
+          # Don't advance PC — generate_statement will handle it
+          return [stack, :custom_tag_before]
+        when IL::CUSTOM_TAG_RENDER
+          return [stack, :custom_tag_render]
+        when IL::DYNAMIC_RENDER
+          @pc += 1
+          return [stack.last, :dynamic_render]
         when IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE
           # Check if this is a short-circuit and/or pattern, not an actual if condition
           # Pattern: JUMP_IF_FALSE -> CONST_FALSE -> end (this is the false branch of 'and')
@@ -2823,14 +3013,14 @@ module LiquidIL
             "(#{obj_ruby}.nil? ? nil : #{obj_ruby}.count)"
           end
         else
-          "_H.lp(#{obj_ruby}, #{key_s.inspect})"
+          "_H.lp(#{obj_ruby}, #{key_s.inspect}, _S)"
         end
       elsif obj_ruby.match?(LOOP_VAR_RE)
         # Loop variable is always a Hash — inline the hash lookup directly
         # Skip symbol fallback for performance (string keys are the common case)
         "#{obj_ruby}[#{key_s.inspect}]"
       else
-        "_H.lf(#{obj_ruby}, #{key_s.inspect})"
+        "_H.lf(#{obj_ruby}, #{key_s.inspect}, _S)"
       end
     end
 

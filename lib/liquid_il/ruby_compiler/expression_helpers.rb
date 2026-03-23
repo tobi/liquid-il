@@ -83,7 +83,7 @@ module LiquidIL
 
           if (next_inst&.[](0) == IL::CONST_STRING || next_inst&.[](0) == IL::CONST_INT) && next_next&.[](0) == IL::LOOKUP_KEY
             @pc += 3
-            return "_H.bl(#{base}, #{literal_ruby(next_inst)})"
+            return "_H.bl(#{base}, #{literal_ruby(next_inst)}, _S)"
           end
 
           @pc += 1

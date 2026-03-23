@@ -5,7 +5,8 @@ module LiquidIL
   # Optimized for hot-path performance with direct ivars instead of hash lookups
   class RenderScope
     attr_accessor :file_system, :render_errors, :current_file,
-                  :strict_variables, :strict_filters, :custom_filters, :resource_limits
+                  :strict_variables, :strict_filters, :custom_filters, :resource_limits,
+                  :strainer
     attr_reader :strict_errors, :user_registers
 
     def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true, locals: nil)
@@ -66,6 +67,7 @@ module LiquidIL
       scope.strict_variables = @strict_variables
       scope.strict_filters = @strict_filters
       scope.custom_filters = @custom_filters
+      scope.strainer = @strainer
       scope.resource_limits = @resource_limits
       scope
     end
@@ -76,6 +78,7 @@ module LiquidIL
       scope.strict_variables = @strict_variables
       scope.strict_filters = @strict_filters
       scope.custom_filters = @custom_filters
+      scope.strainer = @strainer
       scope.resource_limits = @resource_limits
       scope
     end
@@ -101,10 +104,14 @@ module LiquidIL
     end
 
     def apply_custom_filter(name, input, args)
-      return nil unless @custom_filters
-      info = @custom_filters[name]
-      return nil unless info
-      info[:method].bind_call(info[:module], input, *args)
+      if @strainer
+        @strainer.invoke(name, input, *args)
+      else
+        return nil unless @custom_filters
+        info = @custom_filters[name]
+        return nil unless info
+        info[:method].bind_call(info[:module], input, *args)
+      end
     end
 
     def custom_filter?(name)
@@ -170,20 +177,34 @@ module LiquidIL
     def capturing? = @capture_stack ? !@capture_stack.empty? : false
   end
 
-  # Internal execution state with scope stack and registers
-  # (Public API uses Context - this is the VM's internal state)
+  # Internal execution state with scope stack and registers.
+  #
+  # Scope is the single object that both compiled IL code and custom tag
+  # handlers interact with. Compiled code uses the fast path (lookup/assign/
+  # assign_local). Custom tags use the Liquid::Context-compatible API
+  # (find_variable, evaluate, stack, registers, etc.) which is provided by
+  # the same object — no separate shim needed.
+  #
+  # When running inside Storefront, Scope holds a reference to the real
+  # Liquid::Context (@liquid_context). Variable operations stay on the fast
+  # Scope side. Registers, Storefront-specific methods (paginated_drop?,
+  # render_flags, etc.), and anything else delegates to the real Context
+  # via method_missing.
+  #
+  # This mirrors the liquid-vm pattern where State owns LiquidContext and
+  # ContextShim bridges the two — except here Scope IS the bridge.
   class Scope
     attr_reader :strict_errors, :static_environments
     def scopes; @scopes || [@root_scope]; end
     attr_accessor :file_system, :disable_include, :render_errors, :current_file,
-                  :strict_variables, :strict_filters, :custom_filters, :resource_limits
+                  :strict_variables, :strict_filters, :custom_filters, :resource_limits,
+                  :liquid_context, :template_name, :strainer
 
     MAX_RENDER_DEPTH = 100
 
-
     attr_reader :user_registers
 
-    def initialize(assigns = {}, registers: {}, strict_errors: false, static_environments: nil)
+    def initialize(assigns = {}, registers: {}, strict_errors: false, static_environments: nil, liquid_context: nil)
       if static_environments
         @static_environments = stringify_keys(static_environments)
         root_scope = stringify_keys(assigns)
@@ -238,6 +259,11 @@ module LiquidIL
         @temps = r["temps"] if r.key?("temps")
         @capture_stack = r["capture_stack"] if r.key?("capture_stack")
       end
+
+      # Liquid::Context reference — when present, enables the Context-compatible
+      # API that Storefront custom tags depend on (registers, evaluate, etc.)
+      @liquid_context = liquid_context
+      @template_name = liquid_context&.respond_to?(:template_name) ? liquid_context.template_name : nil
     end
 
     # --- Render depth tracking ---
@@ -340,8 +366,179 @@ module LiquidIL
       lookup(key)
     end
 
+    # []= assigns to the current (top) scope, matching Liquid::Context behavior.
+    # When FormTag does `context['form'] = drop` inside `context.stack { }`,
+    # it expects to write to the pushed scope, not the root.
+    # Compiled IL code always uses _S.assign() explicitly, never _S[key]=.
     def []=(key, value)
-      assign(key, value)
+      assign_local(key, value)
+    end
+
+    # --- Liquid::Context-compatible API ---
+    #
+    # These methods match the contract of Liquid::Vm::Hacks::ContextShim.
+    # Custom tag handlers (FormTag, PaginateTag, etc.) call these methods
+    # on whatever "context" object they receive. By implementing them here,
+    # Scope can be passed directly to tag handlers — no wrapper needed.
+
+    # Alias: tags call context.outer_assign(key, value) for {% assign %} semantics
+    alias outer_assign assign
+
+    # Alias: tags call context.local_assign(key, value) for loop-var semantics
+    alias local_assign assign_local
+
+    # Context-compatible variable lookup. Unlike the raw `lookup` used by
+    # compiled code, this calls .to_liquid and sets .context= on the result,
+    # which drops need to function correctly.
+    # Only called by tag handlers (slow path), never by compiled IL (hot path).
+    def find_variable(key, raise_on_not_found: true)
+      value = lookup(key)
+
+      # Fall through to liquid_context environments if not found in scope
+      if value.nil? && !scope_has_key?(key) && @liquid_context
+        if @liquid_context.respond_to?(:static_environments)
+          @liquid_context.static_environments.each do |env|
+            if env.is_a?(Hash) && env.key?(key)
+              value = env[key]
+              break
+            end
+          end
+        end
+        if value.nil? && @liquid_context.respond_to?(:environments)
+          @liquid_context.environments.each do |env|
+            if env.is_a?(Hash) && env.key?(key)
+              value = env[key]
+              break
+            end
+          end
+        end
+      end
+
+      # Set context on drops so they can access registers, evaluate expressions, etc.
+      value.context = self if value.respond_to?(:context=)
+
+      # Unwrap via to_liquid (Liquid::Drop protocol)
+      if value.respond_to?(:to_liquid)
+        liquid_value = value.to_liquid
+        liquid_value.context = self if liquid_value.respond_to?(:context=) && liquid_value != value
+        liquid_value
+      else
+        value
+      end
+    end
+
+    # Evaluate a Liquid expression object (VariableLookup, literal, etc.)
+    # Tags call context.evaluate(expr) where expr was parsed at parse time.
+    # If expr responds to :evaluate, it calls expr.evaluate(self) which will
+    # call back into find_variable. Otherwise returns expr as-is (literals).
+    def evaluate(object)
+      object.respond_to?(:evaluate) ? object.evaluate(self) : object
+    end
+
+    # Push a scope, yield, pop. Matches Liquid::Context#stack.
+    # Tags call context.stack { context['form'] = drop; body.render(...) }
+    def stack(new_scope = {})
+      push_scope(new_scope)
+      yield
+    ensure
+      pop_scope
+    end
+
+    # Registers — delegates to the real Liquid::Context's registers when
+    # available (shared, mutable). Falls back to internal registers hash
+    # for standalone usage (tests, benchmarks).
+    def registers
+      if @liquid_context && @liquid_context.respond_to?(:registers)
+        @liquid_context.registers
+      else
+        @internal_registers ||= {
+          "for" => (@for_offsets ||= {}),
+          "for_stack" => (@for_stack_ref ||= []),
+          "counters" => (@counters ||= {}),
+          "cycles" => (@cycles ||= {}),
+          "temps" => (@temps ||= []),
+          "capture_stack" => (@capture_stack ||= [])
+        }
+      end
+    end
+
+    # The wrapped Liquid::Context, if present.
+    def context
+      @liquid_context
+    end
+
+    # Error handling — delegates to the real context.
+    # Matches liquid-vm ContextShim: re-raise then catch to set backtrace,
+    # then delegate to the real context's handle_error.
+    def handle_error(error, line_number = nil)
+      if @liquid_context && @liquid_context.respond_to?(:handle_error)
+        begin
+          raise error
+        rescue
+          @liquid_context.template_name = template_name
+          @liquid_context.handle_error(error, line_number)
+        end
+      else
+        raise error
+      end
+    end
+
+    # Resource limits — delegates to the real context.
+    def update_resource_limits(render_length_limit: nil, render_score_limit: nil, assign_score_limit: nil)
+      return unless @liquid_context && @liquid_context.respond_to?(:resource_limits)
+      rl = @liquid_context.resource_limits
+      rl.render_length_limit = render_length_limit if render_length_limit
+      rl.render_score_limit = render_score_limit if render_score_limit
+      rl.assign_score_limit = assign_score_limit if assign_score_limit
+    end
+
+    def internal_resource_limits
+      if @liquid_context && @liquid_context.respond_to?(:resource_limits)
+        @liquid_context.resource_limits
+      else
+        @resource_limits
+      end
+    end
+
+    # Isolated subcontext — creates a new Scope wrapping a new isolated
+    # Liquid::Context, matching the liquid-vm ContextShim behavior.
+    def new_isolated_subcontext
+      if @liquid_context && @liquid_context.respond_to?(:new_isolated_subcontext)
+        new_ctx = @liquid_context.new_isolated_subcontext
+        sub_assigns = new_ctx.respond_to?(:scopes) ? (new_ctx.scopes.first || {}) : {}
+        sub_static = new_ctx.respond_to?(:static_environments) ? new_ctx.static_environments.first : nil
+        sub = Scope.new(sub_assigns, static_environments: sub_static, liquid_context: new_ctx)
+        sub.file_system = @file_system
+        sub.strict_variables = @strict_variables
+        sub.strict_filters = @strict_filters
+        sub.custom_filters = @custom_filters
+        sub
+      else
+        isolated
+      end
+    end
+
+    # is_a? override — when wrapping a Liquid::Context, report as that type
+    # so Storefront code that type-checks the context works correctly.
+    def is_a?(klass)
+      return true if super
+      @liquid_context.is_a?(klass) if @liquid_context
+    end
+    alias kind_of? is_a?
+
+    # Delegate unknown methods to the Liquid::Context. This is how Storefront-
+    # specific methods (paginated_drop?, render_flags, event_tracker, shop,
+    # theme, theme_render_context, static_assigns, request, etc.) are reached.
+    def method_missing(method, *args, &block)
+      if @liquid_context && @liquid_context.respond_to?(method)
+        @liquid_context.send(method, *args, &block)
+      else
+        super
+      end
+    end
+
+    def respond_to_missing?(method, include_private = false)
+      (@liquid_context && @liquid_context.respond_to?(method, include_private)) || super
     end
 
     # --- Interrupt handling ---
@@ -467,18 +664,6 @@ module LiquidIL
       @capture_stack ? !@capture_stack.empty? : false
     end
 
-    # Build registers hash on demand (for compatibility with code that reads it)
-    def registers
-      {
-        "for" => (@for_offsets ||= {}),
-        "for_stack" => (@for_stack_ref ||= []),
-        "counters" => (@counters ||= {}),
-        "cycles" => (@cycles ||= {}),
-        "temps" => (@temps ||= []),
-        "capture_stack" => (@capture_stack ||= [])
-      }
-    end
-
     # --- Resource limit tracking ---
 
     def check_output_limit!(output)
@@ -503,12 +688,14 @@ module LiquidIL
     # --- Custom filter dispatch ---
 
     def apply_custom_filter(name, input, args)
-      return nil unless @custom_filters
-      info = @custom_filters[name]
-      return nil unless info
-      # Bind and call the filter method
-      bound = info[:method].bind_call(info[:module], input, *args)
-      bound
+      if @strainer
+        @strainer.invoke(name, input, *args)
+      else
+        return nil unless @custom_filters
+        info = @custom_filters[name]
+        return nil unless info
+        info[:method].bind_call(info[:module], input, *args)
+      end
     end
 
     def custom_filter?(name)
@@ -523,6 +710,7 @@ module LiquidIL
       scope.strict_variables = @strict_variables
       scope.strict_filters = @strict_filters
       scope.custom_filters = @custom_filters
+      scope.strainer = @strainer
       scope.resource_limits = @resource_limits
       scope
     end
@@ -533,11 +721,25 @@ module LiquidIL
       scope.strict_variables = @strict_variables
       scope.strict_filters = @strict_filters
       scope.custom_filters = @custom_filters
+      scope.strainer = @strainer
       scope.resource_limits = @resource_limits
       scope
     end
 
     private
+
+    # Check if scope has this key at any level (used by find_variable to
+    # distinguish "not found" from "found but nil")
+    def scope_has_key?(key)
+      key = key.to_s unless key.is_a?(String)
+      if @scopes
+        @scopes.each { |s| return true if s.key?(key) }
+      else
+        return true if @root_scope.key?(key)
+      end
+      return true if @static_environments&.key?(key)
+      false
+    end
 
     def stringify_keys(hash)
       return {} unless hash.is_a?(Hash)
