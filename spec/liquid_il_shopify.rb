@@ -5,18 +5,12 @@
 # Uses the ruby compiler which generates YJIT-friendly Ruby.
 
 require "liquid/spec/cli/adapter_dsl"
+require_relative "support/liquid_spec_adapter_helper"
 require_relative "../lib/liquid_il"
 
 LiquidSpec.setup do |ctx|
   require "liquid"
 
-
-  module TimeMock
-    def now
-      Time.new(2024, 1, 1, 0, 1, 58, "+00:00")
-    end
-  end
-  Time.singleton_class.prepend(TimeMock)
 
   # Shopify filters
   LiquidIL::Filters.singleton_class.class_eval do
@@ -156,7 +150,7 @@ end
 LiquidSpec.configure do |config|
   config.suite = :benchmarks
   config.filter = "shopify_"
-  config.features = [:core, :runtime_drops, :shopify_filters, :shopify_tags, :shopify_objects]
+  config.missing_features = LiquidSpecAdapterHelper::SHOPIFY_MISSING_FEATURES
 end
 
 # Fallback for templates that can't be compiled (dynamic partials, recursion, etc.)
@@ -180,11 +174,7 @@ class FallbackTemplate
 end
 
 LiquidSpec.compile do |ctx, source, compile_options|
-  context = LiquidIL::Context.new(
-    file_system: compile_options[:file_system],
-    registers: compile_options[:registers],
-    strict_errors: compile_options[:strict_errors]
-  )
+  context = LiquidIL::Context.new(**LiquidSpecAdapterHelper.context_options(compile_options))
 
   ctx[:context] = context
   begin
@@ -198,7 +188,7 @@ LiquidSpec.compile do |ctx, source, compile_options|
 end
 
 LiquidSpec.render do |ctx, assigns, render_options|
-  strict_errors = render_options.fetch(:strict_errors, false)
-  render_errors = !strict_errors
-  ctx[:template].render(assigns, render_errors: render_errors)
+  LiquidSpecAdapterHelper.with_frozen_time do
+    ctx[:template].render(assigns, **LiquidSpecAdapterHelper.render_options(render_options))
+  end
 end
