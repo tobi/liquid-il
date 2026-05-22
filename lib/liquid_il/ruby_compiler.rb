@@ -2954,7 +2954,13 @@ module LiquidIL
     # Ruby compiler — the default (and only) compilation path.
     # Generates YJIT-friendly Ruby with native control flow.
     module Ruby
-      RUBY_DEFAULTS = { optimize: true, skip_passes: [0, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22] }.freeze
+      # Active passes: [7, 9, 20, 21]
+      #   7: remove_noops - removes NOOP instructions
+      #   9: merge_raw_writes - combines adjacent WRITE_RAW (reduces string concat in output)
+      #   20: fuse_write_var - fuses FIND_VAR + WRITE_VALUE -> WRITE_VAR
+      #   21: strip_labels - removes LABEL instructions (REQUIRED for Ruby compiler correctness)
+      # Skipped passes are not needed when generating native Ruby control flow.
+      RUBY_DEFAULTS = { optimize: true, skip_passes: [0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22] }.freeze
 
       def self.compile(source, context: nil, **options)
         opts = options.empty? ? RUBY_DEFAULTS : RUBY_DEFAULTS.merge(options)
