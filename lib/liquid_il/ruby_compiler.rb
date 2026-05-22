@@ -88,6 +88,19 @@ module LiquidIL
     # Compile a partial and store it for later code generation
     def compile_partial(name)
       return if @partials[name]
+
+      # Check class-level cache for unchanged partials
+      source_key = nil
+      fs = @context&.file_system
+      partial_source = RuntimeHelpers.read_partial_source(fs, name, @context)
+      if partial_source
+        source_key = partial_source.hash
+        if (cached = @@partial_cache[source_key])
+          @partials[name] = cached
+          return
+        end
+      end
+
       # Mutual recursion detected — mark as recursive for runtime resolution
       if @partial_names_in_progress.include?(name)
         @partials[name] = { recursive: true }
@@ -97,8 +110,7 @@ module LiquidIL
       @partial_names_in_progress.add(name)
 
       # Load the partial source
-      fs = @context&.file_system
-      source = RuntimeHelpers.read_partial_source(fs, name, @context)
+      source = partial_source || RuntimeHelpers.read_partial_source(fs, name, @context)
 
       unless source
         @partial_names_in_progress.delete(name)
@@ -168,6 +180,12 @@ module LiquidIL
         uses_captures: partial_uses_captures || partial_uses_ifchanged,
         uses_ifchanged: partial_uses_ifchanged
       }
+
+      # Cache for next compile of a template using this partial
+      if source_key
+        @@partial_cache.clear if @@partial_cache.size >= PARTIAL_CACHE_MAX
+        @@partial_cache[source_key] = @partials[name].dup
+      end
 
       @partial_names_in_progress.delete(name)
     end
@@ -3002,6 +3020,10 @@ module LiquidIL
     # Capped at 1000 entries to bound memory; LRU eviction via simple clear.
     ISEQ_CACHE_MAX = 1000
     @@iseq_cache = {}
+
+    # Cache for compiled partials — keyed by source hash
+    PARTIAL_CACHE_MAX = 500
+    @@partial_cache = {}
 
     def eval_ruby(source, partial_constants = nil)
       key = source.hash
