@@ -453,24 +453,32 @@ module LiquidIL
 
     # Link labels to instruction indices
     def self.link(instructions)
-      # First pass: find all label positions
+      # Two-pass: first collect labels, then resolve jumps
+      # Labels can appear after their first jump reference, requiring two passes
       label_positions = {}
-      instructions.each_with_index do |inst, idx|
+      len = instructions.length
+      i = 0
+      while i < len
+        inst = instructions[i]
         if inst[0] == LABEL
-          label_positions[inst[1]] = idx
+          label_positions[inst[1]] = i
         end
+        i += 1
       end
 
-      # Second pass: resolve jumps
-      instructions.each do |inst|
-        case inst[0]
-        when JUMP, JUMP_IF_FALSE, JUMP_IF_TRUE, JUMP_IF_EMPTY, JUMP_IF_INTERRUPT
-          label_id = inst[1]
-          inst[1] = label_positions[label_id] || raise("Unknown label: #{label_id}")
-        when FOR_NEXT, TABLEROW_NEXT
+      # Second pass: resolve jump targets using direct field access (faster than case)
+      i = 0
+      while i < len
+        inst = instructions[i]
+        opcode = inst[0]
+        if opcode == JUMP || opcode == JUMP_IF_FALSE || opcode == JUMP_IF_TRUE ||
+           opcode == JUMP_IF_EMPTY || opcode == JUMP_IF_INTERRUPT
+          inst[1] = label_positions[inst[1]] || raise("Unknown label: #{inst[1]}")
+        elsif opcode == FOR_NEXT || opcode == TABLEROW_NEXT
           inst[1] = label_positions[inst[1]] || raise("Unknown label: #{inst[1]}")
           inst[2] = label_positions[inst[2]] || raise("Unknown label: #{inst[2]}")
         end
+        i += 1
       end
 
       instructions
