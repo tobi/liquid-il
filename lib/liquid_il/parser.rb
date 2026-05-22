@@ -534,15 +534,7 @@ module LiquidIL
     def parse_variable_lookup(lexer)
       name = lexer.value
       lexer.advance
-
-      # Check for command optimizations
-      if %w[size first last].include?(name) && lexer.current != ExpressionLexer::DOT && lexer.current != ExpressionLexer::LBRACKET
-        # This is a variable, not a command
-        @builder.find_var(name)
-      else
-        @builder.find_var(name)
-      end
-
+      @builder.find_var(name)
       parse_property_chain(lexer)
     end
 
