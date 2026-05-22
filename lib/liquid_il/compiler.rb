@@ -14,6 +14,9 @@ module LiquidIL
       IL::INCREMENT, IL::DECREMENT
     ].to_set.freeze
 
+    # Passes handled by fused_peephole (used for conditional dispatch)
+    FUSED_PEEPHOLE_PASSES = [3, 4, 5, 6, 7, 8, 9, 13, 20].to_set.freeze
+
     def initialize(source, **options)
       @source = source
       @options = options
@@ -91,7 +94,7 @@ module LiquidIL
       #   - Merge consecutive WRITE_RAW                                 [pass 9]
       #   - Remove empty WRITE_RAW                                      [pass 13]
       #   - Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR                    [pass 20]
-      fused_peephole(instructions, spans, enabled)
+      fused_peephole(instructions, spans, enabled) if FUSED_PEEPHOLE_PASSES.intersect?(enabled)
 
       # Phase 4: Structural passes (need global analysis, can't easily fuse)
       remove_unreachable(instructions, spans) if enabled.include?(10)
@@ -127,15 +130,15 @@ module LiquidIL
     # Avoids N separate array walks by combining all simple peephole patterns.
     def fused_peephole(instructions, spans, enabled)
       # Pre-compute pass flags to avoid Set#include? per instruction
-      p3 = p3
-      p4 = p4
-      p5 = p5
-      p6 = p6
+      p3 = enabled.include?(3)
+      p4 = enabled.include?(4)
+      p5 = enabled.include?(5)
+      p6 = enabled.include?(6)
       p7 = enabled.include?(7)
-      p8 = p8
-      p9 = p9
-      p13 = p13
-      p20 = p20
+      p8 = enabled.include?(8)
+      p9 = enabled.include?(9)
+      p13 = enabled.include?(13)
+      p20 = enabled.include?(20)
 
       i = 0
       while i < instructions.length
