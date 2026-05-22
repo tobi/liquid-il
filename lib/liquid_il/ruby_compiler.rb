@@ -450,17 +450,17 @@ module LiquidIL
         @pc += 1
         file_name = inst[1]
         if file_name
-          "#{prefix}_F = " + file_name.inspect + "\n"
+          %(#{prefix}_F = #{file_name.inspect}\n)
         else
-          prefix + "_F = nil\n"
+          %(#{prefix}_F = nil\n)
         end
 
       when IL::WRITE_RAW
         @pc += 1
         if @uses_interrupts
-          "#{prefix}_O << " + inst[1].inspect + " unless _S.has_interrupt?\n"
+          %(#{prefix}_O << #{inst[1].inspect} unless _S.has_interrupt?\n)
         else
-          prefix + "_O << " + inst[1].inspect + "\n"
+          %(#{prefix}_O << #{inst[1].inspect}\n)
         end
 
       when IL::WRITE_VAR
