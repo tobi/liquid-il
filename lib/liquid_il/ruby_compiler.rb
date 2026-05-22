@@ -245,19 +245,30 @@ module LiquidIL
 
     # Generate Ruby code from IL
     def generate_ruby
-      # First pass: scan for partials and compile them
-      scan_and_compile_partials
-
-      # Pre-scan: detect which preamble variables are needed
+      # Scan for partials + detect feature flags in a single pass
       @uses_cycles = false
       @uses_captures = false
       @uses_ifchanged = false
+
       @instructions.each do |i|
         case i[0]
-        when IL::CYCLE_STEP, IL::CYCLE_STEP_VAR then @uses_cycles = true
-        when IL::PUSH_CAPTURE then @uses_captures = true
-        when IL::IFCHANGED_CHECK then @uses_ifchanged = true
-        when IL::INCLUDE_PARTIAL, IL::RENDER_PARTIAL, IL::CONST_INCLUDE, IL::CONST_RENDER then @uses_cycles = true
+        when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
+          # Always set cycles flag for partial instructions (even if dynamic/skipped)
+          @uses_cycles = true
+          name = i[1]
+          args = i[2] || {}
+          # Skip dynamic/invalid/no-fs partials (handled at codegen)
+          next if args["__dynamic_name__"] || args["__invalid_name__"]
+          next unless @context&.file_system
+          next if @partials[name]
+          # compile_partial will raise if mutual recursion detected
+          compile_partial(name)
+        when IL::CYCLE_STEP, IL::CYCLE_STEP_VAR, IL::CONST_INCLUDE, IL::CONST_RENDER
+          @uses_cycles = true
+        when IL::PUSH_CAPTURE
+          @uses_captures = true
+        when IL::IFCHANGED_CHECK
+          @uses_ifchanged = true
         end
       end
 
@@ -2954,13 +2965,14 @@ module LiquidIL
     # Ruby compiler — the default (and only) compilation path.
     # Generates YJIT-friendly Ruby with native control flow.
     module Ruby
-      # Active passes: [7, 9, 20, 21]
-      #   7: remove_noops - removes NOOP instructions
-      #   9: merge_raw_writes - combines adjacent WRITE_RAW (reduces string concat in output)
-      #   20: fuse_write_var - fuses FIND_VAR + WRITE_VALUE -> WRITE_VAR
+      # Active passes: [21]
       #   21: strip_labels - removes LABEL instructions (REQUIRED for Ruby compiler correctness)
-      # Skipped passes are not needed when generating native Ruby control flow.
-      RUBY_DEFAULTS = { optimize: true, skip_passes: [0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22] }.freeze
+      #   The Ruby compiler generates native Ruby control flow (if/for/while),
+      #   so most IL optimizations (constant folding, instruction merging) don't
+      #   provide benefit and only add compile overhead.
+      # Skipped: [0..20, 22] - all passes except strip_labels.
+      RUBY_SKIP_PASSES = ((0..22).to_a - [21]).freeze
+      RUBY_DEFAULTS = { optimize: true, skip_passes: RUBY_SKIP_PASSES }.freeze
 
       def self.compile(source, context: nil, **options)
         opts = options.empty? ? RUBY_DEFAULTS : RUBY_DEFAULTS.merge(options)
