@@ -259,7 +259,19 @@ module LiquidIL
       end
 
       def lookup_const_key(name)
-        emit1(LOOKUP_CONST_KEY, name)
+        # Optimization: merge with preceding FIND_VAR or FIND_VAR_PATH
+        last = @instructions.last
+        if last && last[0] == FIND_VAR
+          # FIND_VAR + LOOKUP_CONST_KEY → FIND_VAR_PATH
+          @instructions.pop
+          @spans.pop
+          emit2(FIND_VAR_PATH, last[1], [name])
+        elsif last && last[0] == FIND_VAR_PATH
+          # Extend existing FIND_VAR_PATH
+          last[2] << name
+        else
+          emit1(LOOKUP_CONST_KEY, name)
+        end
       end
 
       def lookup_const_path(path)
