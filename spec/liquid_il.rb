@@ -21,8 +21,9 @@ LiquidSpec.setup do |_ctx|
 end
 
 LiquidSpec.configure do |config|
-  config.suite = :all
-  config.features = [:core, :runtime_drops]
+  # Run all default suites (equivalent to old suite = :all)
+  # missing_features = [] means all features are supported
+  config.missing_features = []
 end
 
 # Fallback for templates that can't be compiled (dynamic partials, recursion, etc.)

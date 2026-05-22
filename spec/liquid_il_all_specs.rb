@@ -153,8 +153,8 @@ LiquidSpec.setup do |ctx|
 end
 
 LiquidSpec.configure do |config|
-  config.suite = :all
-  config.features = LiquidSpec::FEATURES.keys
+  # Run all default suites; missing_features = [] means all features supported
+  config.missing_features = []
 end
 
 # Fallback for templates that can't be compiled (dynamic partials, recursion, etc.)

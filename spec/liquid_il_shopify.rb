@@ -156,7 +156,8 @@ end
 LiquidSpec.configure do |config|
   config.suite = :benchmarks
   config.filter = "shopify_"
-  config.features = [:core, :runtime_drops, :shopify_filters, :shopify_tags, :shopify_objects]
+  # Missing features (everything else is supported)
+  config.missing_features = [:ruby_types, :lax_parsing, :strict2_parsing, :shopify_error_handling]
 end
 
 # Fallback for templates that can't be compiled (dynamic partials, recursion, etc.)
