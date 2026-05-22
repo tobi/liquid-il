@@ -1,4 +1,5 @@
 # Autoresearch: Faster Compile Time
+> **NOTE**: Every 2-3 experiments, call `advisor()` to get a second opinion from the helper model.
 
 ## Objective
 Make `LiquidIL::Template.parse()` (compile) much faster without negatively affecting runtime render performance.
