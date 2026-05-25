@@ -87,7 +87,10 @@ module LiquidIL
 
     # Compile a partial and store it for later code generation
     def compile_partial(name)
-      return if @partials[name]
+      # If already compiled, skip
+      if @partials[name] && @partials[name][:compiled_body]
+        return
+      end
 
       # Check class-level cache for unchanged partials
       source_key = nil
@@ -276,7 +279,7 @@ module LiquidIL
           args = i[2] || {}
           next if args["__dynamic_name__"] || args["__invalid_name__"]
           next unless @context&.file_system
-          next if @partials[name]
+          next if @partials[name] && @partials[name][:compiled_body]
           compile_partial(name)
         end
       end
@@ -345,7 +348,7 @@ module LiquidIL
       code << "\n"
 
       @partials.each do |name, info|
-        next if info[:recursive] || info[:syntax_error]  # Handled at runtime
+        next if info[:recursive] || info[:syntax_error] || !info[:compiled_body]
         lambda_name = partial_lambda_name(name)
         # Store spans/source as pre-built frozen objects in @partial_constants hash.
         # The proc receives _pc (partial constants) and reads from it — zero per-render allocation.
