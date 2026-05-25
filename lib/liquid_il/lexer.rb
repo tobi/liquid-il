@@ -397,6 +397,7 @@ module LiquidIL
 
     def initialize(source = "")
       @source = source
+      @source_bytes = source.bytesize
       @scanner = StringScanner.new(source)
       @current_token = nil
       @current_value = nil
@@ -405,6 +406,7 @@ module LiquidIL
 
     def reset_source(source)
       @source = source
+      @source_bytes = source.bytesize
       @scanner.string = source
       @scanner.pos = 0
       @current_token = nil
@@ -461,15 +463,15 @@ module LiquidIL
       while (b = @source.getbyte(pos)) && (b == 32 || b == 9 || b == 10 || b == 13)
         pos += 1
       end
-      @scanner.pos = pos if pos != @scanner.pos
-
-      if @scanner.eos?
+      # Combine EOS check + scanner.pos update + byte lookup in one step
+      if pos >= @source_bytes
+        @scanner.pos = pos
         @current_token = EOF
         @peeked = true
         return EOF
       end
-
-      byte = @source.getbyte(@scanner.pos)
+      @scanner.pos = pos
+      byte = @source.getbyte(pos)
 
       # Check punctuation table first (most common)
       if (punct = PUNCT_TABLE[byte])
