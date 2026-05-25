@@ -1439,7 +1439,10 @@ module LiquidIL
           args = argc > 0 ? stack.pop(argc) : []
           input_ruby = stack.pop || "nil"
           filter_name = inst[1]
-          if args.empty?
+          # Optimization: plus: 0 is identity (x + 0 = x)
+          if filter_name == "plus" && args.length == 1 && args[0] == "0"
+            stack << input_ruby
+          elsif args.empty?
             stack << "_F.#{filter_name}(#{input_ruby})"
           else
             args_str = args.join(", ")
@@ -3122,29 +3125,29 @@ module LiquidIL
         nil
       when "plus"
         return nil unless args.length == 1
-        "LiquidIL::Filters.send(:plus, #{input}, #{args[0]})"
+        "LiquidIL::Filters.plus(#{input}, #{args[0]})"
       when "minus"
         return nil unless args.length == 1
-        "LiquidIL::Filters.send(:minus, #{input}, #{args[0]})"
+        "LiquidIL::Filters.minus(#{input}, #{args[0]})"
       when "times"
         return nil unless args.length == 1
-        "LiquidIL::Filters.send(:times, #{input}, #{args[0]})"
+        "LiquidIL::Filters.times(#{input}, #{args[0]})"
       when "divided_by"
         return nil unless args.length == 1
-        "LiquidIL::Filters.send(:divided_by, #{input}, #{args[0]})"
+        "LiquidIL::Filters.divided_by(#{input}, #{args[0]})"
       when "round"
         return nil unless args.length <= 1
         if args.empty?
-          "LiquidIL::Filters.send(:round, #{input})"
+          "LiquidIL::Filters.round(#{input})"
         else
-          "LiquidIL::Filters.send(:round, #{input}, #{args[0]})"
+          "LiquidIL::Filters.round(#{input}, #{args[0]})"
         end
       when "ceil"
         return nil unless args.empty?
-        "LiquidIL::Filters.send(:ceil, #{input})"
+        "LiquidIL::Filters.ceil(#{input})"
       when "floor"
         return nil unless args.empty?
-        "LiquidIL::Filters.send(:floor, #{input})"
+        "LiquidIL::Filters.floor(#{input})"
       when "handle", "handleize"
         return nil unless args.empty?
         # Inline handleize using tr! chain (4.5x faster, 25% fewer allocs vs gsub)
