@@ -422,11 +422,99 @@ module LiquidIL
     def generate_body
       @pc = 0
       code = String.new
+      instructions = @instructions
+      len = instructions.length
+      interrupt = @uses_interrupts
 
-      while @pc < @instructions.length
-        result = generate_statement(1)
-        break if result.nil?
-        code << result
+      while @pc < len
+        inst = instructions[@pc]
+        break if inst.nil?
+
+        case inst[0]
+        when IL::HALT
+          @pc += 1
+          break
+        when IL::WRITE_RAW
+          @pc += 1
+          if interrupt
+            code << "  _O << " << inst[1].inspect << " unless _S.has_interrupt?\n"
+          else
+            code << "  _O << " << inst[1].inspect << "\n"
+          end
+        when IL::FIND_VAR, IL::FIND_VAR_PATH
+          # Needs peek - delegate to generate_statement
+          result = generate_statement(1)
+          break if result.nil?
+          code << result
+        when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
+          @pc += 1
+          pc = @pc - 1
+          isolated = inst[0] == IL::RENDER_PARTIAL
+          code << generate_partial_call(inst, pc, 1, isolated: isolated)
+        when IL::ASSIGN_LOCAL
+          @pc += 1
+          code << "  _S.assign_local(#{inst[1].inspect}, _S.lookup(#{inst[2].inspect}))\n"
+        when IL::IS_TRUTHY
+          @pc += 1
+          code << "  _S.to_liquid_value("
+          code << inst[1]
+          code << ").is_truthy?\n"
+        when IL::JUMP_IF_INTERRUPT
+          @pc += 1
+          code << "  next if _S.has_interrupt?\n"
+        when IL::POP_INTERRUPT
+          @pc += 1
+          # no-op in Ruby compiler
+        when IL::JUMP
+          @pc += 1
+          code << "  next\n"
+        when IL::PUSH_SCOPE
+          @pc += 1
+          code << "  _sp << _S.scope\n"
+        when IL::POP_SCOPE
+          @pc += 1
+          code << "  _S.scope = _sp.pop\n"
+        when IL::FOR_INIT
+          @pc += 1
+          code << "  __for_#{inst[2]}__ = _H.wrap_for_loop(#{generate_var_lookup(inst[1])}, "
+          code << "has_limit: #{inst[3]}, has_offset: #{inst[4]})\n"
+        when IL::FOR_NEXT
+          @pc += 1
+          code << "  __for_continue__ = false\n"
+        when IL::FOR_END
+          @pc += 1
+          code << "  end\n"
+        when IL::PUSH_FORLOOP
+          @pc += 1
+          code << "  _S.push_forloop(__for_#{inst[1]}__)\n"
+        when IL::POP_FORLOOP
+          @pc += 1
+          code << "  _S.pop_forloop\n"
+        when IL::JUMP_IF_EMPTY
+          @pc += 1
+          code << "  next if _S.empty?(#{generate_var_lookup(inst[1])})\n"
+        when IL::COMPARE
+          @pc += 1
+          code << "  _S.compare(#{inst[1]}, #{inst[2]}, #{inst[3].inspect})\n"
+        when IL::CALL_FILTER
+          @pc += 1
+          code << "_H.call_filter(#{inst[1].inspect}, "
+          args_code = inst[2].map { |a| a.inspect }.join(", ")
+          code << args_code << ")\n"
+        when IL::WRITE_VALUE
+          @pc += 1
+          code << "  _O << " << inst[1]
+          if interrupt
+            code << " unless _S.has_interrupt?\n"
+          else
+            code << "\n"
+          end
+        else
+          # Complex cases or unrecognized - delegate
+          result = generate_statement(1)
+          break if result.nil?
+          code << result
+        end
       end
 
       code
