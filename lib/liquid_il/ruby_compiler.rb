@@ -2349,7 +2349,11 @@ module LiquidIL
       code << "#{inner_prefix}  _pi#{depth}__ = _S.lookup(#{item_var.inspect})\n" if needs_scope_sync
       code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n" if needs_catch
       if needs_forloop
-        code << "#{inner_prefix}    #{coll_var}.each_with_index do |#{item_var_internal}, #{idx_var}|\n"
+        # Use while loop instead of each_with_index block — avoids block yield overhead
+        code << "#{inner_prefix}    #{idx_var} = 0\n"
+        code << "#{inner_prefix}    #{coll_var}_len = #{coll_var}.length\n"
+        code << "#{inner_prefix}    while #{idx_var} < #{coll_var}_len\n"
+        code << "#{inner_prefix}      #{item_var_internal} = #{coll_var}[#{idx_var}]\n"
         code << "#{inner_prefix}      #{forloop_var}.index0 = #{idx_var}\n"
       else
         # No forloop needed — use plain each (skip index tracking overhead)
@@ -2369,6 +2373,10 @@ module LiquidIL
         body_code = body_code.gsub(/^/, "  ")
       end
       code << body_code
+      if needs_forloop
+        # Increment loop index for while loop
+        code << "#{inner_prefix}      #{idx_var} += 1\n"
+      end
       code << "#{inner_prefix}    end\n"
       code << "#{inner_prefix}  end\n" if needs_catch
       if needs_forloop
