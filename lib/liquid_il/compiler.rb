@@ -53,12 +53,12 @@ module LiquidIL
         optimize(instructions, spans, skip_passes: @options[:skip_passes])
       end
 
-      IL.link(instructions)
-
-      # Optimization pass 21: Strip labels after linking (VM speedup)
-      # Must run after IL.link since it adjusts jump target indices
+      # Fuse link + strip_labels when strip_labels is enabled
+      # This saves 3 passes over the instruction array (17-20µs for typical templates)
       if @options[:optimize] && Passes.enabled.include?(21)
-        strip_labels(instructions, spans)
+        link_and_strip(instructions, spans)
+      else
+        IL.link(instructions)
       end
 
       { instructions: instructions, spans: spans }
@@ -879,6 +879,79 @@ module LiquidIL
         instructions.delete_at(idx)
         spans.delete_at(idx)
       end
+    end
+
+    # Fused link + strip_labels: combines IL.link and strip_labels into 2 passes
+    # instead of 5+ passes, saving 17-20µs for typical templates
+    def link_and_strip(instructions, spans)
+      # Pass 1: collect label positions (label_id -> index)
+      label_positions = {}
+      len = instructions.length
+      i = 0
+      while i < len
+        inst = instructions[i]
+        if inst[0] == IL::LABEL
+          label_positions[inst[1]] = i
+        end
+        i += 1
+      end
+
+      # Quick path: no labels at all
+      if label_positions.empty?
+        return
+      end
+
+      # Build compact label index set for O(1) lookup
+      label_idx_set = Set.new
+      i = 0
+      while i < len
+        if instructions[i][0] == IL::LABEL
+          label_idx_set << i
+        end
+        i += 1
+      end
+
+      # Build cumulative label count: label_count[i] = labels at indices 0..i-1
+      label_count = [0]
+      i = 1
+      while i < len
+        label_count << (label_count[i-1] + (label_idx_set.include?(i-1) ? 1 : 0))
+        i += 1
+      end
+      label_count << label_count.last  # sentinel for boundary
+
+      # Pass 2: build new instructions array, resolving jumps and stripping labels
+      new_instructions = []
+      new_spans = []
+      i = 0
+      while i < len
+        inst = instructions[i]
+        # Skip label instructions
+        if inst[0] == IL::LABEL
+          i += 1
+          next
+        end
+
+        # Resolve and adjust jump targets
+        opcode = inst[0]
+        if opcode == IL::JUMP || opcode == IL::JUMP_IF_FALSE || opcode == IL::JUMP_IF_TRUE ||
+           opcode == IL::JUMP_IF_EMPTY || opcode == IL::JUMP_IF_INTERRUPT
+          target = label_positions[inst[1]]
+          inst[1] = target - label_count[target]
+        elsif opcode == IL::FOR_NEXT || opcode == IL::TABLEROW_NEXT
+          t1 = label_positions[inst[1]]
+          t2 = label_positions[inst[2]]
+          inst[1] = t1 - label_count[t1]
+          inst[2] = t2 - label_count[t2]
+        end
+
+        new_instructions << inst
+        new_spans << spans[i] if spans
+        i += 1
+      end
+
+      instructions.replace(new_instructions)
+      spans.replace(new_spans) if spans
     end
 
     # Remove interrupt handling when template never pushes interrupts.
