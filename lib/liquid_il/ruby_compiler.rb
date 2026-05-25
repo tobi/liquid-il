@@ -2366,7 +2366,7 @@ module LiquidIL
       parent_forloop = "_S.lookup('forloop')"
 
       # Check what the loop body actually needs
-      needs_scope_sync = body_code.include?("__partial_") ||
+      needs_scope_sync = body_code.include?(".call(") ||
                          body_code.include?("execute_dynamic_partial") ||
                          body_code.include?("ForloopDrop.new") ||
                          body_code.include?("_S.lookup('forloop')") ||
