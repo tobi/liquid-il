@@ -34,6 +34,9 @@ module LiquidIL
     # Comparison operator mapping
     COMPARE_OPS = { eq: "==", ne: "!=", lt: "<", le: "<=", gt: ">", ge: ">=" }.freeze
 
+    # Numeric-only operators that can be inlined (no to_liquid_value needed for simple numeric comparisons)
+    NUMERIC_COMPARE_OPS = { lt: "<", le: "<=", gt: ">", ge: ">=" }.freeze
+
     # Cached indent strings to avoid repeated "  " * n allocations
     INDENT = Array.new(20) { |i| ("  " * i).freeze }.freeze
 
@@ -1330,8 +1333,13 @@ module LiquidIL
           right_ruby = stack.pop || "nil"
           left_ruby = stack.pop || "nil"
           op = inst[1]
-          ruby_op = COMPARE_OPS[op]
-          stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, _F)"
+          # Inline numeric comparisons: skip _H.cmp for numeric literals
+          if NUMERIC_COMPARE_OPS.key?(op) && right_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
+            ruby_op = COMPARE_OPS[op]
+            stack << "((_t = #{left_ruby}); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+          else
+            stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, _F)"
+          end
           @pc += 1
         when IL::CONTAINS
           right_ruby = stack.pop || "nil"
@@ -1460,7 +1468,14 @@ module LiquidIL
                 when IL::COMPARE
                   right_ruby = stack.pop || "nil"
                   left_ruby_inner = stack.pop || "nil"
-                  stack << "_H.cmp(#{left_ruby_inner}, #{right_ruby}, #{build_inst[1].inspect}, _O, _F)"
+                  cmp_op = build_inst[1]
+                  # Inline numeric comparisons: skip _H.cmp for numeric literals
+                  if NUMERIC_COMPARE_OPS.key?(cmp_op) && right_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
+                    ruby_op = COMPARE_OPS[cmp_op]
+                    stack << "((_t = #{left_ruby_inner}); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+                  else
+                    stack << "_H.cmp(#{left_ruby_inner}, #{right_ruby}, #{cmp_op.inspect}, _O, _F)"
+                  end
                   @pc += 1
                 when IL::CONTAINS
                   right_ruby = stack.pop || "nil"
@@ -1812,7 +1827,14 @@ module LiquidIL
         @pc += 1
         compare_inst = @instructions[@pc]
         if compare_inst&.[](0) == IL::COMPARE
-          result = "_H.cmp(#{var_ruby}, #{const_ruby}, #{compare_inst[1].inspect}, _O, _F)"
+          cmp_op = compare_inst[1]
+          # Inline numeric comparisons: skip _H.cmp for numeric literals
+          if NUMERIC_COMPARE_OPS.key?(cmp_op) && const_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
+            ruby_op = COMPARE_OPS[cmp_op]
+            result = "((_t = #{var_ruby}); _t.is_a?(Numeric) && _t #{ruby_op} #{const_ruby})"
+          else
+            result = "_H.cmp(#{var_ruby}, #{const_ruby}, #{cmp_op.inspect}, _O, _F)"
+          end
           @pc += 1
         elsif compare_inst&.[](0) == IL::CONTAINS
           result = "_H.ct(#{var_ruby}, #{const_ruby})"
@@ -1903,9 +1925,14 @@ module LiquidIL
           "(#{left} #{ruby_op} #{right})"
         elsif left_simple && right_simple && [:lt, :le, :gt, :ge].include?(op)
           # Fast path: check if both sides are Numeric and compare directly.
+          # If right is a numeric literal, always inline (left might be non-numeric).
           # Falls back to full compare for non-numeric (preserves error messages).
           ruby_op = COMPARE_OPS[op]
-          "((_cl = #{left}; _cr = #{right}; (_cl.is_a?(Numeric) && _cr.is_a?(Numeric)) ? (_cl #{ruby_op} _cr) : _H.cmp(_cl, _cr, #{op.inspect}, _O, _F)))"
+          if right.match?(/\A-?[0-9]+\.?[0-9]*\z/)
+            "((_t = #{left}); _t.is_a?(Numeric) && _t #{ruby_op} #{right})"
+          else
+            "((_cl = #{left}; _cr = #{right}; (_cl.is_a?(Numeric) && _cr.is_a?(Numeric)) ? (_cl #{ruby_op} _cr) : _H.cmp(_cl, _cr, #{op.inspect}, _O, _F)))"
+          end
         else
           "_H.cmp(#{left}, #{right}, #{op.inspect}, _O, _F)"
         end
