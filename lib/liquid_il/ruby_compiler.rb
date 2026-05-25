@@ -424,11 +424,25 @@ module LiquidIL
       code
     end
 
-    def indent_partial_body(body, spaces)
+    # Cache for indented partial body with assign key replacements
+    @@indent_partial_body_cache = {}
+
+    def indent_partial_body(body, spaces, assign_keys: [])
       indent = " " * spaces
+      cache_key = [body.hash, assign_keys.sort, spaces]
+      return @@indent_partial_body_cache[cache_key] if @@indent_partial_body_cache.key?(cache_key)
+
       # Replace _S with __partial_scope__ to avoid closure issues
       body = body.gsub("_S", "__partial_scope__")
-      body.lines.map { |l| l.strip.empty? ? l : "#{indent}#{l}" }.join
+      # For inlined isolated partials, replace __partial_scope__.lookup(key) with direct hash access for known assigns
+      # This avoids method call overhead (~85ns) and replaces with direct hash lookup (~15ns)
+      if assign_keys.length > 0
+        assign_keys.each do |key|
+          body = body.gsub("__partial_scope__.lookup(#{key.inspect})", "__partial_args__[#{key.inspect}]")
+        end
+      end
+      result = body.lines.map { |l| l.strip.empty? ? l : "#{indent}#{l}" }.join
+      @@indent_partial_body_cache[cache_key] = result
     end
 
     # Generate the template body
@@ -1048,7 +1062,9 @@ module LiquidIL
         if isolated && partial_inlinable?(name)
           info = @partials[name]
           code << "#{prefix}__partial_scope__ = _S.isolated_with(__partial_args__)\n"
-          code << indent_partial_body(info[:compiled_body], indent + 1)
+          # Collect assign keys for inlining: replace __partial_scope__.lookup(key) with __partial_args__[key]
+          assign_keys = args.keys.reject { |k| k.start_with?("__") }
+          code << indent_partial_body(info[:compiled_body], indent + 1, assign_keys: assign_keys)
         else
           code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
         end
