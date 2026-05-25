@@ -3155,16 +3155,38 @@ module LiquidIL
       if RuntimeHelpers::SPECIAL_KEYS[key_s]
         # Inline property lookup for common special keys to avoid _H.lp() method call
         # This replaces ~85ns method call with ~35ns inline expression
+        # For complex expressions, use a temp to avoid repeated evaluation
+        is_complex = obj_ruby.length > 20 || !obj_ruby.match?(/\A[a-zA-Z_][a-zA-Z0-9_]*\z/)
         if key_s == "size" || key_s == "length"
-          "(#{obj_ruby}.nil? ? nil : (#{obj_ruby}.is_a?(Hash) ? (#{obj_ruby}.fetch(#{key_s.inspect}) { #{obj_ruby}[#{key_s.to_sym.inspect}] }) : (#{obj_ruby}.respond_to?(:#{key_s}) ? #{obj_ruby}.#{key_s} : nil)))"
+          if is_complex
+            "((_o = #{obj_ruby}; _o.nil? ? nil : _o.#{key_s}))"
+          else
+            "(#{obj_ruby}.nil? ? nil : #{obj_ruby}.#{key_s})"
+          end
         elsif key_s == "first"
-          "(#{obj_ruby}.nil? ? nil : (#{obj_ruby}.is_a?(Hash) ? (#{obj_ruby}.keys.first ? #{obj_ruby}[#{obj_ruby}.keys.first] : nil) : (#{obj_ruby}.respond_to?(:first) ? #{obj_ruby}.first : nil)))"
+          if is_complex
+            "((_o = #{obj_ruby}; _o.nil? ? nil : (_o.is_a?(Hash) ? ((p = _o.first) ? \"\#{p[0]}\#{p[1]}\" : nil) : _o.first)))"
+          else
+            "(#{obj_ruby}.nil? ? nil : (#{obj_ruby}.is_a?(Hash) ? ((p = #{obj_ruby}.first) ? \"\#{p[0]}\#{p[1]}\" : nil) : #{obj_ruby}.first))"
+          end
         elsif key_s == "last"
-          "(#{obj_ruby}.nil? ? nil : (#{obj_ruby}.is_a?(Hash) ? (#{obj_ruby}.keys.last ? #{obj_ruby}[#{obj_ruby}.keys.last] : nil) : (#{obj_ruby}.respond_to?(:last) ? #{obj_ruby}.last : nil)))"
+          if is_complex
+            "((_o = #{obj_ruby}; _o.nil? ? nil : _o.last))"
+          else
+            "(#{obj_ruby}.nil? ? nil : #{obj_ruby}.last)"
+          end
         elsif key_s == "empty"
-          "(#{obj_ruby}.nil? ? true : (#{obj_ruby}.is_a?(Hash) ? (#{obj_ruby}.empty?) : (#{obj_ruby}.respond_to?(:empty?) ? #{obj_ruby}.empty? : false)))"
+          if is_complex
+            "((_o = #{obj_ruby}; _o.nil? ? true : (_o.is_a?(Hash) ? (_o.empty?) : _o.respond_to?(:empty?) ? _o.empty? : false)))"
+          else
+            "(#{obj_ruby}.nil? ? true : (#{obj_ruby}.is_a?(Hash) ? (#{obj_ruby}.empty?) : #{obj_ruby}.respond_to?(:empty?) ? #{obj_ruby}.empty? : false))"
+          end
         elsif key_s == "count"
-          "(#{obj_ruby}.nil? ? nil : (#{obj_ruby}.is_a?(Hash) ? (#{obj_ruby}.count) : (#{obj_ruby}.respond_to?(:count) ? #{obj_ruby}.count : nil)))"
+          if is_complex
+            "((_o = #{obj_ruby}; _o.nil? ? nil : _o.count))"
+          else
+            "(#{obj_ruby}.nil? ? nil : #{obj_ruby}.count)"
+          end
         else
           "_H.lp(#{obj_ruby}, #{key_s.inspect})"
         end
