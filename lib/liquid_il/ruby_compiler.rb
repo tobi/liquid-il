@@ -1180,7 +1180,7 @@ module LiquidIL
           "_S.lookup(#{first_var.inspect})"
         end
         if @loop_var_aliases[first_var]
-          # Loop variable is always a Hash — use ultra-fast lookup_hash (no type check)
+          # Loop variable is always a Hash — use lookup_hash (no type check)
           if rest_keys.size == 1
             result = "_H.lh(#{result}, #{rest_keys[0]})"
           else
@@ -1190,7 +1190,6 @@ module LiquidIL
         else
           rest_keys.each { |k| result = "_H.lookup(#{result}, #{k})" }
         end
-        result
         result
       end
     end
@@ -3094,8 +3093,9 @@ module LiquidIL
       if RuntimeHelpers::SPECIAL_KEYS[key_s]
         "_H.lp(#{obj_ruby}, #{key_s.inspect})"
       elsif obj_ruby.match?(LOOP_VAR_RE)
-        # Loop variable is always a Hash — use ultra-fast lookup_hash (no type check)
-        "_H.lh(#{obj_ruby}, #{key_s.inspect})"
+        # Loop variable is always a Hash — inline the hash lookup directly
+        # Uses semicolon in parentheses for assignment + conditional (valid Ruby expression)
+        "(_v = #{obj_ruby}[#{key_s.inspect}]; _v.nil? && !#{obj_ruby}.key?(#{key_s.inspect}) ? #{obj_ruby}[#{key_s.to_sym.inspect}] : _v)"
       else
         "_H.lf(#{obj_ruby}, #{key_s.inspect})"
       end
