@@ -427,16 +427,24 @@ module LiquidIL
     # Cache for indented partial body with assign key replacements
     @@indent_partial_body_cache = {}
 
-    def indent_partial_body(body, spaces, assign_keys: [])
+    def indent_partial_body(body, spaces, assign_keys: [], arg_expressions: nil)
       indent = " " * spaces
-      cache_key = [body.hash, assign_keys.sort, spaces]
+      cache_key = [body.hash, assign_keys.sort, spaces, arg_expressions&.hash]
       return @@indent_partial_body_cache[cache_key] if @@indent_partial_body_cache.key?(cache_key)
 
       # Replace _S with __partial_scope__ to avoid closure issues
       body = body.gsub("_S", "__partial_scope__")
-      # For inlined isolated partials, replace __partial_scope__.lookup(key) with direct hash access for known assigns
-      # This avoids method call overhead (~85ns) and replaces with direct hash lookup (~15ns)
-      if assign_keys.length > 0
+      # For inlined isolated partials, replace __partial_scope__.lookup(key) with direct access
+      if arg_expressions
+        # Use temp variables instead of __partial_args__ hash — eliminates hash overhead
+        assign_keys.each do |key|
+          if arg_expressions[key]
+            temp_var = "__p_#{key}__"
+            body = body.gsub("__partial_args__[#{key.inspect}]", temp_var)
+            body = body.gsub("__partial_scope__.lookup(#{key.inspect})", temp_var)
+          end
+        end
+      elsif assign_keys.length > 0
         assign_keys.each do |key|
           body = body.gsub("__partial_scope__.lookup(#{key.inspect})", "__partial_args__[#{key.inspect}]")
         end
@@ -950,6 +958,15 @@ module LiquidIL
       code = String.new
       code << "#{prefix}# #{tag_type} '#{name}'\n"
 
+      # Handle with/for expressions
+      with_expr = args["__with__"]
+      for_expr = args["__for__"]
+      as_alias = args["__as__"]
+      item_var = as_alias || name
+
+      # Check if we can inline this partial (affects arg generation)
+      inline_partial = isolated && partial_inlinable?(name) && !for_expr && !with_expr
+
       # Handle include being disabled inside render context
       unless isolated
         code << "#{prefix}if _S.disable_include\n"
@@ -959,37 +976,43 @@ module LiquidIL
       end
 
       # Build argument setup code
-      code << "#{prefix}__partial_args__ = {}\n"
-
-      # Handle with/for expressions
-      with_expr = args["__with__"]
-      for_expr = args["__for__"]
-      as_alias = args["__as__"]
-      item_var = as_alias || name
-
-      # IMPORTANT: Lookup with_expr value BEFORE processing keyword args!
-      # Keyword args can modify the scope (e.g., "include 'font' with multiplier: 1.5"
-      # where 'multiplier' exists in outer scope). We need the original value.
+      # For inlined partials, use temp variables instead of __partial_args__ hash
+      # IMPORTANT: For include, lookup with_expr value BEFORE processing keyword args!
       if with_expr && !isolated
         expr = generate_var_lookup(with_expr)
         code << "#{prefix}__with_val__ = #{expr}\n"
       end
 
-      # Regular named arguments
-      args.each do |k, v|
-        next if k.start_with?("__")
-        if v.is_a?(Hash) && v[:__var__]
-          var_path = v[:__var__]
-          expr = var_path.is_a?(Array) ? generate_var_lookup(var_path[0]) : generate_var_lookup(var_path)
-          code << "#{prefix}__partial_args__[#{k.inspect}] = #{expr}\n"
-          # For include, also assign to current scope
-          unless isolated
-            code << "#{prefix}_S.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
+      if inline_partial
+        # Collect arg expressions for inlining with temp variables
+        arg_expressions = {}
+        args.each do |k, v|
+          next if k.start_with?("__")
+          if v.is_a?(Hash) && v[:__var__]
+            var_path = v[:__var__]
+            arg_expressions[k] = var_path.is_a?(Array) ? generate_var_lookup(var_path[0]) : generate_var_lookup(var_path)
+          else
+            arg_expressions[k] = v.inspect
           end
-        else
-          code << "#{prefix}__partial_args__[#{k.inspect}] = #{v.inspect}\n"
-          unless isolated
-            code << "#{prefix}_S.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
+        end
+      else
+        code << "#{prefix}__partial_args__ = {}\n"
+        # Regular named arguments
+        args.each do |k, v|
+          next if k.start_with?("__")
+          if v.is_a?(Hash) && v[:__var__]
+            var_path = v[:__var__]
+            expr = var_path.is_a?(Array) ? generate_var_lookup(var_path[0]) : generate_var_lookup(var_path)
+            code << "#{prefix}__partial_args__[#{k.inspect}] = #{expr}\n"
+            # For include, also assign to current scope
+            unless isolated
+              code << "#{prefix}_S.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
+            end
+          else
+            code << "#{prefix}__partial_args__[#{k.inspect}] = #{v.inspect}\n"
+            unless isolated
+              code << "#{prefix}_S.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
+            end
           end
         end
       end
@@ -1059,13 +1082,20 @@ module LiquidIL
       else
         # Simple render
         # For simple isolated partials, inline the body to avoid lambda call overhead
-        if isolated && partial_inlinable?(name)
+        if inline_partial
           info = @partials[name]
-          # Collect assign keys for inlining: replace __partial_scope__.lookup(key) with __partial_args__[key]
-          assign_keys = args.keys.reject { |k| k.start_with?("__") }
-          indented_body = indent_partial_body(info[:compiled_body], indent + 1, assign_keys: assign_keys)
-          # Skip __partial_scope__ creation if the inlined body doesn't reference it
+          # Generate temp variables for each arg (arg_expressions already built above)
+          assign_keys = arg_expressions.keys
+          arg_expressions.each do |k, expr|
+            code << "#{prefix}__p_#{k}__ = #{expr}\n"
+          end
+          indented_body = indent_partial_body(info[:compiled_body], indent + 1, assign_keys: assign_keys, arg_expressions: arg_expressions)
+          # Need __partial_args__ hash for __partial_scope__ creation
           if indented_body.include?("__partial_scope__")
+            code << "#{prefix}__partial_args__ = {}\n"
+            arg_expressions.each do |k, expr|
+              code << "#{prefix}__partial_args__[#{k.inspect}] = __p_#{k}__\n"
+            end
             code << "#{prefix}__partial_scope__ = _S.isolated_with(__partial_args__)\n"
           end
           code << indented_body
