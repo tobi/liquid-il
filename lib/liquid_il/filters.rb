@@ -172,6 +172,9 @@ module LiquidIL
         end
       end
 
+      # Filter methods — made public so RubyCompiler can call them directly without send()
+      public
+
       # --- String filters ---
 
       def append(input, str)

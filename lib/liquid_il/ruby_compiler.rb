@@ -298,7 +298,7 @@ module LiquidIL
       end
       code << "  _H = LiquidIL::RuntimeHelpers\n"
       code << "  _U = LiquidIL::Utils\n"
-      code << "  _F = nil\n"
+      code << "  _F = LiquidIL::Filters\n"
       # Frozen array constants must be declared before partial lambdas
       # (lambdas are closures that capture these variables)
       code << generate_frozen_array_constants
@@ -1326,10 +1326,10 @@ module LiquidIL
           input_ruby = stack.pop || "nil"
           filter_name = inst[1]
           if args.empty?
-            stack << "_H.cf(#{filter_name.inspect}, #{input_ruby}, LiquidIL::EMPTY_ARRAY, _S, _F)"
+            stack << "_F.#{filter_name}(#{input_ruby})"
           else
             args_str = args.join(", ")
-            stack << "_H.cf(#{filter_name.inspect}, #{input_ruby}, [#{args_str}], _S, _F)"
+            stack << "_F.#{filter_name}(#{input_ruby}, #{args_str})"
           end
           @pc += 1
         when IL::JUMP
