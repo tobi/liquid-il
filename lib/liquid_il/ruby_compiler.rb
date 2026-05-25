@@ -1180,11 +1180,11 @@ module LiquidIL
           "_S.lookup(#{first_var.inspect})"
         end
         if @loop_var_aliases[first_var]
-          # Loop variable is always a Hash — use fast path for first property access
+          # Loop variable is always a Hash — use ultra-fast lookup_hash (no type check)
           if rest_keys.size == 1
-            result = "_H.lf(#{result}, #{rest_keys[0]})"
+            result = "_H.lh(#{result}, #{rest_keys[0]})"
           else
-            result = "_H.lf(#{result}, #{rest_keys[0]})"
+            result = "_H.lh(#{result}, #{rest_keys[0]})"
             rest_keys[1..].each { |k| result = "_H.lookup(#{result}, #{k})" }
           end
         else
@@ -3086,10 +3086,16 @@ module LiquidIL
     # Hot path: Hash string key lookup. Falls back to __lookup__ for other types.
     HASH_SPECIAL_KEYS = %w[size length first last].freeze
 
+    # Inline lookup for loop variables (avoids _H.lf method call + is_a? check)
+    LOOP_VAR_RE = /\A_i\d+__\z/
+
     def inline_lookup(obj_ruby, key)
       key_s = key.to_s
       if RuntimeHelpers::SPECIAL_KEYS[key_s]
         "_H.lp(#{obj_ruby}, #{key_s.inspect})"
+      elsif obj_ruby.match?(LOOP_VAR_RE)
+        # Loop variable is always a Hash — use ultra-fast lookup_hash (no type check)
+        "_H.lh(#{obj_ruby}, #{key_s.inspect})"
       else
         "_H.lf(#{obj_ruby}, #{key_s.inspect})"
       end

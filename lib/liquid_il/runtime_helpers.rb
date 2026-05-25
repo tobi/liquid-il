@@ -43,6 +43,13 @@ module LiquidIL
       end
     end
 
+    # Ultra-fast hash lookup — assumes obj is a Hash (no type check)
+    # Used for loop variables which are always Hash elements of an Array
+    def self.lh(obj, key)
+      v = obj[key]
+      v.nil? && !obj.key?(key) ? obj[key.to_sym] : v
+    end
+
     # Pre-built frozen string table for small integers (0-999) — avoids Integer#to_s allocation
     INT_TO_S = Array.new(1000) { |i| i.to_s.freeze }.freeze
 
