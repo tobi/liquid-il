@@ -340,6 +340,17 @@ module LiquidIL
       end
     end
 
+          # Check if a partial is safe for inlining (no complex features that need lambda wrapper)
+    def partial_inlinable?(name)
+      info = @partials[name] || {}
+      return false unless info[:compiled_body]
+      # Must not use cycles, captures, or ifchanged (these need state in lambda)
+      return false if info[:uses_cycles] || info[:uses_captures] || info[:uses_ifchanged]
+      # Must not be recursive or have syntax errors
+      return false if info[:recursive] || info[:syntax_error]
+      true
+    end
+
     # Generate lambda definitions for compiled partials
     def generate_partial_lambdas
       return "" if @partials.empty?
@@ -1030,7 +1041,14 @@ module LiquidIL
         end
       else
         # Simple render
-        code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
+        # For simple isolated partials, inline the body to avoid lambda call overhead
+        if isolated && partial_inlinable?(name)
+          info = @partials[name]
+          code << "#{prefix}__partial_scope__ = _S.isolated_with(__partial_args__)\n"
+          code << indent_partial_body(info[:compiled_body], indent + 1)
+        else
+          code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
+        end
       end
 
       # After include: propagate interrupts (break/continue) from partial to caller's loop
