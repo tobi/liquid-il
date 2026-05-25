@@ -3077,11 +3077,13 @@ module LiquidIL
     # Returns code that appends the expression value to _O
     # Patterns known to always return String — safe to skip output_append type dispatch
     STRING_RETURN_SUFFIXES = /\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|reverse|gsub|sub|tr|squeeze|delete|chomp|chop|encode|freeze)\z/
+    # Direct filter calls that always return String — safe to skip output_append type dispatch
+    STRING_FILTER_CALL = /\A_F\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|append|prepend|concat|join|handleize|escape|xml_escape|url_encode|url_decode|newline_to_br|truncate|truncatewords|base64_encode|base64_url_safe_encode|json)\(/
     STRING_RETURN_PATTERNS = /\A(?:\+?""|_U\.to_s\(|CGI\.escapeHTML\(|\("[^"]*"\s*\+\s*)/
 
     def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
       # When expression is known to return a String, skip the oa type dispatch
-      direct = expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS)
+      direct = expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)
       if guard_interrupt
         if direct
           "#{prefix}_O << (#{expr_ruby}) unless _S.has_interrupt?\n"
