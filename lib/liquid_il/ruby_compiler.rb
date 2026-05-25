@@ -1208,9 +1208,16 @@ module LiquidIL
           "_S.lookup(#{first_var.inspect})"
         end
         if @loop_var_aliases[first_var]
-          # Loop variable is always a Hash — use lookup_hash (no type check)
+          # Loop variable is always a Hash — inline lookup_hash for speed
           if rest_keys.size == 1
-            result = "_H.lh(#{result}, #{rest_keys[0]})"
+            key = rest_keys[0]
+            # Inline: (_lh = obj[key]; _lh.nil? && !obj.key?(key) ? obj[key.to_sym] : _lh)
+            if key.is_a?(String)
+              sym_key = key.to_sym.inspect  # e.g., "\"badge\"" -> ":badge"
+              result = "(_lh = #{result}[#{key}]; _lh.nil? && !#{result}.key?(#{key}) ? #{result}[#{sym_key}] : _lh)"
+            else
+              result = "#{result}[#{key}]"
+            end
           else
             result = "_H.lh(#{result}, #{rest_keys[0]})"
             rest_keys[1..].each { |k| result = "_H.lookup(#{result}, #{k})" }
