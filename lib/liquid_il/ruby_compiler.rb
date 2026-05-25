@@ -263,7 +263,7 @@ module LiquidIL
 
     # Generate Ruby code from IL
     def generate_ruby
-      # Scan for partials + detect feature flags in a single pass
+      # Scan for partials only (compile them first)
       @uses_cycles = false
       @uses_captures = false
       @uses_ifchanged = false
@@ -271,22 +271,13 @@ module LiquidIL
       @instructions.each do |i|
         case i[0]
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
-          # Always set cycles flag for partial instructions (even if dynamic/skipped)
           @uses_cycles = true
           name = i[1]
           args = i[2] || {}
-          # Skip dynamic/invalid/no-fs partials (handled at codegen)
           next if args["__dynamic_name__"] || args["__invalid_name__"]
           next unless @context&.file_system
           next if @partials[name]
-          # compile_partial will raise if mutual recursion detected
           compile_partial(name)
-        when IL::CYCLE_STEP, IL::CYCLE_STEP_VAR, IL::CONST_INCLUDE, IL::CONST_RENDER
-          @uses_cycles = true
-        when IL::PUSH_CAPTURE
-          @uses_captures = true
-        when IL::IFCHANGED_CHECK
-          @uses_ifchanged = true
         end
       end
 
@@ -295,7 +286,7 @@ module LiquidIL
 
       # Generate partials + body first so frozen array constants are registered
       partial_code = generate_partial_lambdas
-      body_code = generate_body
+      body_code = generate_body  # also sets @uses_cycles, @uses_captures, @uses_ifchanged
 
       code = String.new
       has_pc = !@partial_constants.empty?
@@ -510,6 +501,13 @@ module LiquidIL
             code << "\n"
           end
         else
+          # Detect feature flags during codegen (avoids separate scan pass)
+          case inst[0]
+          when IL::PUSH_CAPTURE
+            @uses_captures = true
+          when IL::IFCHANGED_CHECK
+            @uses_ifchanged = true
+          end
           # Complex cases or unrecognized - delegate
           result = generate_statement(1)
           break if result.nil?
