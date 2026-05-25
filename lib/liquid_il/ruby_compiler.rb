@@ -1061,10 +1061,14 @@ module LiquidIL
         # For simple isolated partials, inline the body to avoid lambda call overhead
         if isolated && partial_inlinable?(name)
           info = @partials[name]
-          code << "#{prefix}__partial_scope__ = _S.isolated_with(__partial_args__)\n"
           # Collect assign keys for inlining: replace __partial_scope__.lookup(key) with __partial_args__[key]
           assign_keys = args.keys.reject { |k| k.start_with?("__") }
-          code << indent_partial_body(info[:compiled_body], indent + 1, assign_keys: assign_keys)
+          indented_body = indent_partial_body(info[:compiled_body], indent + 1, assign_keys: assign_keys)
+          # Skip __partial_scope__ creation if the inlined body doesn't reference it
+          if indented_body.include?("__partial_scope__")
+            code << "#{prefix}__partial_scope__ = _S.isolated_with(__partial_args__)\n"
+          end
+          code << indented_body
         else
           code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
         end
