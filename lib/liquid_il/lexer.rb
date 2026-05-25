@@ -171,18 +171,18 @@ module LiquidIL
       @_needs_lstrip = @trim_next
       @trim_next = false
 
-      # Scan byte-by-byte looking for '{' followed by '{' or '%'
-      pos = start_pos
+      # Fast path: use String#index (C implementation) to skip to '{' positions
+      # instead of byte-by-byte scanning in Ruby
+      pos = @source_bytes  # Default: no delimiter found, raw to end
       src = @source
-      limit = @source_bytes
-      while pos < limit
-        if src.getbyte(pos) == 123  # '{'
-          b1 = src.getbyte(pos + 1)
-          if b1 == 123 || b1 == 37  # '{' or '%'
-            break
-          end
+      search_from = start_pos
+      while (brace_pos = src.index("{", search_from))
+        search_from = brace_pos + 1
+        b1 = src.getbyte(brace_pos + 1)
+        if b1 == 123 || b1 == 37  # '{' or '%'
+          pos = brace_pos
+          break
         end
-        pos += 1
       end
 
       @scanner.pos = pos
