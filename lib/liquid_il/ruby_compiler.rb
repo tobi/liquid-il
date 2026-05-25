@@ -503,6 +503,8 @@ module LiquidIL
         else
           # Detect feature flags during codegen (avoids separate scan pass)
           case inst[0]
+          when IL::CYCLE_STEP, IL::CYCLE_STEP_VAR, IL::CONST_INCLUDE, IL::CONST_RENDER
+            @uses_cycles = true
           when IL::PUSH_CAPTURE
             @uses_captures = true
           when IL::IFCHANGED_CHECK
