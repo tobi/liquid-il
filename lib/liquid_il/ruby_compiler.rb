@@ -1160,15 +1160,37 @@ module LiquidIL
       return "nil" if parts.empty?
 
       if parts.size == 1
-        "_S.lookup(#{parts[0][0].inspect})"
+        first_var = parts[0][0]
+        # Use loop variable alias if available (avoids _S.lookup method call)
+        if @loop_var_aliases[first_var]
+          @loop_var_aliases[first_var]
+        else
+          "_S.lookup(#{first_var.inspect})"
+        end
       else
         first_var = parts[0][0]
         rest_keys = parts[1..].map do |match|
           key = match[0] || match[1] || match[2]
           key.to_s =~ /^\d+$/ ? key.to_i : key.inspect
         end
-        result = "_S.lookup(#{first_var.inspect})"
-        rest_keys.each { |k| result = "_H.lookup(#{result}, #{k})" }
+        # Use loop variable alias if available
+        result = if @loop_var_aliases[first_var]
+          @loop_var_aliases[first_var]
+        else
+          "_S.lookup(#{first_var.inspect})"
+        end
+        if @loop_var_aliases[first_var]
+          # Loop variable is always a Hash — use fast path for first property access
+          if rest_keys.size == 1
+            result = "_H.lf(#{result}, #{rest_keys[0]})"
+          else
+            result = "_H.lf(#{result}, #{rest_keys[0]})"
+            rest_keys[1..].each { |k| result = "_H.lookup(#{result}, #{k})" }
+          end
+        else
+          rest_keys.each { |k| result = "_H.lookup(#{result}, #{k})" }
+        end
+        result
         result
       end
     end
