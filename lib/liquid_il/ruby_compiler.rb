@@ -3259,19 +3259,27 @@ module LiquidIL
     # Direct filter calls that always return String — safe to skip output_append type dispatch
     STRING_FILTER_CALL = /\A_F\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|append|prepend|concat|join|handleize|escape|xml_escape|url_encode|url_decode|newline_to_br|truncate|truncatewords|base64_encode|base64_url_safe_encode|json)\(/
     STRING_RETURN_PATTERNS = /\A(?:\+?""|_U\.to_s\(|CGI\.escapeHTML\(|\("[^"]*"\s*\+\s*)/
+    # Filters that always return Float/Integer — safe to use .to_s (no BigDecimal issue)
+    SAFE_NUMERIC_FILTERS = /\A_F\.(?:round|ceil|floor)\(/
 
     def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
       # When expression is known to return a String, skip the oa type dispatch
       direct = expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)
+      # For Float/Integer-returning filters, inline .to_s to avoid oa method call overhead
+      numeric_safe = !direct && expr_ruby.match?(SAFE_NUMERIC_FILTERS)
       if guard_interrupt
         if direct
           "#{prefix}_O << (#{expr_ruby}) unless _S.has_interrupt?\n"
+        elsif numeric_safe
+          "#{prefix}_O << (#{expr_ruby}.to_s) unless _S.has_interrupt?\n"
         else
           "#{prefix}_H.oa(_O, #{expr_ruby}) unless _S.has_interrupt?\n"
         end
       else
         if direct
           "#{prefix}_O << (#{expr_ruby})\n"
+        elsif numeric_safe
+          "#{prefix}_O << (#{expr_ruby}.to_s)\n"
         else
           "#{prefix}_H.oa(_O, #{expr_ruby})\n"
         end
