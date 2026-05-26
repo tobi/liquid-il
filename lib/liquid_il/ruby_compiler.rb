@@ -3354,7 +3354,7 @@ module LiquidIL
           # Extract the input expression (before .to_s)
           input_expr = expr_ruby.sub(/\.to_s\.(?:capitalize|upcase|downcase|strip|lstrip|rstrip)\z/, '')
           # Remove trailing .to_s if present
-          cache_pattern = "(#{cache_var} ||= {})[(_v = #{input_expr}.to_s)] ||= _v.#{filter_name}"
+          cache_pattern = "((#{cache_var} ||= {})[(_v = #{input_expr}.to_s)] || (#{cache_var}[_v] = _v.#{filter_name}))"
         end
       end
       direct = cache_pattern || expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)
