@@ -3333,17 +3333,39 @@ module LiquidIL
     SIMPLE_LOOP_LOOKUP = /\A_i\d+__\["\w+"\]\z/
     # Simple loop variable identifier — safe to use .to_s (scalars are most common)
     SIMPLE_LOOP_VAR = /\A_i\d+__\z/
+    # Cache variable name for each simple filter (per-filter result cache)
+    FILTER_CACHE = {
+      'capitalize' => '_CAP__',
+      'upcase' => '_UP__',
+      'downcase' => '_DOWN__',
+      'strip' => '_STRIP__',
+      'lstrip' => '_LSTRIP__',
+      'rstrip' => '_RSTRIP__'
+    }
 
     def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
       # When expression is known to return a String, skip the oa type dispatch
-      direct = expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)
+      # For simple inline filters, use a per-filter cache to avoid repeated method calls
+      # e.g., input.to_s.capitalize -> (_CAP__ ||= {})[(_v = input.to_s)] ||= _v.capitalize
+      cache_pattern = nil
+      if (suffix_m = expr_ruby.match(/\.to_s\.(capitalize|upcase|downcase|strip|lstrip|rstrip)\z/))
+        filter_name = suffix_m[1]
+        if (cache_var = FILTER_CACHE[filter_name])
+          # Extract the input expression (before .to_s)
+          input_expr = expr_ruby.sub(/\.to_s\.(?:capitalize|upcase|downcase|strip|lstrip|rstrip)\z/, '')
+          # Remove trailing .to_s if present
+          cache_pattern = "(#{cache_var} ||= {})[(_v = #{input_expr}.to_s)] ||= _v.#{filter_name}"
+        end
+      end
+      direct = cache_pattern || expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)
       # For Float/Integer-returning filters, inline .to_s to avoid oa method call overhead
       numeric_safe = !direct && expr_ruby.match?(SAFE_NUMERIC_FILTERS)
       # Simple loop variable hash lookups and simple loop vars: use .to_s instead of oa
       simple_loop = !direct && !numeric_safe && (expr_ruby.match?(SIMPLE_LOOP_LOOKUP) || expr_ruby.match?(SIMPLE_LOOP_VAR))
       if guard_interrupt
         if direct
-          "#{prefix}_O << #{expr_ruby} unless _S.has_interrupt?\n"
+          output_expr = cache_pattern || expr_ruby
+          "#{prefix}_O << #{output_expr} unless _S.has_interrupt?\n"
         elsif numeric_safe || simple_loop
           "#{prefix}_O << (#{expr_ruby}.to_s) unless _S.has_interrupt?\n"
         else
@@ -3351,7 +3373,8 @@ module LiquidIL
         end
       else
         if direct
-          "#{prefix}_O << #{expr_ruby}\n"
+          output_expr = cache_pattern || expr_ruby
+          "#{prefix}_O << #{output_expr}\n"
         elsif numeric_safe || simple_loop
           "#{prefix}_O << (#{expr_ruby}.to_s)\n"
         else
