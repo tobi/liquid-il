@@ -1257,6 +1257,7 @@ module LiquidIL
           key = match[0] || match[1] || match[2]
           key.to_s =~ /^\d+$/ ? key.to_i : key.inspect
         end
+        raw_rest_keys = parts[1..].map { |m| (m[0] || m[1] || m[2]).to_s }
         # Use loop variable alias if available
         result = if @loop_var_aliases[first_var]
           @loop_var_aliases[first_var]
@@ -1267,9 +1268,10 @@ module LiquidIL
           # Loop variable is always a Hash — inline lookup_hash for speed
           if rest_keys.size == 1
             key = rest_keys[0]
+            raw_key = raw_rest_keys[0]
             # Inline: (_lh = obj[key]; _lh.nil? && !obj.key?(key) ? obj[key.to_sym] : _lh)
             if key.is_a?(String)
-              sym_key = key.to_sym.inspect  # e.g., "\"badge\"" -> ":badge"
+              sym_key = raw_key.to_sym.inspect  # e.g., "badge" -> :badge
               result = "(_lh = #{result}[#{key}]; _lh.nil? && !#{result}.key?(#{key}) ? #{result}[#{sym_key}] : _lh)"
             else
               result = "#{result}[#{key}]"
