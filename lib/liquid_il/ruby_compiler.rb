@@ -1465,7 +1465,8 @@ module LiquidIL
           # _F.round(input, 2) -> ((_i = input; _i.is_a?(String) ? _i.to_f : (_i || 0)).round(2))
           elsif SAFE_NUMERIC_FILTERS.match?("_F.#{filter_name}(") && args.length > 0
             args_str = args.join(", ")
-            stack << "((_i = #{input_ruby}; _i.is_a?(String) ? _i.to_f : (_i || 0)).#{filter_name}(#{args_str}))"
+            # No outer parens: parenthesized expression already groups the semicolon
+            stack << "(_i = #{input_ruby}; _i.is_a?(String) ? _i.to_f : (_i || 0)).#{filter_name}(#{args_str})"
           elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
             # Inline simple filters: Utils.to_s(input).method -> input.to_s.method
             # No parens needed: method call chain binds tighter than most operators
