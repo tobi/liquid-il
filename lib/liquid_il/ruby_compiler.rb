@@ -1439,7 +1439,7 @@ module LiquidIL
           args = argc > 0 ? stack.pop(argc) : []
           input_ruby = stack.pop || "nil"
           filter_name = inst[1]
-          # Optimization: plus: 0 is identity (x + 0 = x)
+          # Identity optimization: plus: 0 is a no-op (x + 0 = x)
           if filter_name == "plus" && args.length == 1 && args[0] == "0"
             stack << input_ruby
           elsif args.empty?

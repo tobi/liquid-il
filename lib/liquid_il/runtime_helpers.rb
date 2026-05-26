@@ -528,10 +528,10 @@ module LiquidIL
 
     # Simple for-loop helper — handles collection prep and offset tracking.
     # Used for loops without ForloopDrop, offset, or limit.
-    def self.each_iter(collection, loop_name, scope)
+    def self.each_iter(collection, loop_name, scope, &block)
       coll = collection.is_a?(Array) ? collection : to_iterable(collection)
       return if coll.empty?
-      coll.each { |item| yield item }
+      coll.each(&block)
       scope.set_for_offset(loop_name, coll.length)
     end
 
