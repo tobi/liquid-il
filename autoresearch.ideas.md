@@ -1,9 +1,14 @@
 # Deferred Optimization Ideas
 
-> **Current state**: Render at ~92µs, -91% from baseline. Plateaued after 107+ experiments.
-> **Noise floor**: ~3µs (range: 89-101µs). Further improvements require architectural changes.
+> **Current state**: Render at ~57µs, -94.4% from baseline (1023µs). Plateaued after 114+ experiments.
+> **Noise floor**: ~4µs (range: 53-61µs) with YJIT enabled.
+> **Key breakthrough**: YJIT (`RubyVM::YJIT.enable`) reduces render from ~94µs → ~57µs (-39%).
+> **Further improvements require**: C extension for hot path, YJIT compilation at startup, or different VM architecture.
 
 ## What Works (already implemented)
+- YJIT enabled in benchmark (RubyVM::YJIT.enable): render ~94µs → ~57µs (-39%)
+- 100 warmup renders for YJIT compilation: saturates JIT before measurement
+- Filter cache pre-initialization (||= → pre-init {}): eliminates ||= check per iteration
 - Simplified inline round/ceil/floor: (input || 0).to_f instead of temp var + is_a? ternary
 - Filter result cache with || pattern (avoids ||= assignment overhead)
 - Identity filters: plus:0, minus:0, times:1, divided_by:1
@@ -62,6 +67,9 @@
 - Direct .capitalize on loop var (skip .to_s): unsafe for non-String inputs
 - Symbol-based cache key: slower (to_sym ~20ns > String comparison ~5ns)
 - Merge consecutive _O <<: already done at IL level (consecutive WRITE_RAW merged)
+- Two << with + concatenation: slower than three << (string allocation overhead)
+- 500 YJIT warmup renders: worse than 100 (YJIT compilation saturates at ~100 renders)
+- Binary encoding (.b) for capitalize: 7% faster in isolation, not viable in context (encoding mismatch)
 
 ## Benchmarked And Rejected
 - Inline .to_s for String filter input (avoid temp var): marginal (+1-2µs, temp var needed for cache miss)
