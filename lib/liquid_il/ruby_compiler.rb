@@ -3282,11 +3282,7 @@ module LiquidIL
         # For complex expressions, use a temp to avoid repeated evaluation
         is_complex = obj_ruby.length > 20 || !obj_ruby.match?(/\A[a-zA-Z_][a-zA-Z0-9_]*\z/)
         if key_s == "size" || key_s == "length"
-          if is_complex
-            "((_o = #{obj_ruby}; _o&.#{key_s}))"
-          else
-            "(#{obj_ruby}&.#{key_s})"
-          end
+          "(#{obj_ruby}&.#{key_s})"
         elsif key_s == "first"
           if is_complex
             "((_o = #{obj_ruby}; _o.nil? ? nil : (_o.is_a?(Hash) ? ((p = _o.first) ? \"\#{p[0]}\#{p[1]}\" : nil) : _o.first)))"
@@ -3428,13 +3424,13 @@ module LiquidIL
       lines = code.lines
       lookups = []
 
-      # Match inline size/length: (_o = _i0__["tags"]; _o&.size)
-      size_re = /\(_o = (_\w+__\[[\"'][^\"']+['"]\])\s*;\s*_o&\.(size|length)/
+      # Match inline size/length: (_i0__["tags"]&.size) - now uses simple safe nav pattern
+      size_re = /\((_\w+__\[[\"'][^\"']+['"]\])\s*&\.(size|length)\)/
 
       lines.each_with_index do |line, i|
         m = line.match(size_re)
         if m
-          lookups << { lookup: m[1], line: i, indent: line[/\A\s*/], replaced: false }
+          lookups << { lookup: m[1], line: i, prop: m[2], indent: line[/\A\s*/], replaced: false }
         end
       end
 
@@ -3462,7 +3458,7 @@ module LiquidIL
         indent = r[:indent]
         old = lines[r[:line]]
         insert = "#{indent}#{cache} = #{r[:lookup]}\n"
-        new_line = old.sub("(_o = #{r[:lookup]}", "(_o = #{cache}")
+        new_line = old.sub("(#{r[:lookup]}&.", "(#{cache}&.")
         lines[r[:line]] = insert + new_line
       end
 
