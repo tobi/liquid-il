@@ -3333,7 +3333,8 @@ module LiquidIL
     def inline_truthy(expr_ruby)
       # Ruby's if/unless already handles nil and false as falsy, matching Liquid semantics
       # So no need for || false — just use the expression directly
-      if expr_ruby =~ /\A[a-zA-Z_][a-zA-Z0-9_.]*\z/ || expr_ruby =~ /\A__\w+__\z/
+      # Simple expressions: identifier, __var__, or loop_var["key"]
+      if expr_ruby =~ /\A[a-zA-Z_][a-zA-Z0-9_.]*\z/ || expr_ruby =~ /\A__\w+__\z/ || expr_ruby =~ /\A_[a-z]\d+__\["[^"]+"\]\z/
         "(#{expr_ruby})"
       else
         # Complex expression - use _t temp to avoid double evaluation
