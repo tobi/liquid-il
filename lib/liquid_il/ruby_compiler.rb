@@ -2453,10 +2453,12 @@ module LiquidIL
          !reversed && !needs_slicing && !offset_continue && else_code.empty?
         coll_var_name = "__coll#{depth}__"
         idx_var_name = "__i#{depth}__"
+        len_var_name = "__len#{depth}__"
         code << "#{prefix}#{coll_var_name} = #{coll_ruby}\n"
         code << "#{prefix}#{coll_var_name} = _H.ti(#{coll_var_name}) unless #{coll_var_name}.is_a?(Array)\n"
+        code << "#{prefix}#{len_var_name} = #{coll_var_name}.length\n"
         code << "#{prefix}#{idx_var_name} = 0\n"
-        code << "#{prefix}while #{idx_var_name} < #{coll_var_name}.length\n"
+        code << "#{prefix}while #{idx_var_name} < #{len_var_name}\n"
         code << "#{prefix}  #{item_var_internal} = #{coll_var_name}[#{idx_var_name}]\n"
         if @has_resource_limits
           code << "#{prefix}  _S.increment_render_score!\n"
