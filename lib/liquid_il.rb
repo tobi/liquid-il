@@ -155,7 +155,12 @@ module LiquidIL
     # Parse a template string, returning a compiled Template.
     def parse(source, **options)
       options = options.merge(file_system: @file_system) if @file_system && !options.key?(:file_system)
-      Compiler::Ruby.compile(source, context: self, **options)
+      # In-memory compile cache: same source → same result
+      @compile_cache ||= {}
+      return @compile_cache[source] if @compile_cache.key?(source)
+      result = Compiler::Ruby.compile(source, context: self, **options)
+      @compile_cache[source] = result
+      result
     end
 
     # Hash-style access with caching.
@@ -166,6 +171,7 @@ module LiquidIL
 
     def clear_cache
       @cache&.clear
+      @compile_cache&.clear
     end
 
     # One-shot render.
