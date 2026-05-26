@@ -3291,14 +3291,14 @@ module LiquidIL
     end
 
     # Generate an inline truthy check expression (avoids lambda call overhead)
-    # Simple expressions get fully inlined; complex ones use a temp variable
+    # Uses || false to handle nil → false conversion, matching Liquid truthy semantics
     def inline_truthy(expr_ruby)
       # For simple variable/literal references, inline directly
       if expr_ruby =~ /\A[a-zA-Z_][a-zA-Z0-9_.]*\z/ || expr_ruby =~ /\A__\w+__\z/
-        "!(#{expr_ruby}).nil? && #{expr_ruby} != false"
+        "(#{expr_ruby} || false)"
       else
         # Complex expression - use _t temp to avoid double evaluation
-        "((_t = #{expr_ruby}); !_t.nil? && _t != false)"
+        "((_t = #{expr_ruby} || false); _t)"
       end
     end
 
