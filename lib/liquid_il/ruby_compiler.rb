@@ -3340,7 +3340,10 @@ module LiquidIL
       # Ruby's if/unless already handles nil and false as falsy, matching Liquid semantics
       # So no need for || false — just use the expression directly
       # Simple expressions: identifier, __var__, or loop_var["key"]
-      if expr_ruby =~ /\A[a-zA-Z_][a-zA-Z0-9_.]*\z/ || expr_ruby =~ /\A__\w+__\z/ || expr_ruby =~ /\A_[a-z]\d+__\["[^"]+"\]\z/
+      # Boolean expressions: comparisons, logical operators — already produce boolean result
+      is_simple = expr_ruby =~ /\A[a-zA-Z_][a-zA-Z0-9_.]*\z/ || expr_ruby =~ /\A__\w+__\z/ || expr_ruby =~ /\A_[a-z]\d+__\["[^"]+"\]\z/
+      is_boolean = expr_ruby.include?("&&") || expr_ruby.include?("||") || expr_ruby =~ /\)[><]=?\s*\d+\s*\)\z/ || expr_ruby =~ /\)[><]=?\s*\)\z/
+      if is_simple || is_boolean
         "(#{expr_ruby})"
       else
         # Complex expression - use _t temp to avoid double evaluation
