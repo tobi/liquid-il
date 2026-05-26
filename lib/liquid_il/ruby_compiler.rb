@@ -445,9 +445,16 @@ module LiquidIL
         assign_keys.each do |key|
           if arg_expressions[key]
             temp_var = "__p_#{key}__"
-            # Inline .to_s for oa calls with temp variables (avoids method dispatch)
-            body = body.gsub("_H.oa(_O, __partial_args__[#{key.inspect}])", "_O << (#{temp_var}.to_s)")
-            body = body.gsub("_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << (#{temp_var}.to_s)")
+            # For constant String args, skip .to_s (String#to_s returns self)
+            is_const_string = arg_expressions[key].is_a?(String) && arg_expressions[key] =~ /\A".*"\z/
+            if is_const_string
+              body = body.gsub("_H.oa(_O, __partial_args__[#{key.inspect}])", "_O << #{temp_var}")
+              body = body.gsub("_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << #{temp_var}")
+            else
+              # Inline .to_s for oa calls with temp variables (avoids method dispatch)
+              body = body.gsub("_H.oa(_O, __partial_args__[#{key.inspect}])", "_O << (#{temp_var}.to_s)")
+              body = body.gsub("_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << (#{temp_var}.to_s)")
+            end
             body = body.gsub("__partial_args__[#{key.inspect}]", temp_var)
             body = body.gsub("__partial_scope__.lookup(#{key.inspect})", temp_var)
           end
