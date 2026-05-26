@@ -2413,10 +2413,10 @@ module LiquidIL
       needs_error_handling = has_offset || has_limit
       needs_slicing = limit_expr || offset_expr || offset_continue
 
-      # Fast path: simple loops use each_iter helper — no collection prep boilerplate
+      # Fast path: simple loops use direct each — no collection prep boilerplate
       if !needs_forloop && !needs_scope_sync && !needs_catch && !needs_error_handling &&
          !reversed && !needs_slicing && !offset_continue && else_code.empty?
-        code << "#{prefix}_H.each_iter(#{coll_ruby}, #{loop_name.inspect}, _S) do |#{item_var_internal}|\n"
+        code << "#{prefix}#{coll_ruby}.each do |#{item_var_internal}|\n"
         if @has_resource_limits
           code << "#{prefix}  _S.increment_render_score!\n"
           code << "#{prefix}  _S.check_output_limit!(_O)\n"
