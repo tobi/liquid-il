@@ -1,9 +1,12 @@
 # Deferred Optimization Ideas
 
-> **Current state**: Render at ~100µs, -90% from baseline. Plateaued after 60+ experiments.
-> **Noise floor**: ~3µs. Further improvements require architectural changes.
+> **Current state**: Render at ~92µs, -91% from baseline. Plateaued after 107+ experiments.
+> **Noise floor**: ~3µs (range: 89-101µs). Further improvements require architectural changes.
 
 ## What Works (already implemented)
+- Simplified inline round/ceil/floor: (input || 0).to_f instead of temp var + is_a? ternary
+- Filter result cache with || pattern (avoids ||= assignment overhead)
+- Identity filters: plus:0, minus:0, times:1, divided_by:1
 - Inline numeric comparisons (eliminated _H.cmp calls, -58µs)
 - Inline property lookups (eliminated _H.lp calls, -38µs)
 - Simple filter inlining (upcase, downcase → direct calls, -18µs)
@@ -49,7 +52,21 @@
 - **`for` loop**: Syntactic sugar for `each`. Same performance
 - **`times` with array access**: ~10ns per iteration. Slower than `while`
 
+## Benchmarked And Rejected (Final Batch)
+- Remove temp variable from filter cache: worse in real benchmark (+2µs vs -10% in isolation - JIT optimizes away the assignment)
+- Replace each with .each for simple loops (retry with compile cache): worse (+33µs, +640 allocs from block closure)
+- is_a?(String) branch for capitalize cache: worse (+2ms in isolation)
+- Hoist ALL properties at loop start: worse (+1ms in isolation, extra local var assignments)
+- Pre-allocate filter cache with known values: not possible at compile time (types unknown)
+- Use ||= [] instead of _H.ti() for all collections: breaks Hash iteration (test_for_hash)
+- Direct .capitalize on loop var (skip .to_s): unsafe for non-String inputs
+- Symbol-based cache key: slower (to_sym ~20ns > String comparison ~5ns)
+- Merge consecutive _O <<: already done at IL level (consecutive WRITE_RAW merged)
+
 ## Benchmarked And Rejected
+- Inline .to_s for String filter input (avoid temp var): marginal (+1-2µs, temp var needed for cache miss)
+- is_a?(String) branch for capitalize cache: worse (+7ms in isolation, +33µs in benchmark)
+- ||= for _S.lookup() collections: breaks test_for_hash (Hash needs ti() conversion)
 - String fast path in output_append: noise (if check overhead = case dispatch savings)
 - 2-element Array fast path in output_string: noise (length check overhead = map savings)
 - Pre-fill constant args into hash literal: worse (+14µs)
