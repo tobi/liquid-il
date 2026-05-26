@@ -91,7 +91,7 @@ render_cold_allocs_median = render_cold_allocs.sort[render_cold_allocs.length / 
 
 # --- Render warm benchmark (warm first, then measure) ---
 tpl = ctx.parse(template)
-3.times { tpl.render(assigns) }  # warmup
+100.times { tpl.render(assigns) }  # warmup (includes YJIT compilation)
 
 render_warm_times = []
 render_warm_allocs = []
