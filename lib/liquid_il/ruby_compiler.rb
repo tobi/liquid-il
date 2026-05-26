@@ -1454,11 +1454,11 @@ module LiquidIL
           if filter_name == "plus" && args.length == 1 && args[0] == "0"
             stack << input_ruby
           # Inline round/ceil/floor with numeric args: skip _F method dispatch
-          # _F.round(input, 2) -> ((_t = input.is_a?(String) ? input.to_f : (input || 0)).round(2))
+          # Uses temp variable to evaluate input only once
+          # _F.round(input, 2) -> ((_i = input; _i.is_a?(String) ? _i.to_f : (_i || 0)).round(2))
           elsif SAFE_NUMERIC_FILTERS.match?("_F.#{filter_name}(") && args.length > 0
             args_str = args.join(", ")
-            # Simplified to_number: String -> to_f, nil -> 0, else direct
-            stack << "((_t = #{input_ruby}.is_a?(String) ? #{input_ruby}.to_f : (#{input_ruby} || 0)).#{filter_name}(#{args_str}))"
+            stack << "((_i = #{input_ruby}; _i.is_a?(String) ? _i.to_f : (_i || 0)).#{filter_name}(#{args_str}))"
           elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
             # Inline simple filters: Utils.to_s(input).method -> input.to_s.method
             stack << "(#{input_ruby}.to_s.#{filter_name})"
