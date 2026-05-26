@@ -2433,15 +2433,23 @@ module LiquidIL
       needs_error_handling = has_offset || has_limit
       needs_slicing = limit_expr || offset_expr || offset_continue
 
-      # Fast path: simple loops use direct each — no collection prep boilerplate
+      # Fast path: simple loops use direct while loop — no block yield overhead
       if !needs_forloop && !needs_scope_sync && !needs_catch && !needs_error_handling &&
          !reversed && !needs_slicing && !offset_continue && else_code.empty?
-        code << "#{prefix}#{coll_ruby}.each do |#{item_var_internal}|\n"
+        coll_var_name = "__coll#{depth}__"
+        idx_var_name = "__i#{depth}__"
+        code << "#{prefix}#{coll_var_name} = #{coll_ruby}\n"
+        code << "#{prefix}#{coll_var_name} = _H.ti(#{coll_var_name}) unless #{coll_var_name}.is_a?(Array)\n"
+        code << "#{prefix}#{idx_var_name} = 0\n"
+        code << "#{prefix}while #{idx_var_name} < #{coll_var_name}.length\n"
+        code << "#{prefix}  #{item_var_internal} = #{coll_var_name}[#{idx_var_name}]\n"
         if @has_resource_limits
           code << "#{prefix}  _S.increment_render_score!\n"
           code << "#{prefix}  _S.check_output_limit!(_O)\n"
         end
-        code << body_code
+        # body_code is at INDENT[indent+3], needs INDENT[indent+1] (strip 4 spaces)
+        code << body_code.gsub(/^#{Regexp.escape(prefix)}      /, prefix + "  ")
+        code << "#{prefix}  #{idx_var_name} += 1\n"
         code << "#{prefix}end\n"
         @loop_depth -= 1
         return code
