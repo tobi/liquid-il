@@ -1442,6 +1442,9 @@ module LiquidIL
           # Identity optimization: plus: 0 is a no-op (x + 0 = x)
           if filter_name == "plus" && args.length == 1 && args[0] == "0"
             stack << input_ruby
+          elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
+            # Inline simple filters: Utils.to_s(input).method -> input.to_s.method
+            stack << "(#{input_ruby}.to_s.#{filter_name})"
           elsif args.empty?
             stack << "_F.#{filter_name}(#{input_ruby})"
           else
@@ -3255,12 +3258,14 @@ module LiquidIL
     # Generate inline output conversion (avoids __output_string__ lambda call)
     # Returns code that appends the expression value to _O
     # Patterns known to always return String — safe to skip output_append type dispatch
-    STRING_RETURN_SUFFIXES = /\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|reverse|gsub|sub|tr|squeeze|delete|chomp|chop|encode|freeze)\z/
+    STRING_RETURN_SUFFIXES = /\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|to_s\.upcase|to_s\.downcase|to_s\.capitalize|to_s\.strip|to_s\.lstrip|to_s\.rstrip|to_s\.reverse|gsub|sub|tr|squeeze|delete|chomp|chop|encode|freeze)\)?\z/
     # Direct filter calls that always return String — safe to skip output_append type dispatch
     STRING_FILTER_CALL = /\A_F\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|append|prepend|concat|join|handleize|escape|xml_escape|url_encode|url_decode|newline_to_br|truncate|truncatewords|base64_encode|base64_url_safe_encode|json)\(/
     STRING_RETURN_PATTERNS = /\A(?:\+?""|_U\.to_s\(|CGI\.escapeHTML\(|\("[^"]*"\s*\+\s*)/
     # Filters that always return Float/Integer — safe to use .to_s (no BigDecimal issue)
     SAFE_NUMERIC_FILTERS = /\A_F\.(?:round|ceil|floor)\(/
+    # Filters that can be inlined: Utils.to_s(input).method(input) => input.to_s.method
+    INLINE_SIMPLE_FILTERS = {'upcase' => true, 'downcase' => true, 'capitalize' => true, 'strip' => true, 'lstrip' => true, 'rstrip' => true}
     # Simple loop variable hash lookup — safe to use .to_s for output (Arrays are rare as hash values)
     SIMPLE_LOOP_LOOKUP = /\A_i\d+__\["\w+"\]\z/
 
