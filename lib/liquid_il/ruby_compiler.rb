@@ -485,11 +485,17 @@ module LiquidIL
           @pc += 1
           break
         when IL::WRITE_RAW
+          # Merge consecutive WRITE_RAW instructions into single append
+          merged = inst[1]
+          while (@pc + 1) < len && instructions[@pc + 1][0] == IL::WRITE_RAW
+            @pc += 1
+            merged << instructions[@pc][1]
+          end
           @pc += 1
           if interrupt
-            code << "  _O << " << inst[1].inspect << " unless _S.has_interrupt?\n"
+            code << "  _O << " << merged.inspect << " unless _S.has_interrupt?\n"
           else
-            code << "  _O << " << inst[1].inspect << "\n"
+            code << "  _O << " << merged.inspect << "\n"
           end
         when IL::FIND_VAR, IL::FIND_VAR_PATH
           # Needs peek - delegate to generate_statement
