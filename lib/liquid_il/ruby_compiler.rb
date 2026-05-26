@@ -1,11 +1,14 @@
 # frozen_string_literal: true
 
 require_relative "runtime_helpers"
+require_relative "ruby_compiler/expression_helpers"
 
 module LiquidIL
   # Compiles IL to Ruby with native control flow (if/else, each blocks)
   # and direct expressions (no stack). This generates YJIT-friendly code.
   class RubyCompiler
+    include ExpressionHelpers
+
     OUTPUT_CAPACITY = 8192
 
     class CompilationResult
@@ -17,17 +20,6 @@ module LiquidIL
         @can_compile = can_compile
         @partials = partials
         @partial_constants = partial_constants
-      end
-    end
-
-    # Expression node for reconstructed expressions
-    # Using Struct instead of Data.define to avoid Ruby 4.0 segfaults with deep recursion
-    # Expression node — simple class with keyword args (5x faster than keyword Struct)
-    class Expr
-      attr_reader :type, :value, :children, :pc
-      EMPTY = [].freeze
-      def initialize(type:, value: nil, children: EMPTY, pc: nil)
-        @type = type; @value = value; @children = children; @pc = pc
       end
     end
 
@@ -1310,10 +1302,10 @@ module LiquidIL
       end
     end
 
-    # Build an expression tree from IL instructions
-    # Returns [Expr, terminator_type]
+    # Build a Ruby expression directly from IL instructions.
+    # Returns [ruby_source, terminator_type].
     def build_expression
-      # Stack of Ruby strings (not Expr nodes) — saves allocation + avoids expr_to_ruby traversal
+      # Stack of Ruby strings — avoids allocating a second expression tree.
       stack = []
       seen_is_truthy = false
 
@@ -1666,471 +1658,6 @@ module LiquidIL
       [stack.last, :none]
     end
 
-    # Build a single value expression (for limit/offset which are simple values)
-    # This reads one logical value, which may be a single constant or a complete expression
-    def build_single_value_expression
-      inst = @instructions[@pc]
-      return nil if inst.nil?
-
-      case inst[0]
-      when IL::CONST_INT
-        # Check if this is the start of a range (CONST_INT, CONST_INT|CONST_FLOAT, NEW_RANGE)
-        next_inst = @instructions[@pc + 1]
-        next_next = @instructions[@pc + 2]
-        if (next_inst&.[](0) == IL::CONST_INT || next_inst&.[](0) == IL::CONST_FLOAT) && next_next&.[](0) == IL::NEW_RANGE
-          # This is a range - consume all three instructions
-          start_val = inst[1]
-          end_val = next_inst[1]
-          @pc += 3
-          return Expr.new(type: :dynamic_range, children: [
-            Expr.new(type: :literal, value: start_val),
-            Expr.new(type: :literal, value: end_val)
-          ])
-        end
-        @pc += 1
-        Expr.new(type: :literal, value: inst[1])
-      when IL::CONST_FLOAT
-        @pc += 1
-        Expr.new(type: :literal, value: inst[1])
-      when IL::CONST_STRING
-        @pc += 1
-        Expr.new(type: :literal, value: inst[1])
-      when IL::CONST_RANGE
-        @pc += 1
-        Expr.new(type: :range, value: [inst[1], inst[2]])
-      when IL::FIND_VAR
-        # Check if followed by CONST_INT, NEW_RANGE (dynamic range like x..5)
-        next_inst = @instructions[@pc + 1]
-        next_next = @instructions[@pc + 2]
-        if next_inst&.[](0) == IL::CONST_INT && next_next&.[](0) == IL::NEW_RANGE
-          start_expr = Expr.new(type: :var, value: inst[1])
-          end_val = next_inst[1]
-          @pc += 3
-          return Expr.new(type: :dynamic_range, children: [
-            start_expr,
-            Expr.new(type: :literal, value: end_val)
-          ])
-        end
-        # Check if followed by FIND_VAR, NEW_RANGE (dynamic range like x..y)
-        if next_inst&.[](0) == IL::FIND_VAR && next_next&.[](0) == IL::NEW_RANGE
-          start_expr = Expr.new(type: :var, value: inst[1])
-          end_expr = Expr.new(type: :var, value: next_inst[1])
-          @pc += 3
-          return Expr.new(type: :dynamic_range, children: [start_expr, end_expr])
-        end
-        # Check if followed by LOOKUP_CONST_KEY (property access like obj.prop)
-        if next_inst&.[](0) == IL::LOOKUP_CONST_KEY
-          result = Expr.new(type: :var, value: inst[1])
-          @pc += 1
-          # Consume all LOOKUP_CONST_KEY chain (for paths like a.b.c)
-          while @instructions[@pc]&.[](0) == IL::LOOKUP_CONST_KEY
-            key = @instructions[@pc][1]
-            result = Expr.new(type: :lookup, value: key, children: [result])
-            @pc += 1
-          end
-          return result
-        end
-        # Check if followed by CONST_STRING/CONST_INT, LOOKUP_KEY (bracket access like obj["key"])
-        if (next_inst&.[](0) == IL::CONST_STRING || next_inst&.[](0) == IL::CONST_INT) && next_next&.[](0) == IL::LOOKUP_KEY
-          obj_expr = Expr.new(type: :var, value: inst[1])
-          key_expr = Expr.new(type: :literal, value: next_inst[1])
-          @pc += 3  # Consume FIND_VAR, CONST_*, LOOKUP_KEY
-          return Expr.new(type: :bracket_lookup, children: [obj_expr, key_expr])
-        end
-        # Simple variable lookup - just consume this one instruction
-        # Don't use full build_expression which would consume subsequent FIND_VARs
-        @pc += 1
-        Expr.new(type: :var, value: inst[1])
-      when IL::FIND_VAR_PATH
-        @pc += 1
-        Expr.new(type: :var_path, value: inst[1], children: inst[2].map { |k| Expr.new(type: :literal, value: k) })
-      when IL::LOAD_TEMP
-        @pc += 1
-        Expr.new(type: :temp, value: inst[1])
-      else
-        # For complex expressions, use full builder
-        expr, _ = build_expression
-        expr
-      end
-    end
-
-    # Build a complete OR operand expression starting from a FIND_VAR
-    # Handles: simple var, var with comparison (var == val), or nested AND
-    # Returns the expression or nil if we should stop collecting
-    def build_or_operand(var_name)
-      # Start with the variable
-      expr = Expr.new(type: :var, value: var_name)
-      @pc += 1
-
-      # Look ahead to see what follows
-      next_inst = @instructions[@pc]
-      return nil if next_inst.nil?
-
-      case next_inst[0]
-      when IL::JUMP_IF_TRUE
-        # Check if this is another OR operand (JUMP_IF_TRUE → CONST_TRUE)
-        jit_target = next_inst[1]
-        jit_actual = jit_target
-        while @instructions[jit_actual]&.[](0) == IL::LABEL
-          jit_actual += 1
-        end
-        if @instructions[jit_actual]&.[](0) == IL::CONST_TRUE
-          # Simple variable OR operand
-          @pc += 1 # Skip JUMP_IF_TRUE
-          expr
-        else
-          # Not part of OR chain
-          nil
-        end
-
-      when IL::JUMP_IF_FALSE
-        # This could be a nested AND expression
-        jif_target = next_inst[1]
-        jif_actual = jif_target
-        while @instructions[jif_actual]&.[](0) == IL::LABEL
-          jif_actual += 1
-        end
-        if @instructions[jif_actual]&.[](0) == IL::CONST_FALSE
-          # Nested AND - build it
-          @pc += 1 # Skip JUMP_IF_FALSE
-          and_operands = [expr]
-          while @pc < jif_target
-            and_inst = @instructions[@pc]
-            break if and_inst.nil? || and_inst[0] == IL::JUMP
-            case and_inst[0]
-            when IL::FIND_VAR
-              and_operands << Expr.new(type: :var, value: and_inst[1])
-              @pc += 1
-              if @instructions[@pc]&.[](0) == IL::JUMP_IF_FALSE
-                @pc += 1
-              end
-            when IL::CONST_TRUE
-              and_operands << Expr.new(type: :literal, value: true)
-              @pc += 1
-            when IL::CONST_FALSE
-              and_operands << Expr.new(type: :literal, value: false)
-              @pc += 1
-            when IL::LABEL
-              @pc += 1
-            else
-              @pc += 1
-            end
-          end
-          # Skip JUMP that skips CONST_FALSE
-          if @instructions[@pc]&.[](0) == IL::JUMP
-            @pc = @instructions[@pc][1]
-          end
-          # Build AND tree
-          and_result = and_operands.first
-          and_operands[1..].each do |op|
-            and_result = Expr.new(type: :and, children: [and_result, op])
-          end
-          # Check for trailing CONST_TRUE
-          if @instructions[@pc]&.[](0) == IL::CONST_TRUE
-            @pc += 1
-          end
-          and_result
-        else
-          nil
-        end
-
-      when IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_NIL
-        # Variable followed by constant - likely a comparison (e.g., b == false)
-        # Build the expression: FIND_VAR, CONST_*, COMPARE
-        # We already have the var on expr, now get the constant
-        const_expr = case next_inst[0]
-        when IL::CONST_TRUE then Expr.new(type: :literal, value: true)
-        when IL::CONST_FALSE then Expr.new(type: :literal, value: false)
-        when IL::CONST_INT then Expr.new(type: :literal, value: next_inst[1])
-        when IL::CONST_FLOAT then Expr.new(type: :literal, value: next_inst[1])
-        when IL::CONST_STRING then Expr.new(type: :literal, value: next_inst[1])
-        when IL::CONST_NIL then Expr.new(type: :literal, value: nil)
-        end
-        @pc += 1
-
-        # Check for COMPARE
-        compare_inst = @instructions[@pc]
-        if compare_inst&.[](0) == IL::COMPARE
-          expr = Expr.new(type: :compare, value: compare_inst[1], children: [expr, const_expr])
-          @pc += 1
-        elsif compare_inst&.[](0) == IL::CONTAINS
-          expr = Expr.new(type: :contains, children: [expr, const_expr])
-          @pc += 1
-        end
-        # Skip JUMP that goes to IS_TRUTHY/CONST_TRUE
-        if @instructions[@pc]&.[](0) == IL::JUMP
-          @pc = @instructions[@pc][1]
-        end
-        expr
-
-      when IL::JUMP
-        # Final operand with trailing JUMP
-        @pc = next_inst[1]
-        expr
-
-      else
-        # Just the variable - final operand
-        expr
-      end
-    end
-
-    # Ruby-string version of build_or_operand
-    def build_or_operand_ruby(var_name)
-      var_ruby = "_S.lookup(#{var_name.inspect})"
-      @pc += 1
-
-      next_inst = @instructions[@pc]
-      return nil if next_inst.nil?
-
-      case next_inst[0]
-      when IL::JUMP_IF_TRUE
-        jit_target = next_inst[1]
-        jit_actual = jit_target
-        while @instructions[jit_actual]&.[](0) == IL::LABEL
-          jit_actual += 1
-        end
-        if @instructions[jit_actual]&.[](0) == IL::CONST_TRUE
-          @pc += 1
-          var_ruby
-        else
-          nil
-        end
-      when IL::JUMP_IF_FALSE
-        jif_target = next_inst[1]
-        jif_actual = jif_target
-        while @instructions[jif_actual]&.[](0) == IL::LABEL
-          jif_actual += 1
-        end
-        if @instructions[jif_actual]&.[](0) == IL::CONST_FALSE
-          @pc += 1
-          and_parts = [var_ruby]
-          while @pc < jif_target
-            and_inst = @instructions[@pc]
-            break if and_inst.nil? || and_inst[0] == IL::JUMP
-            case and_inst[0]
-            when IL::FIND_VAR
-              and_parts << "_S.lookup(#{and_inst[1].inspect})"
-              @pc += 1
-              @pc += 1 if @instructions[@pc]&.[](0) == IL::JUMP_IF_FALSE
-            when IL::CONST_TRUE then and_parts << "true"; @pc += 1
-            when IL::CONST_FALSE then and_parts << "false"; @pc += 1
-            else @pc += 1
-            end
-          end
-          @pc = @instructions[@pc][1] if @instructions[@pc]&.[](0) == IL::JUMP
-          @pc += 1 if @instructions[@pc]&.[](0) == IL::CONST_TRUE
-          and_parts.map { |c| "(#{inline_truthy(c)})" }.join(" && ")
-        else
-          nil
-        end
-      when IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_NIL
-        const_ruby = case next_inst[0]
-        when IL::CONST_TRUE then "true"
-        when IL::CONST_FALSE then "false"
-        when IL::CONST_INT then next_inst[1].inspect
-        when IL::CONST_FLOAT then next_inst[1].inspect
-        when IL::CONST_STRING then next_inst[1].inspect
-        when IL::CONST_NIL then "nil"
-        end
-        @pc += 1
-        compare_inst = @instructions[@pc]
-        if compare_inst&.[](0) == IL::COMPARE
-          cmp_op = compare_inst[1]
-          # Inline numeric comparisons: skip _H.cmp for numeric literals
-          if NUMERIC_COMPARE_OPS.key?(cmp_op) && const_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
-            ruby_op = COMPARE_OPS[cmp_op]
-            if var_ruby.include?("&.size") || var_ruby.include?("&.length")
-              result = "(#{var_ruby} || 0) #{ruby_op} #{const_ruby}"
-            else
-              result = "((_t = #{var_ruby}); _t.is_a?(Numeric) && _t #{ruby_op} #{const_ruby})"
-            end
-          else
-            result = "_H.cmp(#{var_ruby}, #{const_ruby}, #{cmp_op.inspect}, _O, _F)"
-          end
-          @pc += 1
-        elsif compare_inst&.[](0) == IL::CONTAINS
-          result = "_H.ct(#{var_ruby}, #{const_ruby})"
-          @pc += 1
-        else
-          result = var_ruby
-        end
-        @pc = @instructions[@pc][1] if @instructions[@pc]&.[](0) == IL::JUMP
-        result
-      when IL::JUMP
-        @pc = next_inst[1]
-        var_ruby
-      else
-        var_ruby
-      end
-    end
-
-    # Convert expression tree to Ruby code
-    def expr_to_ruby(expr)
-      return "nil" if expr.nil?
-
-      case expr.type
-      when :literal
-        # Handle special Float values (NaN, Infinity)
-        if expr.value.is_a?(Float)
-          if expr.value.nan?
-            "Float::NAN"
-          elsif expr.value.infinite? == 1
-            "Float::INFINITY"
-          elsif expr.value.infinite? == -1
-            "-Float::INFINITY"
-          else
-            expr.value.inspect
-          end
-        else
-          expr.value.inspect
-        end
-      when :var
-        if (alias_var = @loop_var_aliases[expr.value])
-          alias_var
-        else
-          "_S.lookup(#{expr.value.inspect})"
-        end
-      when :var_path
-        generate_var_path_expr(expr.value, expr.children.map { |c| c.value })
-      when :empty
-        "LiquidIL::EmptyLiteral.instance"
-      when :blank
-        "LiquidIL::BlankLiteral.instance"
-      when :range
-        "LiquidIL::RangeValue.new(#{expr.value[0]}, #{expr.value[1]})"
-      when :dynamic_range
-        "LiquidIL::RangeValue.new(#{expr_to_ruby(expr.children[0])}, #{expr_to_ruby(expr.children[1])})"
-      when :lookup
-        obj = expr_to_ruby(expr.children[0])
-        if expr.value # const key
-          inline_lookup(obj, expr.value)
-        else # dynamic key
-          "_H.lookup(#{obj}, #{expr_to_ruby(expr.children[1])})"
-        end
-      when :bracket_lookup
-        # Bracket access obj[key] - stricter semantics than property access
-        obj = expr_to_ruby(expr.children[0])
-        key = expr_to_ruby(expr.children[1])
-        "_H.bl(#{obj}, #{key})"
-      when :command
-        obj = expr_to_ruby(expr.children[0])
-        case expr.value
-        when "size", "length"
-          "((__o__ = #{obj}).respond_to?(:length) ? __o__.length : nil)"
-        when "first"
-          "((__o__ = #{obj}).respond_to?(:first) ? __o__.first : nil)"
-        when "last"
-          "((__o__ = #{obj}).respond_to?(:last) ? __o__.last : nil)"
-        else
-          "_H.lookup(#{obj}, #{expr.value.inspect})"
-        end
-      when :compare
-        left = expr_to_ruby(expr.children[0])
-        right = expr_to_ruby(expr.children[1])
-        op = expr.value
-        # Fast path: when both sides are simple values (not empty/blank/range),
-        # use direct Ruby comparison to avoid the full compare dispatch
-        left_simple = simple_compare_expr?(expr.children[0])
-        right_simple = simple_compare_expr?(expr.children[1])
-        if left_simple && right_simple && (op == :eq || op == :ne)
-          ruby_op = op == :eq ? "==" : "!="
-          "(#{left} #{ruby_op} #{right})"
-        elsif left_simple && right_simple && [:lt, :le, :gt, :ge].include?(op)
-          # Fast path: check if both sides are Numeric and compare directly.
-          # If right is a numeric literal, always inline (left might be non-numeric).
-          # Falls back to full compare for non-numeric (preserves error messages).
-          ruby_op = COMPARE_OPS[op]
-          if right.match?(/\A-?[0-9]+\.?[0-9]*\z/)
-            if left.include?("&.size") || left.include?("&.length")
-              "(#{left} || 0) #{ruby_op} #{right}"
-            else
-              "((_t = #{left}); _t.is_a?(Numeric) && _t #{ruby_op} #{right})"
-            end
-          else
-            "((_cl = #{left}; _cr = #{right}; (_cl.is_a?(Numeric) && _cr.is_a?(Numeric)) ? (_cl #{ruby_op} _cr) : _H.cmp(_cl, _cr, #{op.inspect}, _O, _F)))"
-          end
-        else
-          "_H.cmp(#{left}, #{right}, #{op.inspect}, _O, _F)"
-        end
-      when :contains
-        left = expr_to_ruby(expr.children[0])
-        right = expr_to_ruby(expr.children[1])
-        "_H.ct(#{left}, #{right})"
-      when :not
-        child = expr_to_ruby(expr.children[0])
-        "((_t = #{child}); _t.nil? || _t == false)"
-      when :hash
-        # Build hash from pairs: children = [key1, val1, key2, val2, ...]
-        pairs = []
-        i = 0
-        while i < expr.children.length
-          key = expr_to_ruby(expr.children[i])
-          val = expr_to_ruby(expr.children[i + 1])
-          pairs << "#{key} => #{val}"
-          i += 2
-        end
-        "{#{pairs.join(', ')}}"
-      when :filter
-        input = expr_to_ruby(expr.children[0])
-        args = expr.children[1..].map { |a| expr_to_ruby(a) }
-        # Compute line number from filter's PC for error reporting
-        filter_line = expr.pc ? line_for_pc(expr.pc) : 1
-
-        filter_name = expr.value
-        is_builtin = LiquidIL::Filters.valid_filter_methods[filter_name]
-        custom_info = @context&.custom_filters&.[](filter_name)
-
-        if is_builtin
-          # Built-in filter — try inlining, fall back to fast dispatch
-          inlined = inline_filter(filter_name, input, args)
-          if inlined
-            inlined
-          else
-            emit_filter_dispatch("cff", filter_name, input, args, filter_line)
-          end
-        elsif custom_info
-          if custom_info[:pure]
-            # Pure custom filter — direct call to the module method (no scope overhead)
-            mod_name = custom_info[:module].name || custom_info[:module].inspect
-            if args.empty?
-              "_H.ccf(#{filter_name.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{filter_line})"
-            else
-              "_H.ccf(#{filter_name.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{filter_line})"
-            end
-          else
-            # Impure custom filter — dispatch through ccf with scope access
-            emit_filter_dispatch("ccf", filter_name, input, args, filter_line)
-          end
-        elsif @context&.strict_filters
-          # strict_filters: unknown filter raises at render time
-          "(raise LiquidIL::UndefinedFilter, #{("undefined filter " + filter_name).inspect})"
-        else
-          # Unknown filter — use slow dispatch (cf) which checks at runtime
-          emit_filter_dispatch("cf", filter_name, input, args, filter_line)
-        end
-      when :case_compare
-        left = expr_to_ruby(expr.children[0])
-        right = expr_to_ruby(expr.children[1])
-        "_U.ce?(#{right}, #{left})"
-      when :temp
-        "__temp_#{expr.value}__"
-      when :and
-        left = expr_to_ruby(expr.children[0])
-        right = expr_to_ruby(expr.children[1])
-        "((#{inline_truthy(left)}) && (#{inline_truthy(right)}))"
-      when :or
-        left = expr_to_ruby(expr.children[0])
-        right = expr_to_ruby(expr.children[1])
-        "((#{inline_truthy(left)}) || (#{inline_truthy(right)}))"
-      when :dynamic_var
-        # Indirect variable lookup: {{ [name_var] }} looks up variable by name in name_var
-        name_code = expr_to_ruby(expr.children[0])
-        "_S.lookup((#{name_code}).to_s)"
-      else
-        "nil # unknown expr type: #{expr.type}"
-      end
-    end
-
     # Generate variable path access (a.b.c)
     def generate_var_path_expr(var, path)
       if (alias_var = @loop_var_aliases[var])
@@ -2271,7 +1798,7 @@ module LiquidIL
 
     # Generate for loop body (legacy - called from generate_statement for FOR_INIT at current position)
     def generate_for_loop_body(collection_var, end_pc, indent)
-      generate_for_loop_body_with_expr(Expr.new(type: :var, value: collection_var || "items"), end_pc, indent)
+      generate_for_loop_body_with_expr(ruby_var_reference(collection_var || "items"), end_pc, indent)
     end
 
     # Generate for loop body with expression
@@ -2369,8 +1896,8 @@ module LiquidIL
         end
       end
 
-      # Parse loop body — set up aliases so expr_to_ruby can resolve loop vars
-      # to Ruby locals instead of _S.lookup() calls
+      # Parse loop body — set up aliases so expression lowering can resolve
+      # loop vars to Ruby locals instead of _S.lookup() calls.
       saved_aliases = {}
       alias_names = { item_var => "_i#{depth}__", "forloop" => "_fl#{depth}__" }
       alias_names.each do |liq_var, ruby_var|
@@ -2523,7 +2050,7 @@ module LiquidIL
       if offset_continue
         code << "#{inner_prefix}#{offset_var} = _S.for_offset(#{loop_name.inspect})\n"
       elsif offset_expr
-        offset_ruby = offset_expr.is_a?(String) ? offset_expr : expr_to_ruby(offset_expr)
+        offset_ruby = offset_expr
         if has_offset
           code << "#{inner_prefix}_ov#{depth}__ = #{offset_ruby}\n"
           code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.vi(_ov#{depth}__)\n"
@@ -2537,7 +2064,7 @@ module LiquidIL
 
       needs_slicing = limit_expr || offset_expr || offset_continue
       if limit_expr
-        limit_ruby = limit_expr.is_a?(String) ? limit_expr : expr_to_ruby(limit_expr)
+        limit_ruby = limit_expr
         if has_limit
           code << "#{inner_prefix}_lv#{depth}__ = #{limit_ruby}\n"
           code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.vi(_lv#{depth}__)\n"
@@ -2716,7 +2243,7 @@ module LiquidIL
         has_offset = tablerow_init[4]
         cols = tablerow_init[5]
         @pc += 1
-        coll_expr = Expr.new(type: :var, value: "items")
+        coll_expr = ruby_var_reference("items")
       end
 
       # Track loop depth for nested loops
@@ -2806,7 +2333,7 @@ module LiquidIL
       case cols
       when :dynamic
         if cols_expr
-          code << "#{prefix}__cols_val_#{depth}__ = #{cols_expr.is_a?(String) ? cols_expr : expr_to_ruby(cols_expr)}\n"
+          code << "#{prefix}__cols_val_#{depth}__ = #{cols_expr}\n"
           code << "#{prefix}if __cols_val_#{depth}__.nil?\n"
           code << "#{prefix}  #{cols_var} = #{coll_var}.length\n"
           code << "#{prefix}  __cols_explicit_nil_#{depth}__ = true\n"
@@ -2836,7 +2363,7 @@ module LiquidIL
       # Skip all processing if collection is nil/false (no output will be generated anyway)
       if has_offset
         if offset_expr
-          offset_ruby = offset_expr.is_a?(String) ? offset_expr : expr_to_ruby(offset_expr)
+          offset_ruby = offset_expr
           code << "#{prefix}_ov#{depth}__ = #{offset_ruby}\n"
           code << "#{prefix}unless _in#{depth}__\n"
           code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.vi(_ov#{depth}__)\n"
@@ -2852,7 +2379,7 @@ module LiquidIL
       # Skip all processing if collection is nil/false (no output will be generated anyway)
       if has_limit
         if limit_expr
-          limit_ruby = limit_expr.is_a?(String) ? limit_expr : expr_to_ruby(limit_expr)
+          limit_ruby = limit_expr
           code << "#{prefix}_lv#{depth}__ = #{limit_ruby}\n"
           code << "#{prefix}unless _in#{depth}__\n"
           code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.vi(_lv#{depth}__)\n"
@@ -3144,25 +2671,6 @@ module LiquidIL
         code << "  #{name} = #{literal}.freeze\n"
       end
       code
-    end
-
-    # Check if an expression is "simple" for comparison purposes —
-    # i.e., it won't be an empty/blank literal, range, or other special type
-    # that needs the full compare() dispatch.
-    def simple_compare_expr?(expr)
-      case expr.type
-      when :literal
-        # nil literals need full compare (nil comparisons have special semantics)
-        !expr.value.nil?
-      when :var, :var_path, :lookup, :bracket_lookup, :command
-        true  # Variable lookups are almost always simple values
-      when :filter
-        true  # Filter results are always simple values
-      when :dynamic_range, :range, :empty, :blank
-        false  # These need full compare dispatch
-      else
-        false
-      end
     end
 
     def inline_filter(name, input, args)

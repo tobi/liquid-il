@@ -267,8 +267,9 @@ class IseqRoundtripWithPartialsTest < Minitest::Test
     expected = t.render
     data = t.cache_data
 
-    refute_nil data[:partial_constants], "template with partials should have partial_constants"
-
+    # Fully inlined partials do not need external partial constants; non-inlined
+    # partials may still carry them. The cache contract is behavioral: the
+    # restored template must render identically either way.
     restored = LiquidIL::Template.from_cache(**data)
     assert_equal expected, restored.render
   end
