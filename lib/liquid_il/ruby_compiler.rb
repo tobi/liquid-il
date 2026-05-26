@@ -440,6 +440,9 @@ module LiquidIL
         assign_keys.each do |key|
           if arg_expressions[key]
             temp_var = "__p_#{key}__"
+            # Inline .to_s for oa calls with temp variables (avoids method dispatch)
+            body = body.gsub("_H.oa(_O, __partial_args__[#{key.inspect}])", "_O << (#{temp_var}.to_s)")
+            body = body.gsub("_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << (#{temp_var}.to_s)")
             body = body.gsub("__partial_args__[#{key.inspect}]", temp_var)
             body = body.gsub("__partial_scope__.lookup(#{key.inspect})", temp_var)
           end
