@@ -284,9 +284,9 @@ module LiquidIL
       scope.resource_limits = ctx&.resource_limits if ctx&.resource_limits
 
       if @partial_constants
-        @compiled_proc.call(scope, @spans, @source, @partial_constants)
+        @compiled_proc[scope, @spans, @source, @partial_constants]
       else
-        @compiled_proc.call(scope, @spans, @source)
+        @compiled_proc[scope, @spans, @source]
       end
     rescue LiquidIL::ResourceLimitError => e
       raise unless render_errors
