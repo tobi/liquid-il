@@ -3282,7 +3282,7 @@ module LiquidIL
         # For complex expressions, use a temp to avoid repeated evaluation
         is_complex = obj_ruby.length > 20 || !obj_ruby.match?(/\A[a-zA-Z_][a-zA-Z0-9_]*\z/)
         if key_s == "size" || key_s == "length"
-          "(#{obj_ruby}&.#{key_s})"
+          "#{obj_ruby}&.#{key_s}"
         elsif key_s == "first"
           if is_complex
             "((_o = #{obj_ruby}; _o.nil? ? nil : (_o.is_a?(Hash) ? ((p = _o.first) ? \"\#{p[0]}\#{p[1]}\" : nil) : _o.first)))"
@@ -3424,8 +3424,8 @@ module LiquidIL
       lines = code.lines
       lookups = []
 
-      # Match inline size/length: (_i0__["tags"]&.size) - now uses simple safe nav pattern
-      size_re = /\((_\w+__\[[\"'][^\"']+['"]\])\s*&\.(size|length)\)/
+      # Match: _i0__["tags"]&.size or _i0__['tags']&.length
+      size_re = /(_\w+__\[(?:"[^"]+"|'[^"]+')\])\s*&\.(size|length)/
 
       lines.each_with_index do |line, i|
         m = line.match(size_re)
@@ -3438,7 +3438,7 @@ module LiquidIL
       lines.each_with_index do |line, i|
         lookups.each do |r|
           next if r[:replaced] || i <= r[:line]
-          if line.include?("#{r[:lookup]}") && line.include?("__coll")
+          if line.include?(r[:lookup]) && line.include?("__coll")
             r[:replaced] = true
             r[:coll_line] = i
           end
@@ -3448,7 +3448,7 @@ module LiquidIL
       # Apply in reverse to preserve line indices
       lookups.reverse_each do |r|
         next unless r[:replaced]
-        key = r[:lookup][/\"([^\"]+)\"/, 1] || r[:lookup]
+        key = r[:lookup][/"([^"]+)"/, 1] || r[:lookup]
         cache = "_cache_#{key}__"
 
         # Replace in for-loop: __coll1__ = _i0__["tags"] -> __coll1__ = _cache_tags__
@@ -3458,12 +3458,13 @@ module LiquidIL
         indent = r[:indent]
         old = lines[r[:line]]
         insert = "#{indent}#{cache} = #{r[:lookup]}\n"
-        new_line = old.sub("(#{r[:lookup]}&.", "(#{cache}&.")
+        new_line = old.sub(r[:lookup] + "&.", cache + "&.")
         lines[r[:line]] = insert + new_line
       end
 
       lines.join
     end
+
   end
 
   class Compiler
