@@ -311,8 +311,8 @@ module LiquidIL
         code << "proc do |_S, _sp, _ts|\n"
       end
       code << "  _H = LiquidIL::RuntimeHelpers\n"
-      code << "  _U = LiquidIL::Utils\n"
-      code << "  _F = LiquidIL::Filters\n"
+      code << "  _U = LiquidIL::Utils\n" if body_code.include?("_U.") || partial_code.include?("_U.")
+      code << "  _F = LiquidIL::Filters\n" if body_code.include?("_F") || partial_code.include?("_F")
       # Frozen array constants must be declared before partial lambdas
       # (lambdas are closures that capture these variables)
       code << generate_frozen_array_constants
