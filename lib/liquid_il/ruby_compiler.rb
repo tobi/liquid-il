@@ -1468,7 +1468,8 @@ module LiquidIL
             stack << "((_i = #{input_ruby}; _i.is_a?(String) ? _i.to_f : (_i || 0)).#{filter_name}(#{args_str}))"
           elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
             # Inline simple filters: Utils.to_s(input).method -> input.to_s.method
-            stack << "(#{input_ruby}.to_s.#{filter_name})"
+            # No parens needed: method call chain binds tighter than most operators
+            stack << "#{input_ruby}.to_s.#{filter_name}"
           elsif args.empty?
             stack << "_F.#{filter_name}(#{input_ruby})"
           else
@@ -3309,7 +3310,7 @@ module LiquidIL
       simple_loop = !direct && !numeric_safe && expr_ruby.match?(SIMPLE_LOOP_LOOKUP)
       if guard_interrupt
         if direct
-          "#{prefix}_O << (#{expr_ruby}) unless _S.has_interrupt?\n"
+          "#{prefix}_O << #{expr_ruby} unless _S.has_interrupt?\n"
         elsif numeric_safe || simple_loop
           "#{prefix}_O << (#{expr_ruby}.to_s) unless _S.has_interrupt?\n"
         else
@@ -3317,7 +3318,7 @@ module LiquidIL
         end
       else
         if direct
-          "#{prefix}_O << (#{expr_ruby})\n"
+          "#{prefix}_O << #{expr_ruby}\n"
         elsif numeric_safe || simple_loop
           "#{prefix}_O << (#{expr_ruby}.to_s)\n"
         else
