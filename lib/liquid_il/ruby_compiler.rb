@@ -1415,7 +1415,7 @@ module LiquidIL
             if left_ruby.include?("&.size") || left_ruby.include?("&.length") ||
                left_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/) ||
                left_ruby.include?(").round(") || left_ruby.include?(").ceil") || left_ruby.include?(").floor")
-              stack << "((_t = #{left_ruby} || 0); _t #{ruby_op} #{right_ruby})"
+              stack << "(#{left_ruby} || 0) #{ruby_op} #{right_ruby}"
             else
               stack << "((_t = #{left_ruby}); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
             end
@@ -1570,7 +1570,7 @@ module LiquidIL
                     ruby_op = COMPARE_OPS[cmp_op]
                     if left_ruby_inner.include?("&.size") || left_ruby_inner.include?("&.length") ||
                        left_ruby_inner.match?(/\A-?[0-9]+\.?[0-9]*\z/)
-                      stack << "((_t = #{left_ruby_inner} || 0); _t #{ruby_op} #{right_ruby})"
+                      stack << "(#{left_ruby_inner} || 0) #{ruby_op} #{right_ruby}"
                     else
                       stack << "((_t = #{left_ruby_inner}); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
                     end
@@ -1933,7 +1933,7 @@ module LiquidIL
           if NUMERIC_COMPARE_OPS.key?(cmp_op) && const_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
             ruby_op = COMPARE_OPS[cmp_op]
             if var_ruby.include?("&.size") || var_ruby.include?("&.length")
-              result = "((_t = #{var_ruby} || 0); _t #{ruby_op} #{const_ruby})"
+              result = "(#{var_ruby} || 0) #{ruby_op} #{const_ruby}"
             else
               result = "((_t = #{var_ruby}); _t.is_a?(Numeric) && _t #{ruby_op} #{const_ruby})"
             end
@@ -2035,7 +2035,7 @@ module LiquidIL
           ruby_op = COMPARE_OPS[op]
           if right.match?(/\A-?[0-9]+\.?[0-9]*\z/)
             if left.include?("&.size") || left.include?("&.length")
-              "((_t = #{left} || 0); _t #{ruby_op} #{right})"
+              "(#{left} || 0) #{ruby_op} #{right}"
             else
               "((_t = #{left}); _t.is_a?(Numeric) && _t #{ruby_op} #{right})"
             end
