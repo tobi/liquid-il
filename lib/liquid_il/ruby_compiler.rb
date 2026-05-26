@@ -1410,7 +1410,15 @@ module LiquidIL
           # Inline numeric comparisons: skip _H.cmp for numeric literals
           if NUMERIC_COMPARE_OPS.key?(op) && right_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
             ruby_op = COMPARE_OPS[op]
-            stack << "((_t = #{left_ruby}); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+            # For safe expressions (size/length lookups, numeric literals, round/ceil/floor),
+            # use || 0 pattern instead of is_a?(Numeric) check. Saves ~5ns per comparison.
+            if left_ruby.include?("&.size") || left_ruby.include?("&.length") ||
+               left_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/) ||
+               left_ruby.include?(").round(") || left_ruby.include?(").ceil") || left_ruby.include?(").floor")
+              stack << "((_t = #{left_ruby} || 0); _t #{ruby_op} #{right_ruby})"
+            else
+              stack << "((_t = #{left_ruby}); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+            end
           else
             stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, _F)"
           end
@@ -1560,7 +1568,12 @@ module LiquidIL
                   # Inline numeric comparisons: skip _H.cmp for numeric literals
                   if NUMERIC_COMPARE_OPS.key?(cmp_op) && right_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
                     ruby_op = COMPARE_OPS[cmp_op]
-                    stack << "((_t = #{left_ruby_inner}); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+                    if left_ruby_inner.include?("&.size") || left_ruby_inner.include?("&.length") ||
+                       left_ruby_inner.match?(/\A-?[0-9]+\.?[0-9]*\z/)
+                      stack << "((_t = #{left_ruby_inner} || 0); _t #{ruby_op} #{right_ruby})"
+                    else
+                      stack << "((_t = #{left_ruby_inner}); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+                    end
                   else
                     stack << "_H.cmp(#{left_ruby_inner}, #{right_ruby}, #{cmp_op.inspect}, _O, _F)"
                   end
@@ -1919,7 +1932,11 @@ module LiquidIL
           # Inline numeric comparisons: skip _H.cmp for numeric literals
           if NUMERIC_COMPARE_OPS.key?(cmp_op) && const_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
             ruby_op = COMPARE_OPS[cmp_op]
-            result = "((_t = #{var_ruby}); _t.is_a?(Numeric) && _t #{ruby_op} #{const_ruby})"
+            if var_ruby.include?("&.size") || var_ruby.include?("&.length")
+              result = "((_t = #{var_ruby} || 0); _t #{ruby_op} #{const_ruby})"
+            else
+              result = "((_t = #{var_ruby}); _t.is_a?(Numeric) && _t #{ruby_op} #{const_ruby})"
+            end
           else
             result = "_H.cmp(#{var_ruby}, #{const_ruby}, #{cmp_op.inspect}, _O, _F)"
           end
@@ -2017,7 +2034,11 @@ module LiquidIL
           # Falls back to full compare for non-numeric (preserves error messages).
           ruby_op = COMPARE_OPS[op]
           if right.match?(/\A-?[0-9]+\.?[0-9]*\z/)
-            "((_t = #{left}); _t.is_a?(Numeric) && _t #{ruby_op} #{right})"
+            if left.include?("&.size") || left.include?("&.length")
+              "((_t = #{left} || 0); _t #{ruby_op} #{right})"
+            else
+              "((_t = #{left}); _t.is_a?(Numeric) && _t #{ruby_op} #{right})"
+            end
           else
             "((_cl = #{left}; _cr = #{right}; (_cl.is_a?(Numeric) && _cr.is_a?(Numeric)) ? (_cl #{ruby_op} _cr) : _H.cmp(_cl, _cr, #{op.inspect}, _O, _F)))"
           end
