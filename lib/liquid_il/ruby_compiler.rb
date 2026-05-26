@@ -1471,8 +1471,11 @@ module LiquidIL
           args = argc > 0 ? stack.pop(argc) : []
           input_ruby = stack.pop || "nil"
           filter_name = inst[1]
-          # Identity optimization: plus: 0 is a no-op (x + 0 = x)
-          if filter_name == "plus" && args.length == 1 && args[0] == "0"
+          # Identity optimizations: skip filters that are no-ops
+          if (filter_name == "plus" && args.length == 1 && args[0] == "0") ||
+             (filter_name == "minus" && args.length == 1 && args[0] == "0") ||
+             (filter_name == "times" && args.length == 1 && args[0] == "1") ||
+             (filter_name == "divided_by" && args.length == 1 && args[0] == "1")
             stack << input_ruby
           # Inline round/ceil/floor with numeric args: skip _F method dispatch
           # Uses temp variable to evaluate input only once
