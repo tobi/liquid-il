@@ -1107,15 +1107,21 @@ module LiquidIL
         if inline_partial
           info = @partials[name]
           # Generate temp variables for each arg (arg_expressions already built above)
-          assign_keys = arg_expressions.keys
+          # Only generate for args that are actually referenced in the partial body
+          assign_keys = arg_expressions.keys.select do |k|
+            # Check original body patterns (before _S -> __partial_scope__ substitution)
+            info[:compiled_body].include?("_S.lookup(#{k.inspect})") ||
+              info[:compiled_body].include?("__partial_scope__.lookup(#{k.inspect})")
+          end
           arg_expressions.each do |k, expr|
+            next unless assign_keys.include?(k)
             code << "#{prefix}__p_#{k}__ = #{expr}\n"
           end
           indented_body = indent_partial_body(info[:compiled_body], indent + 1, assign_keys: assign_keys, arg_expressions: arg_expressions)
           # Need __partial_args__ hash for __partial_scope__ creation
           if indented_body.include?("__partial_scope__")
             code << "#{prefix}__partial_args__ = {}\n"
-            arg_expressions.each do |k, expr|
+            assign_keys.each do |k|
               code << "#{prefix}__partial_args__[#{k.inspect}] = __p_#{k}__\n"
             end
             code << "#{prefix}__partial_scope__ = _S.isolated_with(__partial_args__)\n"
