@@ -1,6 +1,6 @@
 # Deferred Optimization Ideas
 
-> **Current state**: Render at ~100µs, -90% from baseline. Plateaued after 54+ experiments.
+> **Current state**: Render at ~100µs, -90% from baseline. Plateaued after 60+ experiments.
 > **Noise floor**: ~3µs. Further improvements require architectural changes.
 
 ## What Works (already implemented)
@@ -66,3 +66,8 @@
 - lambda vs proc: same speed within noise
 - size vs length: same speed within noise
 - safe navigation (&.) vs ternary: ~26% faster in isolation, noise in context
+- Remove symbol fallback from inline loop var lookup: noise (loop vars always string-keyed)
+- Conditionally load _U and _F: noise (only saves ~20ns for unused modules)
+- Cache Array#length before while loop: noise (Ruby 4.0 optimizes length heavily)
+- || 0 pattern for safe numeric comparisons: marginal (~1µs, within noise)
+- SIMPLE_LOOP_VAR pattern for loop var output: noise (benchmark already uses inline filters)

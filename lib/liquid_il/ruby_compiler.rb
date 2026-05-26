@@ -322,7 +322,7 @@ module LiquidIL
       code << "  _cst = []\n" if @uses_captures || @uses_ifchanged
       code << "  _ics = {}\n" if @uses_ifchanged
       code << "\n"
-      code << body_code
+      code << optimize_repeated_lookups(body_code)
       code << "\n  _O\n"
       code << "end\n"
       code
@@ -3414,6 +3414,54 @@ module LiquidIL
         @@iseq_cache[key] = bin
         bin
       end
+    end
+
+    # Post-processing: hoist repeated hash lookups into temp variables.
+    # When _i0__["tags"] appears in both a size/length check and a for-loop,
+    # hoist the first lookup to a named temp and reuse it.
+    def optimize_repeated_lookups(code)
+      lines = code.lines
+      lookups = []
+
+      # Match inline size/length: (_o = _i0__["tags"]; _o&.size)
+      size_re = /\(_o = (_\w+__\[[\"'][^\"']+['"]\])\s*;\s*_o&\.(size|length)/
+
+      lines.each_with_index do |line, i|
+        m = line.match(size_re)
+        if m
+          lookups << { lookup: m[1], line: i, indent: line[/\A\s*/], replaced: false }
+        end
+      end
+
+      # Find for-loop collections that reuse the same lookup
+      lines.each_with_index do |line, i|
+        lookups.each do |r|
+          next if r[:replaced] || i <= r[:line]
+          if line.include?("#{r[:lookup]}") && line.include?("__coll")
+            r[:replaced] = true
+            r[:coll_line] = i
+          end
+        end
+      end
+
+      # Apply in reverse to preserve line indices
+      lookups.reverse_each do |r|
+        next unless r[:replaced]
+        key = r[:lookup][/\"([^\"]+)\"/, 1] || r[:lookup]
+        cache = "_cache_#{key}__"
+
+        # Replace in for-loop: __coll1__ = _i0__["tags"] -> __coll1__ = _cache_tags__
+        lines[r[:coll_line]] = lines[r[:coll_line]].sub("= #{r[:lookup]}", "= #{cache}")
+
+        # Insert cache assignment before the if, update the inline lookup
+        indent = r[:indent]
+        old = lines[r[:line]]
+        insert = "#{indent}#{cache} = #{r[:lookup]}\n"
+        new_line = old.sub("(_o = #{r[:lookup]}", "(_o = #{cache}")
+        lines[r[:line]] = insert + new_line
+      end
+
+      lines.join
     end
   end
 
