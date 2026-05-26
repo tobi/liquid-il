@@ -7,6 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ruby -I lib -e '
+begin; RubyVM::YJIT.enable; rescue; end
 require "liquid_il"
 require "objspace"
 
