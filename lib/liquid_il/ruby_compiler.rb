@@ -56,6 +56,8 @@ module LiquidIL
       # Frozen array constants for filter args: { "[\"large\"]" => "_fa0__" }
       @frozen_arrays = {}
       @frozen_array_counter = 0
+      # Track which partials are fully inlined (no lambda call sites)
+      @inlined_partials = Set.new
       # Pre-built partial spans/source objects — injected via binding at eval time
       @partial_constants = {}
     end
@@ -296,9 +298,9 @@ module LiquidIL
       # Ensure shared helpers are initialized (once, at first use)
       RuntimeHelpers.init
 
-      # Generate partials + body first so frozen array constants are registered
-      partial_code = generate_partial_lambdas
-      body_code = generate_body  # also sets @uses_cycles, @uses_captures, @uses_ifchanged
+      # Generate body first so inlining info is available for partial lambdas
+      body_code = generate_body  # also sets @uses_cycles, @uses_captures, @uses_ifchanged, @inlined_partials
+      partial_code = generate_partial_lambdas  # skips lambda body for fully inlined partials
 
       code = String.new
       has_pc = !@partial_constants.empty?
@@ -369,6 +371,9 @@ module LiquidIL
 
       @partials.each do |name, info|
         next if info[:recursive] || info[:syntax_error] || !info[:compiled_body]
+        # Skip generating lambda body if partial is fully inlined
+        # The forward declaration (nil) is already generated above
+        next if @inlined_partials.include?(name)
         lambda_name = partial_lambda_name(name)
         # Store spans/source as pre-built frozen objects in @partial_constants hash.
         # The proc receives _pc (partial constants) and reads from it — zero per-render allocation.
@@ -987,6 +992,7 @@ module LiquidIL
       end
 
       if inline_partial
+        @inlined_partials << name
         # Collect arg expressions for inlining with temp variables
         arg_expressions = {}
         args.each do |k, v|
