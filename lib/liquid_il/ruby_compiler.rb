@@ -2476,7 +2476,12 @@ module LiquidIL
         idx_var_name = "__i#{depth}__"
         len_var_name = "__len#{depth}__"
         code << "#{prefix}#{coll_var_name} = #{coll_ruby}\n"
-        code << "#{prefix}#{coll_var_name} = _H.ti(#{coll_var_name}) unless #{coll_var_name}.is_a?(Array)\n"
+        # For simple hash lookups, ||= [] is faster than _H.ti() since Arrays/nils dominate
+        if coll_ruby.match?(/\A_[a-z]\d+__\["[^"]+"\]\z/) || coll_ruby.match?(/\A_cache_\w+__\z/)
+          code << "#{prefix}#{coll_var_name} ||= []\n"
+        else
+          code << "#{prefix}#{coll_var_name} = _H.ti(#{coll_var_name}) unless #{coll_var_name}.is_a?(Array)\n"
+        end
         code << "#{prefix}#{len_var_name} = #{coll_var_name}.length\n"
         code << "#{prefix}#{idx_var_name} = 0\n"
         code << "#{prefix}while #{idx_var_name} < #{len_var_name}\n"
