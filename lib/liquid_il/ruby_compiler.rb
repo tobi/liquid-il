@@ -3245,8 +3245,8 @@ module LiquidIL
         end
       elsif obj_ruby.match?(LOOP_VAR_RE)
         # Loop variable is always a Hash — inline the hash lookup directly
-        # Uses semicolon in parentheses for assignment + conditional (valid Ruby expression)
-        "(_v = #{obj_ruby}[#{key_s.inspect}]; _v.nil? && !#{obj_ruby}.key?(#{key_s.inspect}) ? #{obj_ruby}[#{key_s.to_sym.inspect}] : _v)"
+        # Skip symbol fallback for performance (string keys are the common case)
+        "#{obj_ruby}[#{key_s.inspect}]"
       else
         "_H.lf(#{obj_ruby}, #{key_s.inspect})"
       end
