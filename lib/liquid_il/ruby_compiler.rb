@@ -3261,9 +3261,9 @@ module LiquidIL
         is_complex = obj_ruby.length > 20 || !obj_ruby.match?(/\A[a-zA-Z_][a-zA-Z0-9_]*\z/)
         if key_s == "size" || key_s == "length"
           if is_complex
-            "((_o = #{obj_ruby}; _o.nil? ? nil : _o.#{key_s}))"
+            "((_o = #{obj_ruby}; _o&.#{key_s}))"
           else
-            "(#{obj_ruby}.nil? ? nil : #{obj_ruby}.#{key_s})"
+            "(#{obj_ruby}&.#{key_s})"
           end
         elsif key_s == "first"
           if is_complex
