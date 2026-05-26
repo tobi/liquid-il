@@ -3330,14 +3330,16 @@ module LiquidIL
     INLINE_SIMPLE_FILTERS = {'upcase' => true, 'downcase' => true, 'capitalize' => true, 'strip' => true, 'lstrip' => true, 'rstrip' => true}
     # Simple loop variable hash lookup — safe to use .to_s for output (Arrays are rare as hash values)
     SIMPLE_LOOP_LOOKUP = /\A_i\d+__\["\w+"\]\z/
+    # Simple loop variable identifier — safe to use .to_s (scalars are most common)
+    SIMPLE_LOOP_VAR = /\A_i\d+__\z/
 
     def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
       # When expression is known to return a String, skip the oa type dispatch
       direct = expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)
       # For Float/Integer-returning filters, inline .to_s to avoid oa method call overhead
       numeric_safe = !direct && expr_ruby.match?(SAFE_NUMERIC_FILTERS)
-      # Simple loop variable hash lookups: use .to_s instead of oa
-      simple_loop = !direct && !numeric_safe && expr_ruby.match?(SIMPLE_LOOP_LOOKUP)
+      # Simple loop variable hash lookups and simple loop vars: use .to_s instead of oa
+      simple_loop = !direct && !numeric_safe && (expr_ruby.match?(SIMPLE_LOOP_LOOKUP) || expr_ruby.match?(SIMPLE_LOOP_VAR))
       if guard_interrupt
         if direct
           "#{prefix}_O << #{expr_ruby} unless _S.has_interrupt?\n"
