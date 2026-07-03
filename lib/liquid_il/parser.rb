@@ -876,8 +876,11 @@ module LiquidIL
 
         @builder.store_temp(case_value_temp) # Store case value
       rescue SyntaxError
-        # Invalid case expression - skip the entire case block without emitting IL
+        # Invalid case expressions are tolerated in lax mode by skipping the case
+        # block. Strict modes must surface syntax errors (including strict2's
+        # bare-bracket rejection) instead of silently swallowing them.
         @case_temp_counter -= 2  # Release temp indices
+        raise if strict?
         skip_to_end_tag('endcase')
         return true # Tag is blank since nothing renders
       end
