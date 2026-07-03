@@ -1,0 +1,18 @@
+# frozen_string_literal: true
+
+# Optional local-only dependencies. Copy this file to Gemfile.local when needed.
+# Gemfile.local is gitignored and is evaluated by Gemfile.
+#
+# Shopify/liquid-vm is private and is intentionally not part of the committed
+# Gemfile/Gemfile.lock. The preferred comparison path is:
+#
+#   bundle exec rake liquid_vm:setup
+#   bundle exec rake liquid_vm:bench
+#
+# If you want `spec/liquid_vm.rb` to work under this repository's normal bundle
+# (for example with `WITH_LIQUID_VM=1 bundle exec rake matrix`), uncomment:
+#
+# liquid_vm_path = ENV.fetch("LIQUID_VM_PATH", "/tmp/liquid-vm")
+# gem "liquid-vm", path: liquid_vm_path if Dir.exist?(liquid_vm_path)
+#
+# Do not commit Gemfile.local or lockfile changes that contain private deps.
