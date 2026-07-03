@@ -55,6 +55,11 @@ module LiquidIL
     def push_scope(scope = {}) = nil
     def pop_scope = nil
 
+    # Return a SelfDrop wrapping this scope for the `self` keyword
+    def self_drop
+      SelfDrop.new(self)
+    end
+
     # Render depth - needed for nested render calls
     def push_render_depth = @depth += 1
     def pop_render_depth; @depth -= 1 if @depth > 0; end
