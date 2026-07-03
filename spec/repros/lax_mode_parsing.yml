@@ -86,3 +86,7 @@ specs:
 - name: lax_mode_leading_dash_expression_noise_renders_blank
   template: "{{ - 'theme.css' - }}"
   expected: ""
+
+- name: lax_mode_filter_inside_parentheses_is_tolerated
+  template: "{% assign foo = ('X' | downcase) %}{{ foo }}"
+  expected: "X"

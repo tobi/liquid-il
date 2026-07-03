@@ -619,7 +619,13 @@ module LiquidIL
         lexer.expect(ExpressionLexer::RPAREN)
         @builder.new_range
       else
-        # Just a grouped expression
+        # Just a grouped expression. Liquid does not allow filters inside
+        # parentheses; strict mode reports that syntax, while lax mode keeps the
+        # valid prefix and skips the malformed parenthesized suffix.
+        if lexer.current == ExpressionLexer::PIPE
+          raise SyntaxError, "but found pipe" if strict?
+          lexer.advance until lexer.current == ExpressionLexer::RPAREN || lexer.current == ExpressionLexer::EOF
+        end
         lexer.expect(ExpressionLexer::RPAREN)
       end
     end
