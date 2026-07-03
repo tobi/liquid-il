@@ -39,8 +39,7 @@
 # Bundler lock (optional - remove if you want to track it)
 # Gemfile.lock
 
-# Local-only adapters and deps (require internal dependencies)
-spec/liquid_vm.rb
+# Local-only deps and generated scratch files
 Gemfile.local
 spec/liquid_ruby_bench.rb
 parsing

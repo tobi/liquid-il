@@ -81,6 +81,7 @@ All benchmarking runs through liquid-spec's harness (GC-disciplined timing, real
 - `rake bench` — liquid-spec's benchmark suite, compared against reference liquid (render + artifact-load geometric means)
 - `rake bench:partials` — the partial-heavy matrix in `specs/partials/` (a local liquid-spec suite; its `expected:` blocks are generated from the reference liquid gem), same comparison
 - `rake bench:cold` — per-stage breakdown of the load pipeline (envelope decode / `load_from_binary` / eval / first render), hard-validated against the reference gem
+- `rake liquid_vm:bench` / `rake bench:liquid_vm` — optional comparison against Shopify/liquid-vm. This private repo is cloned to `/tmp/liquid-vm` by default and skipped by all default tasks; see [docs/liquid_vm.md](docs/liquid_vm.md).
 
 ## Quick Start
 
