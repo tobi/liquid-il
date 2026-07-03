@@ -1643,8 +1643,22 @@ module LiquidIL
                 when IL::CONST_NIL then stack << "nil"; @pc += 1
                 when IL::CONST_EMPTY then stack << "LiquidIL::EmptyLiteral.instance"; @pc += 1
                 when IL::CONST_BLANK then stack << "LiquidIL::BlankLiteral.instance"; @pc += 1
-                when IL::FIND_VAR then stack << "_S.lookup(#{build_inst[1].inspect})"; @pc += 1
-                when IL::FIND_VAR_PATH then stack << generate_var_path_expr(build_inst[1], build_inst[2]); @pc += 1
+                when IL::FIND_VAR
+                  part = "_S.lookup(#{build_inst[1].inspect})"
+                  @pc += 1
+                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
+                    part = build_or_chain_from_left(part)
+                    break unless part
+                  end
+                  stack << part
+                when IL::FIND_VAR_PATH
+                  part = generate_var_path_expr(build_inst[1], build_inst[2])
+                  @pc += 1
+                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
+                    part = build_or_chain_from_left(part)
+                    break unless part
+                  end
+                  stack << part
                 when IL::FIND_SELF then stack << "_S.self_drop"; @pc += 1
                 when IL::LOAD_TEMP then stack << "__temp_#{build_inst[1]}__"; @pc += 1
                 when IL::LOOKUP_CONST_KEY
@@ -1668,11 +1682,23 @@ module LiquidIL
                     stack << "_H.cmp(#{left_ruby_inner}, #{right_ruby}, #{cmp_op.inspect}, _O, #{@current_file_lit.inspect})"
                   end
                   @pc += 1
+                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
+                    part = stack.pop || "false"
+                    part = build_or_chain_from_left(part)
+                    break unless part
+                    stack << part
+                  end
                 when IL::CONTAINS
                   right_ruby = stack.pop || "nil"
                   left_ruby_inner = stack.pop || "nil"
                   stack << "_H.ct(#{left_ruby_inner}, #{right_ruby})"
                   @pc += 1
+                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
+                    part = stack.pop || "false"
+                    part = build_or_chain_from_left(part)
+                    break unless part
+                    stack << part
+                  end
                 when IL::BOOL_NOT
                   operand_ruby = stack.pop || "false"
                   stack << "((_t = #{operand_ruby}); _t.nil? || _t == false)"
@@ -1716,6 +1742,11 @@ module LiquidIL
               when IL::FIND_VAR
                 # Build Ruby string for this OR operand
                 or_ruby = build_or_operand_ruby(build_inst[1])
+                or_operands << or_ruby if or_ruby
+                break unless or_ruby
+              when IL::FIND_VAR_PATH
+                @pc += 1
+                or_ruby = build_or_operand_from_value(generate_var_path_expr(build_inst[1], build_inst[2]))
                 or_operands << or_ruby if or_ruby
                 break unless or_ruby
               when IL::FIND_SELF

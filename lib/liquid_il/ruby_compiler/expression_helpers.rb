@@ -128,15 +128,60 @@ module LiquidIL
         end
       end
 
-      # Build a complete OR operand expression as Ruby source starting from FIND_VAR.
-      # Handles simple vars, comparisons, and nested AND chains without constructing
-      # a separate expression tree.
-      def build_or_operand_ruby(var_name)
-        var_ruby = ruby_var_reference(var_name)
-        @pc += 1
+      # Continue an OR chain when @pc is positioned at JUMP_IF_TRUE and the left
+      # operand Ruby has already been built. This follows the IL jump shape rather
+      # than guessing from adjacent operands: JUMP_IF_TRUE must target CONST_TRUE,
+      # and terminal operands may jump to the expression merge point.
+      def build_or_chain_from_left(left_ruby)
+        operands = [left_ruby]
 
+        while @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
+          jump_target = @instructions[@pc][1]
+          actual_target = jump_target
+          while @instructions[actual_target]&.[](0) == IL::LABEL
+            actual_target += 1
+          end
+          return nil unless @instructions[actual_target]&.[](0) == IL::CONST_TRUE
+
+          @pc += 1
+          inst = @instructions[@pc]
+          return nil if inst.nil?
+
+          operand = case inst[0]
+          when IL::FIND_VAR
+            build_or_operand_ruby(inst[1])
+          when IL::FIND_VAR_PATH
+            @pc += 1
+            build_or_operand_from_value(generate_var_path_expr(inst[1], inst[2]))
+          when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE,
+               IL::CONST_NIL, IL::CONST_EMPTY, IL::CONST_BLANK
+            @pc += 1
+            literal_ruby(inst)
+          else
+            nil
+          end
+          return nil unless operand
+
+          operands << operand
+
+          if @instructions[@pc]&.[](0) == IL::JUMP
+            @pc = @instructions[@pc][1]
+          end
+          if @instructions[@pc]&.[](0) == IL::CONST_TRUE
+            @pc += 1
+            @pc = @instructions[@pc][1] if @instructions[@pc]&.[](0) == IL::JUMP
+          end
+        end
+
+        operands.map { |c| "(#{inline_truthy(c)})" }.join(" || ")
+      end
+
+      # Continue building an OR operand after its first value has been consumed.
+      # Handles simple values, comparisons, and nested AND chains without constructing
+      # a separate expression tree.
+      def build_or_operand_from_value(var_ruby)
         next_inst = @instructions[@pc]
-        return nil if next_inst.nil?
+        return var_ruby if next_inst.nil?
 
         case next_inst[0]
         when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE,
@@ -181,10 +226,43 @@ module LiquidIL
               when IL::FIND_VAR
                 and_parts << ruby_var_reference(and_inst[1])
                 @pc += 1
-                @pc += 1 if @instructions[@pc]&.[](0) == IL::JUMP_IF_FALSE
-              when IL::CONST_TRUE then and_parts << "true"; @pc += 1
-              when IL::CONST_FALSE then and_parts << "false"; @pc += 1
-              else @pc += 1
+              when IL::FIND_VAR_PATH
+                and_parts << generate_var_path_expr(and_inst[1], and_inst[2])
+                @pc += 1
+              when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE,
+                   IL::CONST_NIL, IL::CONST_EMPTY, IL::CONST_BLANK
+                and_parts << literal_ruby(and_inst)
+                @pc += 1
+              when IL::COMPARE
+                right_ruby = and_parts.pop || "nil"
+                left_ruby = and_parts.pop || "nil"
+                cmp_op = and_inst[1]
+                if NUMERIC_COMPARE_OPS.key?(cmp_op) && right_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
+                  ruby_op = COMPARE_OPS[cmp_op]
+                  if left_ruby.include?("&.size") || left_ruby.include?("&.length") ||
+                     left_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
+                    and_parts << "(#{left_ruby} || 0) #{ruby_op} #{right_ruby}"
+                  else
+                    and_parts << "((_t = #{left_ruby}); _t = _t.to_liquid_value; _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+                  end
+                else
+                  and_parts << "_H.cmp(#{left_ruby}, #{right_ruby}, #{cmp_op.inspect}, _O, _F)"
+                end
+                @pc += 1
+              when IL::CONTAINS
+                right_ruby = and_parts.pop || "nil"
+                left_ruby = and_parts.pop || "nil"
+                and_parts << "_H.ct(#{left_ruby}, #{right_ruby})"
+                @pc += 1
+              when IL::JUMP_IF_TRUE
+                part = and_parts.pop || "false"
+                part = build_or_chain_from_left(part)
+                return nil unless part
+                and_parts << part
+              when IL::JUMP_IF_FALSE
+                @pc += 1
+              else
+                @pc += 1
               end
             end
             @pc = @instructions[@pc][1] if @instructions[@pc]&.[](0) == IL::JUMP
@@ -224,6 +302,12 @@ module LiquidIL
         else
           var_ruby
         end
+      end
+
+      # Build a complete OR operand expression as Ruby source starting from FIND_VAR.
+      def build_or_operand_ruby(var_name)
+        @pc += 1
+        build_or_operand_from_value(ruby_var_reference(var_name))
       end
 
     end
