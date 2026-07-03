@@ -532,8 +532,7 @@ module LiquidIL
       end
 
       begin
-        dyn_ctx = LiquidIL::Context.new(file_system: fs)
-        compiled = dyn_ctx.parse(source)
+        compiled = compile_dynamic_partial(source, fs, scope)
         child_scope = isolated ? scope.isolated : scope
         assigns.each { |k, v| child_scope.assign(k, v) }
         child_scope.file_system = fs
@@ -561,6 +560,45 @@ module LiquidIL
         scope.current_file = prev_file
         scope.pop_render_depth
       end
+    end
+
+    # Process-wide cache of dynamically compiled partials. Dynamic partial
+    # names resolve at render time, but the SOURCES are stable — recompiling
+    # per render cost 100-800µs where a cache hit costs ~1µs. Keyed by source
+    # hash; a hit is only valid while the sources of the nested static
+    # partials baked into the compiled body are unchanged (checked against
+    # the caller's file_system, so multi-tenant processes can't serve one
+    # tenant's nested content to another).
+    DYNAMIC_TEMPLATE_CACHE_MAX = 500
+    @dynamic_template_cache = {}
+
+    def self.compile_dynamic_partial(source, fs, scope)
+      key = source.hash
+      entry = @dynamic_template_cache[key]
+      if entry
+        valid = entry[:deps].all? do |dep_name, dep_hash|
+          read_partial_source(fs, dep_name, scope)&.hash == dep_hash
+        end
+        return entry[:template] if valid
+        @dynamic_template_cache.delete(key)
+      end
+
+      dyn_ctx = LiquidIL::Context.new(file_system: fs)
+      template = dyn_ctx.parse(source)
+
+      # Record the direct static-partial dependencies baked into this body
+      deps = {}
+      template.instructions&.each do |inst|
+        next unless inst[0] == LiquidIL::IL::RENDER_PARTIAL || inst[0] == LiquidIL::IL::INCLUDE_PARTIAL
+        args = inst[2] || {}
+        next if args["__dynamic_name__"] || args["__invalid_name__"]
+        dep_source = read_partial_source(fs, inst[1], scope)
+        deps[inst[1]] = dep_source.hash if dep_source
+      end
+
+      @dynamic_template_cache.clear if @dynamic_template_cache.size >= DYNAMIC_TEMPLATE_CACHE_MAX
+      @dynamic_template_cache[key] = { template: template, deps: deps }
+      template
     end
 
     # Simple for-loop helper — handles collection prep and offset tracking.

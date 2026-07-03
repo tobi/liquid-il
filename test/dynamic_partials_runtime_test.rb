@@ -124,3 +124,42 @@ class DynamicPartialsRuntimeTest < Minitest::Test
     assert_instance_of LiquidIL::Scope, fs.contexts["card"].first
   end
 end
+
+# The dynamic-partial compile cache must never serve stale content:
+# keyed by source hash, validated against nested static partial sources.
+class DynamicPartialCompileCacheTest < Minitest::Test
+  class MutableFS
+    attr_accessor :templates
+    def initialize(templates) = @templates = templates
+    def read_template_file(name, _ctx = nil) = @templates[name.to_s]
+  end
+
+  def test_changed_dynamic_source_recompiles
+    fs = MutableFS.new("card" => "v1 {{ x }}")
+    ctx = LiquidIL::Context.new(file_system: fs)
+    t = ctx.parse("{% include tpl %}")
+    assert_equal "v1 A", t.render("tpl" => "card", "x" => "A")
+    fs.templates["card"] = "v2 {{ x }}"
+    assert_equal "v2 A", t.render("tpl" => "card", "x" => "A")
+  end
+
+  def test_changed_nested_static_source_invalidates_cached_dynamic_template
+    fs = MutableFS.new("outer" => "[{% include 'inner' %}]", "inner" => "one")
+    ctx = LiquidIL::Context.new(file_system: fs)
+    t = ctx.parse("{% include tpl %}")
+    assert_equal "[one]", t.render("tpl" => "outer")
+    # outer's source is unchanged, but the nested static partial changed —
+    # the cached compiled template baked "one" in and must be rebuilt
+    fs.templates["inner"] = "two"
+    assert_equal "[two]", t.render("tpl" => "outer")
+  end
+
+  def test_same_source_different_tenants_do_not_leak_nested_content
+    fs_a = MutableFS.new("outer" => "[{% include 'inner' %}]", "inner" => "tenant-a")
+    fs_b = MutableFS.new("outer" => "[{% include 'inner' %}]", "inner" => "tenant-b")
+    a = LiquidIL::Context.new(file_system: fs_a).parse("{% include tpl %}")
+    b = LiquidIL::Context.new(file_system: fs_b).parse("{% include tpl %}")
+    assert_equal "[tenant-a]", a.render("tpl" => "outer")
+    assert_equal "[tenant-b]", b.render("tpl" => "outer")
+  end
+end
