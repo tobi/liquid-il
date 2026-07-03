@@ -204,5 +204,6 @@ end
 LiquidSpec.render do |ctx, assigns, render_options|
   strict_errors = render_options.fetch(:strict_errors, false)
   render_errors = !strict_errors
+  LiquidIL::ShopifyMock.prepare_environment!(assigns)
   ctx[:template].render(assigns, render_errors: render_errors)
 end

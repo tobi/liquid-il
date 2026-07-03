@@ -19,6 +19,23 @@ specs:
 - name: shopify_mock_form_tag_outputs_simple_form_shell
   template: "{% form 'contact' %}<input name=\"contact[email]\">{% endform %}"
   expected: "<form method=\"post\" action=\"/contact#contact_form\" accept-charset=\"UTF-8\"><input type=\"hidden\" name=\"form_type\" value=\"contact\" /><input type=\"hidden\" name=\"utf8\" value=\"✓\" /><input name=\"contact[email]\"></form>"
-- name: shopify_mock_section_and_app_block_render_noop
-  template: "A{% section 'header' %}B{% render block %}C"
-  expected: "ABC"
+- name: shopify_mock_section_tag_renders_sections_file_with_mock_section_drop
+  template: "A{% section 'header' %}B"
+  filesystem:
+    sections/header.liquid: "<h1>{{ section.id }}:{{ section.type }}</h1>"
+  expected: "A<h1>header:header</h1>B"
+- name: shopify_mock_dawn_json_settings_and_blocks_are_merged_into_section
+  template: "{{ section.type }}:{% for block in section.blocks %}[{{ block.id }}={{ block.settings.color_scheme }}/{{ block.settings.text }}]{% endfor %}"
+  environment:
+    section:
+      id: announcement-bar
+      settings: {}
+      blocks:
+      - id: announcement-bar-0
+        type: announcement
+        settings: {}
+        shopify_attributes: ""
+  expected: "announcement-bar:[announcement-bar-0=background-1/Welcome to our store]"
+- name: shopify_mock_app_block_render_noop
+  template: "A{% render block %}B"
+  expected: "AB"

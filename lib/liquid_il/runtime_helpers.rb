@@ -650,6 +650,23 @@ module LiquidIL
       [paginate, items]
     end
 
+    def self.render_shopify_section(name, output, scope, caller_file = nil)
+      return unless defined?(LiquidIL::ShopifyMock)
+
+      fs = scope.file_system
+      return unless fs
+
+      section_name = name.to_s
+      assigns = scope.instance_variable_get(:@static_environments) || {}
+      section = LiquidIL::ShopifyMock.section_drop(section_name, assigns)
+      execute_dynamic_partial("sections/#{section_name}", { "section" => section }, output, scope,
+        isolated: false, tag_type: "section", caller_line: 1)
+    rescue LiquidIL::RuntimeError => e
+      raise unless scope.render_errors
+      location = caller_file ? "#{caller_file} line 1" : "line 1"
+      output << "Liquid error (#{location}): #{e.message}"
+    end
+
     # Regex matching HTML-special characters that need escaping
     NEEDS_ESCAPE_RE = /[&<>"']/
 

@@ -34,5 +34,6 @@ end
 # Render the compiled template (stored in ctx[:template]) with the given assigns.
 LiquidSpec.render do |ctx, assigns, options|
   opts = options || {}
+  LiquidIL::ShopifyMock.prepare_environment!(assigns)
   ctx[:template].render(assigns, **opts)
 end

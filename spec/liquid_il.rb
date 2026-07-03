@@ -88,6 +88,7 @@ LiquidSpec.render do |ctx, assigns, render_options|
   # static_environments (visible inside isolated {% render %} partials),
   # with an empty mutable scope — see Liquid::Context.build in
   # examples/liquid_ruby.rb.
+  LiquidIL::ShopifyMock.prepare_environment!(assigns)
   ctx[:template].render({}, render_errors: render_errors, registers: registers,
     static_environments: assigns, resource_limits: render_options[:resource_limits])
 end

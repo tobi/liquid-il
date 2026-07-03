@@ -943,6 +943,10 @@ module LiquidIL
       when IL::INCLUDE_PARTIAL
         generate_partial_call(inst, @pc, indent, isolated: false)
 
+      when :SHOPIFY_SECTION_RENDER
+        @pc += 1
+        "#{INDENT[indent]}_H.render_shopify_section(#{inst[1].inspect}, _O, _S, #{@current_file_lit.inspect})\n"
+
       when :PAGINATE_SETUP
         @pc += 1
         coll_path = inst[1]
