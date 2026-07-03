@@ -2933,7 +2933,10 @@ module LiquidIL
       # Simple expressions: identifier, __var__, or loop_var["key"]
       # Boolean expressions: comparisons, logical operators — already produce boolean result
       is_simple = expr_ruby =~ /\A[a-zA-Z_][a-zA-Z0-9_.]*\z/ || expr_ruby =~ /\A__\w+__\z/ || expr_ruby =~ /\A_[a-z]\d+__\["[^"]+"\]\z/
-      is_boolean = expr_ruby.include?("&&") || expr_ruby.include?("||") || expr_ruby =~ /\)[><]=?\s*\d+\s*\)\z/ || expr_ruby =~ /\)[><]=?\s*\)\z/
+      is_boolean = expr_ruby.include?("&&") || expr_ruby.include?("||") || expr_ruby =~ /\)[><]=?\s*\d+\s*\)\z/ || expr_ruby =~ /\)[><]=?\s*\)\z/ ||
+        # Runtime helpers that already return a boolean — no truthy wrapper
+        # needed (saves ~80 emitted bytes and two branches per condition)
+        (expr_ruby.end_with?(")") && expr_ruby.start_with?("_H.cmp(", "_U.ce?(", "_H.ct("))
       if is_boolean
         "(#{expr_ruby})"
       elsif is_simple
