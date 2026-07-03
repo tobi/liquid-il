@@ -36,6 +36,15 @@ specs:
         settings: {}
         shopify_attributes: ""
   expected: "announcement-bar:[announcement-bar-0=background-1/Welcome to our store]"
+- name: shopify_mock_content_for_header_includes_compiled_section_javascript
+  template: "{{ content_for_header }}"
+  environment:
+    content_for_header: {}
+    section:
+      id: header
+      settings: {}
+      blocks: []
+  expected: "<script id=\"sections-script\" data-sections=\"header,footer\" defer=\"defer\" src=\"//cdn.shopify.shopify-uh49.marcandre-cournoyer.eu.spin.dev/s/files/1/0000/0001/t/1/assets/sections.js\"></script>\n"
 - name: shopify_mock_app_block_render_noop
   template: "A{% render block %}B"
   expected: "AB"

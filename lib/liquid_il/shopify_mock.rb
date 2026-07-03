@@ -2,6 +2,7 @@
 
 require "cgi"
 require "json"
+require "liquid"
 require "zlib"
 
 module LiquidIL
@@ -36,6 +37,7 @@ module LiquidIL
 
         merge_theme_settings!(assigns)
         enrich_section!(assigns)
+        assigns["content_for_header"] = content_for_header(assigns) unless assigns["content_for_header"].is_a?(String)
         assigns
       end
 
@@ -364,6 +366,57 @@ module LiquidIL
         end
         configs
       end
+    end
+
+    def self.content_for_header(assigns)
+      sections = content_section_configs(assigns)
+      sections_with_js = sections.filter_map do |id, config|
+        type = config["type"] || id
+        type if raw_definition_tag?("sections/#{type}", "javascript")
+      end
+      blocks_with_js = sections.flat_map { |_id, config| content_block_types(config) }
+        .uniq
+        .select { |type| raw_definition_tag?("blocks/#{type}", "javascript") }
+      snippets_with_js = rendered_snippet_names_with("javascript")
+
+      out = +""
+      out << compiled_script_tag("sections-script", "data-sections", sections_with_js, "sections.js") unless sections_with_js.empty?
+      out << compiled_script_tag("blocks-script", "data-blocks", blocks_with_js, "blocks.js") unless blocks_with_js.empty?
+      out << compiled_script_tag("snippets-script", "data-snippets", snippets_with_js, "snippets.js") unless snippets_with_js.empty?
+      out
+    end
+
+    def self.content_section_configs(assigns)
+      sections = settings_sections.map { |id, config| [id, config] }
+      section = assigns["section"]
+      if section.is_a?(Hash) && (config = section_config_for_id(section["id"], assigns))
+        sections << [section["id"].to_s, config]
+      else
+        template_config(template_name_for_assigns(assigns, ""))&.fetch("sections", {})&.each do |id, config|
+          sections << [id, config]
+        end
+      end
+      sections.uniq { |id, _config| id }
+    end
+
+    def self.content_block_types(section_config)
+      (section_config["blocks"] || {}).values.filter_map { |block| block["type"] }
+    end
+
+    def self.rendered_snippet_names_with(tag_name)
+      Dir[File.join(STOREFRONT_DAWN_ROOT, "snippets", "*.liquid")].filter_map do |path|
+        name = File.basename(path, ".liquid")
+        name if raw_definition_tag?("snippets/#{name}", tag_name)
+      end
+    end
+
+    def self.raw_definition_tag?(template_path, tag_name)
+      source = theme_source(template_path)
+      source&.match?(/\{%[-]?\s*#{Regexp.escape(tag_name)}\b/)
+    end
+
+    def self.compiled_script_tag(id, data_attr, names, asset_name)
+      %(<script id="#{id}" #{data_attr}="#{CGI.escapeHTML(names.join(","))}" defer="defer" src="#{CDN_BASE}/#{asset_name}"></script>\n)
     end
 
     def self.load_theme_json(path)
