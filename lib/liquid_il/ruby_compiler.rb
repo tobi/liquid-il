@@ -2837,8 +2837,10 @@ module LiquidIL
           return "(#{input_ruby} || 0).to_f.#{filter_name}(#{args.join(', ')})"
         elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
           # Inline simple filters: Utils.to_s(input).method
-          # Use _U.to_s (not .to_s) to get correct Liquid hash/array stringification
-          return "_U.to_s(#{input_ruby}).#{filter_name}"
+          # Use to_liquid_s (defined on all objects via core_ext) for correct
+          # Liquid drop stringification. For Hash/Array, to_liquid_s uses the
+          # legacy inspect format matching Liquid filter behavior.
+          return "#{input_ruby}.to_liquid_s.#{filter_name}"
         elsif args.empty?
           return "_F.#{filter_name}(#{input_ruby})"
         else
@@ -2908,12 +2910,12 @@ module LiquidIL
       # For simple inline filters, use a per-filter cache to avoid repeated method calls
       # e.g., input.to_s.capitalize -> (_CAP__ ||= {})[(_v = input.to_s)] ||= _v.capitalize
       cache_pattern = nil
-      if (suffix_m = expr_ruby.match(/\._U\.to_s\((.+)\)\.(capitalize|upcase|downcase|strip|lstrip|rstrip)\z/))
-        filter_name = suffix_m[2]
+      if (suffix_m = expr_ruby.match(/\.to_liquid_s\.(capitalize|upcase|downcase|strip|lstrip|rstrip)\z/))
+        filter_name = suffix_m[1]
         if (cache_var = FILTER_CACHE[filter_name])
-          # Extract the input expression (inside _U.to_s(...))
-          input_expr = suffix_m[1]
-          cache_pattern = "(#{cache_var}[(_v = _U.to_s(#{input_expr}))] || (#{cache_var}[_v] = _v.#{filter_name}))"
+          # Extract the input expression (before .to_liquid_s)
+          input_expr = expr_ruby.sub(/\.to_liquid_s\.(?:capitalize|upcase|downcase|strip|lstrip|rstrip)\z/, '')
+          cache_pattern = "(#{cache_var}[(_v = #{input_expr}.to_liquid_s)] || (#{cache_var}[_v] = _v.#{filter_name}))"
         end
       end
       direct = cache_pattern || expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)

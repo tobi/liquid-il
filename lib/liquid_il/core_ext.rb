@@ -58,3 +58,18 @@ end
 class String
   def to_liquid_s; self; end
 end
+
+class Hash
+  def to_liquid_s
+    LiquidIL::Utils.hash_inspect(self)
+  end
+end
+
+class Array
+  # to_liquid_s produces the inspect format (e.g. [1, "two", nil])
+  # matching Liquid's filter stringification behavior.
+  # Direct output rendering joins elements via Utils.output_string.
+  def to_liquid_s
+    LiquidIL::Utils.array_inspect(self)
+  end
+end
