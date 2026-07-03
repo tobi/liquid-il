@@ -301,32 +301,29 @@ module LiquidIL
       when 'ifchanged'
         advance_template
         parse_ifchanged_tag
+      when 'elsif', 'else', 'endif', 'endunless', 'endcase', 'endfor', 'endtablerow', 'endcapture', 'endcomment', 'endraw'
+        # Reference Liquid tolerates unmatched block terminators at top level.
+        advance_template
+        true
       when '#'
         # Inline comment, skip
         advance_template
         true
       else
-        # Check registered custom tags
-        if (tag_def = Tags[tag_name])
+        if tag_name&.start_with?('#')
+          # Inline comment tags do not require whitespace after '#'.
+          advance_template
+          true
+        elsif (tag_def = Tags[tag_name])
           # Raw mode tags must not advance_template — they use the lexer scanner directly
           advance_template unless tag_def.mode == :raw
           parse_registered_tag(tag_def, tag_args)
         else
-          case @error_mode
-          when :strict, :strict2
-            raise SyntaxError.new(
-              "Unknown tag '#{tag_name}'",
-              position: start_pos,
-              source: @source
-            )
-          when :warn
-            @warnings << "Unknown tag '#{tag_name}'"
-            advance_template
-            false
-          else # :lax
-            advance_template
-            false
-          end
+          raise SyntaxError.new(
+            "Unknown tag '#{tag_name}'",
+            position: start_pos,
+            source: @source
+          )
         end
       end.tap { @builder.clear_span }
     end
@@ -638,7 +635,10 @@ module LiquidIL
     end
 
     def parse_filter(lexer)
-      raise SyntaxError, "Expected filter name after '|'" unless lexer.current == ExpressionLexer::IDENTIFIER
+      unless lexer.current == ExpressionLexer::IDENTIFIER
+        return unless strict?
+        raise SyntaxError, "Expected filter name after '|'"
+      end
 
       filter_name = lexer.value
       lexer.advance
@@ -718,9 +718,76 @@ module LiquidIL
 
     # --- Tag implementations ---
 
+    VALID_CONDITION_OPERATORS = %w[== != <> > < >= <= contains and or].freeze
+
+    def unknown_condition_operator(condition_str)
+      return nil if strict2?
+      text = condition_str.to_s.strip
+      # Lax Liquid turns malformed conditional operators into render-time
+      # inline errors for non-blank branches. Detect the common unanchored
+      # operator shape after the first operand without making the lexer
+      # allocate/track skipped junk on every expression.
+      match = text.match(/\A(?:'[^']*'|"[^"]*"|\S+)\s+(\S+)/)
+      op = match&.[](1)
+      return nil unless op
+      return nil if op == '&&' || op == '||'
+      VALID_CONDITION_OPERATORS.include?(op) ? nil : op
+    end
+
+    def parse_condition_expression(condition_str)
+      text = condition_str.to_s.strip
+      if text.start_with?('!')
+        expr_lexer = expr_lexer_for(text.sub(/\A!\s*/, ''))
+        parse_expression(expr_lexer)
+        @builder.bool_not
+      else
+        expr_lexer = expr_lexer_for(condition_str)
+        parse_expression(expr_lexer)
+      end
+    end
+
+    def parse_invalid_condition_block(op)
+      # Reference Liquid reports these lax/recorded conditional operator
+      # recoveries at line 1 regardless of the branch tag's physical line.
+      line = 1
+      has_content = false
+
+      @builder.push_capture
+      end_tag, body_blank, _body_raws = parse_block_body(%w[elsif else endif])
+      @builder.pop_capture
+      @builder.pop
+      has_content ||= !body_blank
+
+      while end_tag == 'elsif'
+        advance_template
+        @builder.push_capture
+        end_tag, branch_blank, _branch_raws = parse_block_body(%w[elsif else endif])
+        @builder.pop_capture
+        @builder.pop
+        has_content ||= !branch_blank
+      end
+
+      if end_tag == 'else'
+        advance_template
+        @builder.push_capture
+        end_tag, else_blank, _else_raws = parse_block_body(%w[endif])
+        @builder.pop_capture
+        @builder.pop
+        has_content ||= !else_blank
+      end
+
+      raise SyntaxError.new("'if' tag was never closed", position: current_template_start_pos, source: @source) unless end_tag
+      advance_template if end_tag == 'endif'
+      @builder.write_raw("Liquid error (line #{line}): Unknown operator #{op}") if has_content
+      !has_content
+    end
+
     def parse_if_tag(condition_str)
-      expr_lexer = expr_lexer_for(condition_str)
-      parse_expression(expr_lexer)
+      if (unknown_op = unknown_condition_operator(condition_str))
+        return parse_invalid_condition_block(unknown_op)
+      end
+
+      parse_condition_expression(condition_str)
 
       label_else = @builder.new_label
       label_end = @builder.new_label
@@ -733,6 +800,7 @@ module LiquidIL
 
       # Parse body until elsif/else/endif
       end_tag, body_blank, body_raws = parse_block_body(%w[elsif else endif])
+      raise SyntaxError.new("'if' tag was never closed", position: current_template_start_pos, source: @source) unless end_tag
       branch_blanks << body_blank
       branch_raws << body_raws
 
@@ -776,9 +844,12 @@ module LiquidIL
       branch_raws = []
 
       condition_str = extract_tag_args
+      if (unknown_op = unknown_condition_operator(condition_str))
+        blank = parse_invalid_condition_block(unknown_op)
+        return [[blank], [EMPTY_ARRAY]]
+      end
 
-      expr_lexer = expr_lexer_for(condition_str)
-      parse_expression(expr_lexer)
+      parse_condition_expression(condition_str)
 
       label_else = @builder.new_label
 

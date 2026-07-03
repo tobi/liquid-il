@@ -66,6 +66,7 @@ module LiquidIL
           output << value.to_s
         end
       when Float then output << value.to_s
+      when Array then output << LiquidIL::Utils.output_string(value)
       when nil then nil
       when true then output << "true"
       when false then output << "false"
@@ -133,8 +134,8 @@ module LiquidIL
       when String
         case key.to_s
         when "size", "length" then obj.length
-        when "first" then obj[0]
-        when "last" then obj[-1]
+        when "first" then obj.empty? ? "" : obj[0]
+        when "last" then obj.empty? ? "" : obj[-1]
         end
       when Integer
         case key.to_s
@@ -182,6 +183,7 @@ module LiquidIL
       nil
     rescue LiquidIL::FilterRuntimeError => e
       location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+      raise LiquidIL::RuntimeError.new("Liquid error (#{location}): #{e.message}", file: current_file, line: line) unless scope.render_errors
       LiquidIL::ErrorMarker.new(e.message, location)
     end
 
@@ -195,6 +197,7 @@ module LiquidIL
       nil
     rescue LiquidIL::FilterRuntimeError => e
       location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+      raise LiquidIL::RuntimeError.new("Liquid error (#{location}): #{e.message}", file: current_file, line: line) unless scope.render_errors
       LiquidIL::ErrorMarker.new(e.message, location)
     end
 
@@ -208,6 +211,7 @@ module LiquidIL
       nil
     rescue LiquidIL::FilterRuntimeError => e
       location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+      raise LiquidIL::RuntimeError.new("Liquid error (#{location}): #{e.message}", file: current_file, line: line) unless scope.render_errors
       LiquidIL::ErrorMarker.new(e.message, location)
     rescue ArgumentError => e
       raise scope.strict_errors ? e : LiquidIL::FilterRuntimeError.new(e.message)
@@ -270,12 +274,8 @@ module LiquidIL
         right_num = to_num(right)
 
         if left_num.nil? || right_num.nil?
-          if output
-            right_str = right.is_a?(Numeric) ? right.to_s : right.class.to_s
-            location = current_file ? "#{current_file} line 1" : "line 1"
-            output << "Liquid error (#{location}): comparison of #{left.class} with #{right_str} failed"
-          end
-          return false
+          right_str = right.is_a?(Numeric) ? right.to_s : right.class.to_s
+          raise LiquidIL::RuntimeError.new("comparison of #{left.class} with #{right_str} failed", file: current_file, line: 1, partial_output: output&.dup)
         end
 
         case op
@@ -301,11 +301,17 @@ module LiquidIL
     end
 
     def self.contains(left, right)
-      return false if left.nil? || right.nil?
+      return false if left.nil? || right.nil? || right == false
       case left
-      when String then left.include?(right.to_s)
+      when String
+        needle = right.to_s
+        if left.encoding != needle.encoding
+          left = left.dup.force_encoding(Encoding::UTF_8) if left.encoding == Encoding::BINARY && left.valid_encoding?
+          needle = needle.dup.force_encoding(left.encoding) if needle.encoding == Encoding::BINARY && needle.valid_encoding?
+        end
+        left.include?(needle)
       when Array then left.include?(right)
-      when Hash then left.key?(right.to_s) || left.key?(right.to_s.to_sym)
+      when Hash then left.key?(right) || (right.is_a?(String) && left.key?(right.to_sym))
       else false
       end
     end
@@ -512,7 +518,7 @@ module LiquidIL
 
       fs = scope.file_system
       unless fs
-        message = tag_type == "include" ? "Could not find asset #{name}" : "Could not find partial '#{name}'"
+        message = "This liquid context does not allow includes."
         if scope.render_errors
           location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
           output << "Liquid error (#{location}): #{message}"
@@ -524,7 +530,7 @@ module LiquidIL
       # Load source
       source = read_partial_source(fs, name, scope)
       unless source
-        message = tag_type == "include" ? "Could not find asset #{name}" : "Could not find partial '#{name}'"
+        message = "Could not find asset #{name}"
         if scope.render_errors
           location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
           output << "Liquid error (#{location}): #{message}"
@@ -565,7 +571,8 @@ module LiquidIL
         output << "Liquid error (#{location}): #{e.message}"
       rescue LiquidIL::SyntaxError => e
         raise unless scope.render_errors
-        output << "Liquid syntax error (#{partial_file} line #{e.line}): #{e.message}"
+        message = e.message.to_s.sub(/\ALiquid syntax error \(line \d+\): /, "")
+        output << "Liquid syntax error (#{partial_file} line #{e.line}): #{message}"
       rescue => e
         raise unless scope.render_errors
         output << "Liquid error (#{partial_file} line 1): #{LiquidIL.clean_error_message(e.message)}"

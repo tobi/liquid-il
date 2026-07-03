@@ -1,0 +1,36 @@
+---
+_metadata:
+  hint: Focused regressions from full liquid-spec compatibility fixes.
+  doc: These cases failed in the all-suite adapter run and should stay covered locally.
+  complexity: 350
+specs:
+# Root cause: lax-mode filter parsing treated an empty filter segment as a syntax
+# error. Liquid ignores trailing or doubled pipes and applies the valid filters.
+- name: lax_mode_trailing_empty_filter_is_noop
+  template: "{{ 'hello' | }}"
+  error_mode: lax
+  expected: "hello"
+
+- name: lax_mode_doubled_pipe_skips_empty_filter_segment
+  template: "{{ 'hello' || upcase }}"
+  error_mode: lax
+  expected: "HELLO"
+
+# Root cause: non-ASCII bytes after an ASCII identifier raised during expression
+# lexing. Recorded lax behavior renders the valid prefix and ignores the junk.
+- name: unicode_suffix_after_identifier_is_ignored
+  template: "{{_✅}}"
+  environment:
+    _✅: ignored
+  error_mode: lax
+  expected: ""
+
+# Root cause: render-time resource limits were not passed into compiled scopes,
+# so full-suite resource limit specs rendered instead of raising.
+- name: render_time_resource_limit_aborts_loop
+  template: "{% for i in (1..100) %}x{% endfor %}"
+  resource_limits:
+    render_score_limit: 10
+  errors:
+    render_error:
+      - Liquid error
