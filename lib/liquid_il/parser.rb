@@ -1664,6 +1664,7 @@ module LiquidIL
 
         expr_lexer = expr_lexer_for(branch[:cond])
         parse_expression(expr_lexer)
+        @builder.is_truthy
         @builder.jump_if_false(label_else)
 
         parse_liquid_tag(branch[:lines].join("\n")) unless branch[:lines].empty?
@@ -1681,6 +1682,8 @@ module LiquidIL
     # Parse an unless block within a liquid tag
     def parse_unless_in_liquid(condition, lines, idx)
       body_lines = []
+      else_lines = []
+      current_lines = body_lines
       depth = 1
 
       while idx < lines.length && depth > 0
@@ -1692,23 +1695,33 @@ module LiquidIL
         case tag_name
         when 'if', 'unless', 'for', 'case'
           depth += 1
-          body_lines << line
+          current_lines << line
         when 'endif', 'endunless', 'endfor', 'endcase'
           depth -= 1
-          body_lines << line if depth > 0
+          current_lines << line if depth > 0
+        when 'else'
+          if depth == 1
+            current_lines = else_lines
+          else
+            current_lines << line
+          end
         else
-          body_lines << line
+          current_lines << line
         end
       end
 
+      label_else = @builder.new_label
       label_end = @builder.new_label
 
       expr_lexer = expr_lexer_for(condition)
       parse_expression(expr_lexer)
-      @builder.jump_if_true(label_end)
+      @builder.is_truthy
+      @builder.jump_if_true(label_else)
 
       parse_liquid_tag(body_lines.join("\n")) unless body_lines.empty?
-
+      @builder.jump(label_end)
+      @builder.label(label_else)
+      parse_liquid_tag(else_lines.join("\n")) unless else_lines.empty?
       @builder.label(label_end)
       idx
     end

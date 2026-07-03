@@ -1708,7 +1708,9 @@ module LiquidIL
                   operand_ruby = stack.pop || "false"
                   stack << "((_t = #{operand_ruby}); _t.nil? || _t == false)"
                   @pc += 1
-                when IL::IS_TRUTHY then @pc += 1
+                when IL::IS_TRUTHY
+                  seen_is_truthy = true
+                  @pc += 1
                 else @pc += 1
                 end
               else
@@ -1718,6 +1720,7 @@ module LiquidIL
             right_ruby = stack.pop || "false"
             stack << "((#{inline_truthy(left_ruby)}) && (#{inline_truthy(right_ruby)}))"
             if @instructions[@pc]&.[](0) == IL::IS_TRUTHY
+              seen_is_truthy = true
               @pc += 1
             end
           elsif inst[0] == IL::JUMP_IF_TRUE && target_inst&.[](0) == IL::CONST_TRUE && is_short_circuit_pattern
@@ -1730,6 +1733,7 @@ module LiquidIL
 
               case build_inst[0]
               when IL::IS_TRUTHY
+                seen_is_truthy = true
                 @pc += 1
                 break
               when IL::CONST_TRUE
