@@ -1,0 +1,92 @@
+---
+_metadata:
+  hint: Lax-mode parser permissiveness — Liquid renders the valid prefix of a malformed expression and ignores trailing junk
+  doc: implementers/parser.md
+  render_errors: true
+specs:
+# Root cause: lexer raised SyntaxError on lone '!', '=', '-' at end of expression.
+# In lax mode these are incomplete operators, not valid tokens — treat as EOF.
+- name: lax_mode_lone_bang_after_value
+  template: "{{ false ! }}"
+  expected: "false"
+
+- name: lax_mode_lone_equals_after_value
+  template: "{{ false = }}"
+  expected: "false"
+
+- name: lax_mode_lone_minus_after_value
+  template: "{{ false - }}"
+  expected: "false"
+
+# Root cause: comparison operator with no right operand (e.g., 'false >') raised
+# during parse_primary_expression. In lax mode, ignore the incomplete comparison.
+- name: lax_mode_incomplete_gt_comparison
+  template: "{{ false > }}"
+  expected: "false"
+
+- name: lax_mode_incomplete_lt_comparison
+  template: "{{ false < }}"
+  expected: "false"
+
+# Root cause: trailing identifier after a valid expression raised in expect_eos.
+# In lax mode, ignore trailing junk after the expression is fully parsed.
+- name: lax_mode_trailing_identifier
+  template: "{{ false a }}"
+  expected: "false"
+
+- name: lax_mode_trailing_integer
+  template: "{{ false 1 }}"
+  expected: "false"
+
+# Valid expressions should still work normally (not just the lax path)
+- name: lax_mode_valid_comparison_still_works
+  template: "{{ 1 < 2 }}"
+  expected: "true"
+
+- name: lax_mode_valid_filter_still_works
+  template: "{{ 'hello' | upcase }}"
+  expected: "HELLO"
+
+# Root cause: lax mode tolerates malformed bare-bracket root lookups by using
+# the valid prefix. A missing close bracket should still perform the dynamic
+# root lookup once, while a nested malformed outer bracket should not apply the
+# root lookup twice.
+- name: lax_mode_unclosed_bare_bracket_dynamic_lookup
+  template: "{{['foo'}}"
+  environment:
+    foo: bar
+  expected: "bar"
+
+- name: lax_mode_nested_unclosed_outer_bracket_does_not_double_lookup
+  template: "{{[['foo']}}"
+  environment:
+    foo: bar
+  expected: "bar"
+
+- name: lax_mode_extra_dot_in_range_is_ignored
+  template: "{% for i in (1...5) %}{{ i }}{% endfor %}"
+  expected: "12345"
+
+- name: lax_mode_digit_starting_variable_name_lookup
+  template: "{% assign 123foo = 'bar' %}{{ 123foo }}"
+  expected: "bar"
+
+- name: lax_mode_filter_name_junk_before_colon_is_ignored
+  template: "{{ 'hi there' | split$$$:' ' | first }}"
+  expected: "hi"
+
+- name: lax_mode_doubled_quote_after_filter_arg_keeps_next_filter
+  template: "{{ 'hi there' | split:\"t\"\" | reverse | first }}"
+  expected: "here"
+
+- name: lax_mode_doubled_quote_can_swallow_malformed_filter_segment
+  template: "{{ 'hi there' | split:\"t\"\" | remove:\"i\" | first }}"
+  expected: "hi "
+
+- name: lax_mode_leading_dash_expression_noise_renders_blank
+  template: "{{ - 'theme.css' - }}"
+  expected: ""
+
+- name: lax_mode_filter_inside_parentheses_is_tolerated
+  template: "{% assign foo = ('X' | downcase) %}{{ foo }}"
+  expected: "X"

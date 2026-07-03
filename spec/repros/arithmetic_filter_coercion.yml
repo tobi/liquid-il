@@ -1,0 +1,9 @@
+---
+_metadata:
+  hint: arithmetic filters with identity-looking arguments still perform Liquid numeric coercion
+  doc: implementers/filters.md
+  render_errors: true
+specs:
+- name: plus_zero_coerces_string_with_trailing_junk_to_number
+  template: "{{ '2.1' | times:3 | replace: '.','-' | plus:0 }}"
+  expected: "6"

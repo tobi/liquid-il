@@ -1,0 +1,24 @@
+---
+_metadata:
+  hint: missing static includes must be surfaced at render time through Liquid inline error handling, not as compile-time Ruby exceptions
+  features:
+    - inline_errors
+    - shopify_error_format
+specs:
+- name: missing_static_include_uses_asset_error_wording
+  template: "{% include 'missing_snippet' %}"
+  render_errors: true
+  errors:
+    output:
+      - "Could not find asset missing_snippet"
+  expected: ""
+
+- name: nested_missing_static_include_uses_asset_error_wording
+  template: "{% include 'outer' %}"
+  filesystem:
+    outer: "{% include 'inner' %}"
+  render_errors: true
+  errors:
+    output:
+      - "Could not find asset inner"
+  expected: ""

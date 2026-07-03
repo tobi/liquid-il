@@ -15,7 +15,7 @@ module LiquidIL
     NESTING_OPEN_TAGS = Set.new(%w[if unless case for tablerow capture comment]).freeze
     NESTING_CLOSE_TAGS = Set.new(%w[endif endunless endcase endfor endtablerow endcapture endcomment]).freeze
 
-    def initialize(source, error_mode: :lax, warnings: nil)
+    def initialize(source, error_mode: :strict2, warnings: nil)
       @source = source
       @template_lexer = TemplateLexer.new(source)
       @builder = IL::Builder.new
@@ -25,9 +25,14 @@ module LiquidIL
       @expr_lexer = ExpressionLexer.new
       @cycle_counter = 0 # For unique cycle identities
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
-      @error_mode = error_mode  # :lax, :warn, :strict
+      @error_mode = error_mode  # :lax, :warn, :strict, :strict2
       @warnings = warnings || []  # Collect non-fatal warnings
     end
+
+    # strict? — true for :strict and :strict2 (both reject malformed syntax)
+    # strict2 additionally rejects bare bracket access like {{ ['x'] }}
+    def strict? = @error_mode == :strict || @error_mode == :strict2
+    def strict2? = @error_mode == :strict2
 
     attr_reader :warnings
 
@@ -46,6 +51,7 @@ module LiquidIL
     end
 
     def expr_lexer_for(source)
+      @expr_lexer.error_mode = @error_mode
       @expr_lexer.reset_source(source)
       @expr_lexer.advance
       @expr_lexer
@@ -193,11 +199,23 @@ module LiquidIL
       content = current_template_content
       @builder.with_span(current_template_start_pos, current_template_end_pos)
 
+      stripped = content.strip
+
       # Handle empty variable `{{}}`
-      if content.strip.empty?
+      if stripped.empty?
         @builder.clear_span
         advance_template
         return true  # Blank output
+      end
+
+      # Lax Liquid tolerates leading/trailing dash characters inside variable
+      # markup (e.g. {{ - 'theme.css' - }}) as invalid expression noise that
+      # renders nothing. Strict modes reject it with the conventional message.
+      if stripped.start_with?("- ")
+        raise SyntaxError, "not a valid expression" if strict?
+        @builder.clear_span
+        advance_template
+        return true
       end
 
       expr_lexer = expr_lexer_for(content)
@@ -295,7 +313,7 @@ module LiquidIL
           parse_registered_tag(tag_def, tag_args)
         else
           case @error_mode
-          when :strict
+          when :strict, :strict2
             raise SyntaxError.new(
               "Unknown tag '#{tag_name}'",
               position: start_pos,
@@ -438,37 +456,32 @@ module LiquidIL
       parse_primary_expression(lexer)
 
       loop do
-        case lexer.current
-        when ExpressionLexer::EQ
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:eq)
-        when ExpressionLexer::NE
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:ne)
-        when ExpressionLexer::LT
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:lt)
-        when ExpressionLexer::LE
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:le)
-        when ExpressionLexer::GT
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:gt)
-        when ExpressionLexer::GE
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:ge)
-        when ExpressionLexer::CONTAINS
-          lexer.advance
-          parse_primary_expression(lexer)
+        op_token = lexer.current
+        op_name = nil
+        case op_token
+        when ExpressionLexer::EQ then op_name = :eq
+        when ExpressionLexer::NE then op_name = :ne
+        when ExpressionLexer::LT then op_name = :lt
+        when ExpressionLexer::LE then op_name = :le
+        when ExpressionLexer::GT then op_name = :gt
+        when ExpressionLexer::GE then op_name = :ge
+        when ExpressionLexer::CONTAINS then op_name = :contains
+        else break
+        end
+
+        lexer.advance
+        # Lax mode: if no right operand (EOF or PIPE), ignore the comparison op
+        if lexer.eos? || lexer.current == ExpressionLexer::PIPE
+          if strict?
+            raise SyntaxError, "Expected expression after comparison operator"
+          end
+          break
+        end
+        parse_primary_expression(lexer)
+        if op_name == :contains
           @builder.contains
         else
-          break
+          @builder.compare(op_name)
         end
       end
     end
@@ -510,11 +523,30 @@ module LiquidIL
       when ExpressionLexer::IDENTIFIER
         parse_variable_lookup(lexer)
       when ExpressionLexer::LBRACKET
-        # Dynamic root lookup - {{ [key] }} looks up key, then looks up that value in context
+        # Dynamic root lookup - {{ [key] }} looks up key, then looks up that value in context.
+        # Lax Liquid tolerates a missing close bracket and uses the valid prefix;
+        # strict modes reject malformed brackets. strict2 additionally rejects
+        # complete bare root bracket access, while still allowing self[key] and obj[key].
         lexer.advance
+        start_len = @builder.instructions.length
         parse_expression(lexer)
-        lexer.expect(ExpressionLexer::RBRACKET)
-        @builder.find_var_dynamic
+        missing_close = false
+        if lexer.current == ExpressionLexer::RBRACKET
+          raise SyntaxError, "Bare bracket access is not allowed; use self[key] instead" if strict2?
+          lexer.advance
+        elsif strict?
+          if strict2? && lexer.current != ExpressionLexer::EOF
+            raise SyntaxError, "Bare bracket access is not allowed; use self[key] instead"
+          end
+          raise SyntaxError, "Expected close_square"
+        else
+          missing_close = true
+        end
+        # In lax mode, `{{ [['x'] }}` is tolerated by using the inner valid
+        # lookup prefix. Avoid applying a second root lookup for the unmatched
+        # outer bracket when the inner expression already emitted FIND_VAR_DYNAMIC.
+        skip_dynamic = missing_close && @builder.instructions.length > start_len && @builder.instructions.last&.[](0) == IL::FIND_VAR_DYNAMIC
+        @builder.find_var_dynamic unless skip_dynamic
         parse_property_chain(lexer)
       else
         raise SyntaxError, "Unexpected token #{lexer.current} in expression"
@@ -534,7 +566,11 @@ module LiquidIL
     def parse_variable_lookup(lexer)
       name = lexer.value
       lexer.advance
-      @builder.find_var(name)
+      if name == "self"
+        @builder.find_self
+      else
+        @builder.find_var(name)
+      end
       parse_property_chain(lexer)
     end
 
@@ -583,7 +619,13 @@ module LiquidIL
         lexer.expect(ExpressionLexer::RPAREN)
         @builder.new_range
       else
-        # Just a grouped expression
+        # Just a grouped expression. Liquid does not allow filters inside
+        # parentheses; strict mode reports that syntax, while lax mode keeps the
+        # valid prefix and skips the malformed parenthesized suffix.
+        if lexer.current == ExpressionLexer::PIPE
+          raise SyntaxError, "but found pipe" if strict?
+          lexer.advance until lexer.current == ExpressionLexer::RPAREN || lexer.current == ExpressionLexer::EOF
+        end
         lexer.expect(ExpressionLexer::RPAREN)
       end
     end
@@ -869,8 +911,11 @@ module LiquidIL
 
         @builder.store_temp(case_value_temp) # Store case value
       rescue SyntaxError
-        # Invalid case expression - skip the entire case block without emitting IL
+        # Invalid case expressions are tolerated in lax mode by skipping the case
+        # block. Strict modes must surface syntax errors (including strict2's
+        # bare-bracket rejection) instead of silently swallowing them.
         @case_temp_counter -= 2  # Release temp indices
+        raise if strict?
         skip_to_end_tag('endcase')
         return true # Tag is blank since nothing renders
       end
@@ -1414,488 +1459,32 @@ module LiquidIL
     end
 
     def parse_liquid_tag(content)
-      # The liquid tag contains multiple statements, one per line
-      lines = content.split("\n")
-      blank = true
-      idx = 0
+      source = liquid_tag_content_to_template(content)
+      return true if source.empty?
 
-      while idx < lines.length
-        line = lines[idx].strip
-        idx += 1
-        next if line.empty? || line.start_with?('#')
-
-        # Parse each line as a tag without delimiters
-        parts = line.split(/\s+/, 2)
-        tag_name = parts[0]
-        tag_args = parts[1] || ''
-
-        case tag_name
-        when 'echo'
-          result = parse_echo_tag(tag_args)
-          blank = blank && result
-        when 'assign'
-          result = parse_assign_tag(tag_args)
-          blank = blank && result
-        when 'if'
-          idx = parse_if_in_liquid(tag_args, lines, idx)
-          blank = false
-        when 'unless'
-          idx = parse_unless_in_liquid(tag_args, lines, idx)
-          blank = false
-        when 'for'
-          idx = parse_for_in_liquid(tag_args, lines, idx)
-          blank = false
-        when 'case'
-          idx = parse_case_in_liquid(tag_args, lines, idx)
-          blank = false
-        when 'break'
-          emit_loop_jump(:break)
-          blank = false
-        when 'continue'
-          emit_loop_jump(:continue)
-          blank = false
-        when 'increment'
-          parse_increment_tag(tag_args)
-          blank = false
-        when 'decrement'
-          parse_decrement_tag(tag_args)
-          blank = false
-        when 'cycle'
-          parse_cycle_tag(tag_args)
-          blank = false
-        when 'comment'
-          # Skip all lines until endcomment
-          idx = skip_comment_in_liquid(lines, idx)
-        when 'capture'
-          idx = parse_capture_in_liquid(tag_args, lines, idx)
-          blank = false
-        when 'liquid'
-          # Nested liquid tag - recursively parse
-          result = parse_liquid_tag(tag_args)
-          blank = blank && result
-        end
-      end
+      saved_template_lexer = @template_lexer
+      saved_source = @source
+      @source = source
+      @template_lexer = TemplateLexer.new(source)
+      advance_template
+      _end_tag, blank, _raw_indices = parse_block_body(nil)
       blank
+    ensure
+      @source = saved_source if defined?(saved_source) && saved_source
+      @template_lexer = saved_template_lexer if saved_template_lexer
     end
 
-    # Skip lines within a liquid tag until endcomment
-    def skip_comment_in_liquid(lines, idx)
-      depth = 1
-      while idx < lines.length && depth > 0
-        line = lines[idx].strip
-        idx += 1
-        next if line.empty?
-
-        parts = line.split(/\s+/, 2)
-        tag_name = parts[0]
-
-        case tag_name
-        when 'comment'
-          depth += 1
-        when 'endcomment'
-          depth -= 1
-        end
+    # Lower `{% liquid %}` line syntax to ordinary tag syntax and feed it
+    # through the same parser/IL path as normal tags. The liquid tag has no raw
+    # text between lines, so we concatenate tags directly.
+    def liquid_tag_content_to_template(content)
+      out = +""
+      content.to_s.each_line do |line|
+        line = line.strip
+        next if line.empty? || line.start_with?('#')
+        out << "{% " << line << " %}"
       end
-      idx
-    end
-
-    # Parse a capture block within a liquid tag
-    def parse_capture_in_liquid(var_name_arg, lines, idx)
-      # Extract variable name (can be identifier or quoted string)
-      var_name = var_name_arg.strip
-      if var_name.start_with?('"', "'")
-        var_name = var_name[1..-2]  # Remove quotes
-      end
-
-      # Collect body lines until endcapture
-      body_lines = []
-      depth = 1
-      comment_depth = 0
-
-      while idx < lines.length && depth > 0
-        line = lines[idx].strip
-        idx += 1
-        next if line.empty?
-
-        parts = line.split(/\s+/, 2)
-        tag_name = parts[0]
-
-        # Track comment blocks
-        if tag_name == 'comment'
-          comment_depth += 1
-          body_lines << line
-          next
-        elsif tag_name == 'endcomment'
-          comment_depth -= 1 if comment_depth > 0
-          body_lines << line
-          next
-        end
-
-        # Skip depth tracking if inside comment
-        if comment_depth > 0
-          body_lines << line
-          next
-        end
-
-        case tag_name
-        when 'capture'
-          depth += 1
-          body_lines << line
-        when 'endcapture'
-          depth -= 1
-          body_lines << line if depth > 0
-        else
-          body_lines << line
-        end
-      end
-
-      # Generate capture code
-      @builder.push_capture
-      parse_liquid_tag(body_lines.join("\n")) unless body_lines.empty?
-      @builder.pop_capture
-      @builder.assign(var_name)
-
-      idx
-    end
-
-    # Parse an if block within a liquid tag, returning the new line index.
-    # Handles if/elsif/else/endif chains by collecting branches and emitting
-    # nested if/else IL directly.
-    def parse_if_in_liquid(condition, lines, idx)
-      # Collect branches: [{cond: "...", lines: [...]}, ...]
-      # Last entry with cond=nil is the else branch.
-      branches = [{ cond: condition, lines: [] }]
-      current = branches.last
-      depth = 1
-      comment_depth = 0
-
-      while idx < lines.length && depth > 0
-        line = lines[idx].strip
-        idx += 1
-        next if line.empty?
-
-        tag_name = line.split(/\s+/, 2)[0]
-
-        if tag_name == 'comment'
-          comment_depth += 1
-          current[:lines] << line
-          next
-        elsif tag_name == 'endcomment'
-          comment_depth -= 1 if comment_depth > 0
-          current[:lines] << line
-          next
-        end
-
-        if comment_depth > 0
-          current[:lines] << line
-          next
-        end
-
-        case tag_name
-        when 'if', 'unless', 'for', 'case'
-          depth += 1
-          current[:lines] << line
-        when 'endif', 'endunless', 'endfor', 'endcase'
-          depth -= 1
-          current[:lines] << line if depth > 0
-        when 'elsif'
-          if depth == 1
-            current = { cond: line.split(/\s+/, 2)[1], lines: [] }
-            branches << current
-          else
-            current[:lines] << line
-          end
-        when 'else'
-          if depth == 1
-            current = { cond: nil, lines: [] }
-            branches << current
-          else
-            current[:lines] << line
-          end
-        else
-          current[:lines] << line
-        end
-      end
-
-      # Emit nested if/else chain
-      emit_if_chain(branches, 0)
-      idx
-    end
-
-    # Recursively emit if/elsif/else chain as nested if/else IL
-    def emit_if_chain(branches, index)
-      return if index >= branches.length
-
-      branch = branches[index]
-
-      if branch[:cond].nil?
-        # else branch — emit body directly
-        parse_liquid_tag(branch[:lines].join("\n")) unless branch[:lines].empty?
-      else
-        label_else = @builder.new_label
-        label_end = @builder.new_label
-
-        expr_lexer = expr_lexer_for(branch[:cond])
-        parse_expression(expr_lexer)
-        @builder.jump_if_false(label_else)
-
-        parse_liquid_tag(branch[:lines].join("\n")) unless branch[:lines].empty?
-
-        @builder.jump(label_end)
-        @builder.label(label_else)
-
-        # Remaining branches become the else body
-        emit_if_chain(branches, index + 1)
-
-        @builder.label(label_end)
-      end
-    end
-
-    # Parse an unless block within a liquid tag
-    def parse_unless_in_liquid(condition, lines, idx)
-      body_lines = []
-      depth = 1
-
-      while idx < lines.length && depth > 0
-        line = lines[idx].strip
-        idx += 1
-        next if line.empty?
-
-        tag_name = line.split(/\s+/, 2)[0]
-        case tag_name
-        when 'if', 'unless', 'for', 'case'
-          depth += 1
-          body_lines << line
-        when 'endif', 'endunless', 'endfor', 'endcase'
-          depth -= 1
-          body_lines << line if depth > 0
-        else
-          body_lines << line
-        end
-      end
-
-      label_end = @builder.new_label
-
-      expr_lexer = expr_lexer_for(condition)
-      parse_expression(expr_lexer)
-      @builder.jump_if_true(label_end)
-
-      parse_liquid_tag(body_lines.join("\n")) unless body_lines.empty?
-
-      @builder.label(label_end)
-      idx
-    end
-
-    # Parse a case block within a liquid tag.
-    # Converts case/when/else to equivalent if/elsif/else in liquid tag format
-    # so the existing parse_if_in_liquid handles code generation correctly.
-    # Liquid case has fall-through semantics: ALL matching when clauses execute.
-    def parse_case_in_liquid(case_expr_str, lines, idx)
-      # Collect when/else branches until matching endcase
-      branches = []  # [{cond: "val", lines: [...]}]
-      else_lines = []
-      current_lines = nil
-      depth = 1
-      comment_depth = 0
-
-      while idx < lines.length && depth > 0
-        line = lines[idx].strip
-        idx += 1
-        next if line.empty?
-
-        parts = line.split(/\s+/, 2)
-        tag_name = parts[0]
-
-        if tag_name == 'comment'
-          comment_depth += 1
-          current_lines << line if current_lines
-          next
-        elsif tag_name == 'endcomment'
-          comment_depth -= 1 if comment_depth > 0
-          current_lines << line if current_lines
-          next
-        end
-        next if comment_depth > 0
-
-        case tag_name
-        when 'case'
-          depth += 1
-          current_lines << line if current_lines
-        when 'endcase'
-          depth -= 1
-          current_lines << line if depth > 0
-        when 'when'
-          if depth == 1
-            branches << { cond: (parts[1] || ''), lines: [] }
-            current_lines = branches[-1][:lines]
-          else
-            current_lines << line if current_lines
-          end
-        when 'else'
-          if depth == 1
-            current_lines = else_lines
-          else
-            current_lines << line if current_lines
-          end
-        else
-          current_lines << line if current_lines
-        end
-      end
-
-      # Convert to equivalent liquid-tag lines using assign + if blocks.
-      # This reuses the existing if/unless parsing which the Ruby compiler handles.
-      #
-      # Liquid case semantics: ALL matching when clauses execute (fall-through).
-      # else only runs if NO when matched.
-      @case_temp_counter = (@case_temp_counter || 0) + 1
-      case_var = "__case_#{@case_temp_counter}__"
-      flag_var = "__case_matched_#{@case_temp_counter}__"
-
-      synthetic = []
-      synthetic << "assign #{case_var} = #{case_expr_str}"
-
-      has_else = !else_lines.empty?
-      synthetic << "assign #{flag_var} = false" if has_else
-
-      branches.each do |branch|
-        vals = branch[:cond].split(/\s*(?:,|\bor\b)\s*/).map(&:strip).reject(&:empty?)
-        cond = vals.map { |v| "#{case_var} == #{v}" }.join(" or ")
-        next if cond.empty?
-
-        synthetic << "if #{cond}"
-        synthetic << "assign #{flag_var} = true" if has_else
-        synthetic.concat(branch[:lines])
-        synthetic << "endif"
-      end
-
-      if has_else
-        synthetic << "unless #{flag_var}"
-        synthetic.concat(else_lines)
-        synthetic << "endunless"
-      end
-
-      parse_liquid_tag(synthetic.join("\n"))
-      idx
-    end
-
-    # Parse a for block within a liquid tag
-    def parse_for_in_liquid(tag_args, lines, idx)
-      # Collect body lines until endfor
-      body_lines = []
-      else_lines = []
-      depth = 1
-      in_else = false
-
-      while idx < lines.length && depth > 0
-        line = lines[idx].strip
-        idx += 1
-        next if line.empty?
-
-        tag_name = line.split(/\s+/, 2)[0]
-        case tag_name
-        when 'if', 'unless', 'for', 'case', 'tablerow'
-          depth += 1
-          (in_else ? else_lines : body_lines) << line
-        when 'endif', 'endunless', 'endfor', 'endcase', 'endtablerow'
-          depth -= 1
-          (in_else ? else_lines : body_lines) << line if depth > 0
-        when 'else'
-          if depth == 1
-            in_else = true
-          else
-            (in_else ? else_lines : body_lines) << line
-          end
-        else
-          (in_else ? else_lines : body_lines) << line
-        end
-      end
-
-      # Parse for tag_args: var_name in collection [limit:N] [offset:N] [reversed]
-      match = tag_args.match(/(\w+)\s+in\s+(.+)/)
-      return idx unless match
-
-      var_name = match[1]
-      rest = match[2]
-
-      limit_expr = nil
-      offset_expr = nil
-      offset_continue = false
-      reversed = false
-
-      if rest =~ /\breversed\b/
-        reversed = true
-        rest = rest.gsub(/\breversed\b/, '')
-      end
-      if rest =~ /\blimit\s*:\s*([^,\s]+)/
-        limit_expr = Regexp.last_match(1)
-        rest = rest.gsub(/\blimit\s*:\s*[^,\s]+/, '')
-      end
-      if rest =~ /\boffset\s*:\s*continue\b/
-        offset_continue = true
-        rest = rest.gsub(/\boffset\s*:\s*continue\b/, '')
-      end
-      if rest =~ /\boffset\s*:\s*([^,\s]+)/
-        offset_expr = Regexp.last_match(1)
-        offset_continue = false
-        rest = rest.gsub(/\boffset\s*:\s*[^,\s]+/, '')
-      end
-
-      collection_expr = rest.tr(',', ' ').strip
-      loop_name = "#{var_name}-#{collection_expr}"
-
-      label_loop = @builder.new_label
-      label_continue = @builder.new_label
-      label_break = @builder.new_label
-      label_else = @builder.new_label
-      label_end = @builder.new_label
-
-      # Evaluate collection
-      expr_lexer = expr_lexer_for(collection_expr)
-      parse_expression(expr_lexer)
-
-      @builder.jump_if_empty(label_else)
-
-      # Emit offset first, then limit (IL order matches application order)
-      # Sequential readers can apply: offset first (drop N), then limit (take M)
-      if offset_expr
-        offset_lexer = expr_lexer_for(offset_expr)
-        parse_expression(offset_lexer)
-      end
-
-      if limit_expr
-        limit_lexer = expr_lexer_for(limit_expr)
-        parse_expression(limit_lexer)
-      end
-
-      @builder.for_init(var_name, loop_name, !limit_expr.nil?, !offset_expr.nil?, offset_continue, reversed, label_end)
-      @builder.push_scope
-      @builder.push_forloop
-
-      @builder.label(label_loop)
-      @builder.for_next(label_continue, label_break)
-      @builder.assign_local(var_name)
-
-      @loop_stack.push({ break: label_break, continue: label_continue })
-      parse_liquid_tag(body_lines.join("\n")) unless body_lines.empty?
-      @loop_stack.pop
-
-      @builder.jump_if_interrupt(label_break)
-      @builder.label(label_continue)
-      @builder.pop_interrupt
-      @builder.jump(label_loop)
-
-      @builder.label(label_break)
-      @builder.pop_interrupt
-      @builder.pop_forloop
-      @builder.pop_scope
-      @builder.for_end
-      @builder.jump(label_end)
-
-      @builder.label(label_else)
-      parse_liquid_tag(else_lines.join("\n")) unless else_lines.empty?
-
-      @builder.label(label_end)
-      idx
+      out
     end
 
     def parse_raw_tag
@@ -2376,6 +1965,8 @@ module LiquidIL
             case lexer.current
             when :NUMBER, :STRING, :IDENTIFIER
               parts << lexer.value
+            when :DOT
+              parts << '.'
             else
               parts << lexer.current.to_s
             end
@@ -2412,6 +2003,8 @@ module LiquidIL
             case lexer.current
             when :NUMBER, :STRING, :IDENTIFIER
               parts << lexer.value
+            when :DOT
+              parts << '.'
             else
               parts << lexer.current.to_s
             end
@@ -2451,7 +2044,10 @@ module LiquidIL
     def expect_eos(lexer)
       return if lexer.eos?
 
-      raise SyntaxError, "Unexpected token #{lexer.current} after expression"
+      if strict?
+        raise SyntaxError, "Unexpected token #{lexer.current} after expression"
+      end
+      # Lax/warn mode: ignore trailing junk after a valid expression
     end
   end
 end

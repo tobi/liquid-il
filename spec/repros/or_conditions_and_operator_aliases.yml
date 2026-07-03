@@ -1,0 +1,34 @@
+---
+_metadata:
+  hint: or-conditions with constant true right operand — the or-pattern handler in build_expression was consuming CONST_TRUE without adding it to or_operands
+  doc: implementers/conditions.md
+  render_errors: true
+specs:
+# Root cause: in build_expression's or-pattern handler, when the right
+# operand was CONST_TRUE (e.g., 'false or true'), the CONST_TRUE was
+# consumed (@pc += 1) but not added to or_operands. This meant the
+# generated code only had the left operand, dropping the right side.
+- name: or_with_const_true_right_operand
+  template: "{% if false or true %} YES {% endif %}"
+  expected: " YES "
+
+- name: or_with_var_and_const_true
+  template: "{% if x or true %} YES {% endif %}"
+  environment:
+    x: false
+  expected: " YES "
+
+- name: or_with_const_true_left_operand
+  template: "{% if true or false %} YES {% endif %}"
+  expected: " YES "
+
+# && and || are not Liquid operators — in lax mode they're treated as junk
+- name: lax_double_ampersand_is_junk
+  template: "{% if true && false %} YES {% endif %}"
+  error_mode: :lax
+  expected: " YES "
+
+- name: lax_double_pipe_is_junk
+  template: "{% if false || true %} YES {% endif %}"
+  error_mode: :lax
+  expected: ""

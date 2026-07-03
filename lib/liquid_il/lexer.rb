@@ -398,13 +398,16 @@ module LiquidIL
     # Pre-compiled patterns
     WHITESPACE = /\s+/
 
-    def initialize(source = "")
+    attr_accessor :error_mode
+
+    def initialize(source = "", error_mode: :lax)
       @source = source
       @source_bytes = source.bytesize
       @scanner = StringScanner.new(source)
       @current_token = nil
       @current_value = nil
       @peeked = false
+      @error_mode = error_mode
     end
 
     def reset_source(source)
@@ -483,6 +486,14 @@ module LiquidIL
         scan_comparison(comp)
       elsif byte == 39 || byte == 34  # ' or "
         scan_string(byte)
+      elsif byte == 38  # & — not a valid Liquid operator
+        # In lax mode, treat lone & or && as end of expression (trailing junk)
+        # Liquid does not support && as an operator; it's parsed as 'and' keyword only
+        @current_token = EOF
+      elsif byte == 36 && @error_mode == :lax # $ junk in lax filter markup
+        @scanner.pos += 1 while @source.getbyte(@scanner.pos) == 36
+        @peeked = false
+        return advance
       elsif byte >= 48 && byte <= 57 || byte == 45  # 0-9 or -
         scan_number
       else
@@ -520,7 +531,16 @@ module LiquidIL
       if punct == :DOT_OR_DOTDOT
         next_byte = @source.getbyte(@scanner.pos + 1)
         if next_byte == 46 # another . -> DOTDOT
-          @scanner.pos += 2
+          # Liquid laxly treats an extra dot in ranges, e.g. (1...5), as (1..5).
+          # If the third dot is followed by a digit, consume it as range noise
+          # instead of letting it start a leading-decimal number (.5).
+          third_byte = @source.getbyte(@scanner.pos + 2)
+          fourth_byte = @source.getbyte(@scanner.pos + 3)
+          if third_byte == 46 && fourth_byte && fourth_byte >= 48 && fourth_byte <= 57
+            @scanner.pos += 3
+          else
+            @scanner.pos += 2
+          end
           @current_token = DOTDOT
         elsif next_byte && next_byte >= 48 && next_byte <= 57 # digit -> float like .5
           scan_leading_decimal_number
@@ -528,6 +548,12 @@ module LiquidIL
           @scanner.pos += 1
           @current_token = DOT
         end
+      elsif punct == PIPE && @source.getbyte(@scanner.pos + 1) == 124  # || — not a valid Liquid operator
+        # In lax mode, treat || as end of expression (the first | starts a filter
+        # but the second | is junk). Just emit the first | as PIPE and let the
+        # parser handle the trailing junk.
+        @scanner.pos += 1
+        @current_token = PIPE
       else
         @scanner.pos += 1
         @current_token = punct
@@ -558,7 +584,9 @@ module LiquidIL
           @scanner.pos += 1
           @current_token = FAT_ARROW
         else
-          raise SyntaxError, "Expected '==' at position #{@scanner.pos - 1}"
+          # Lax mode: lone '=' is not a valid operator, treat as end of expression
+          @scanner.pos -= 1
+          @current_token = EOF
         end
       when :NE_START
         @scanner.pos += 1
@@ -566,7 +594,9 @@ module LiquidIL
           @scanner.pos += 1
           @current_token = NE
         else
-          raise SyntaxError, "Expected '!=' at position #{@scanner.pos - 1}"
+          # Lax mode: lone '!' is not a valid operator, treat as end of expression
+          @scanner.pos -= 1  # back up past the '!'
+          @current_token = EOF
         end
       when :LT_START
         @scanner.pos += 1
@@ -591,8 +621,25 @@ module LiquidIL
     end
 
     def scan_string(quote_byte)
+      quote_pos = @scanner.pos
       @scanner.pos += 1  # skip opening quote
       start = @scanner.pos
+
+      # Lax Liquid tolerates a doubled quote immediately after a complete string
+      # argument (`"t"" | next_filter`). If a later quote appears, the junk quote
+      # swallows that malformed filter segment and parsing resumes at the next
+      # pipe; otherwise it is just skipped so the next filter can be read.
+      if @error_mode == :lax && quote_pos > 0 && @source.getbyte(quote_pos - 1) == quote_byte
+        next_quote = @source.index(quote_byte.chr, start)
+        if next_quote
+          next_pipe = @source.index("|", next_quote + 1)
+          @scanner.pos = next_pipe || @source_bytes
+        else
+          @scanner.pos = start
+        end
+        @peeked = false
+        return advance
+      end
 
       # Find closing quote
       while (b = @source.getbyte(@scanner.pos)) && b != quote_byte
@@ -603,6 +650,13 @@ module LiquidIL
         @current_value = @source.byteslice(start, @scanner.pos - start)
         @scanner.pos += 1  # skip closing quote
         @current_token = STRING
+      elsif @error_mode == :lax
+        # Lax Liquid tolerates an extra unmatched quote after a complete string
+        # argument (e.g. split:"t"" | reverse). Treat that quote as junk and
+        # continue lexing from the valid suffix so later filters are still seen.
+        @scanner.pos = start
+        @peeked = false
+        advance
       else
         raise SyntaxError, "Unterminated string at position #{start - 1}"
       end
@@ -617,14 +671,30 @@ module LiquidIL
       # Check if this is actually a number (not just a minus sign)
       byte = @source.getbyte(@scanner.pos)
       unless byte && byte >= 48 && byte <= 57
-        # Not a number, back up and try identifier
+        # Not a number — lone '-' is not valid; treat as end of expression
         @scanner.pos = start
-        return scan_identifier_or_keyword
+        @current_token = EOF
+        return EOF
       end
 
       # Consume digits
       while (byte = @source.getbyte(@scanner.pos)) && byte >= 48 && byte <= 57
         @scanner.pos += 1
+      end
+
+      # If a digit-starting token continues directly with identifier characters
+      # (e.g. 123foo), Liquid laxly treats the whole token as a variable name.
+      # Keep ordinary numeric literals numeric by only switching when the next
+      # byte is a letter/underscore before any decimal part is consumed.
+      byte = @source.getbyte(@scanner.pos)
+      if @source.getbyte(start) != 45 && byte && ((byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95)
+        while (byte = @source.getbyte(@scanner.pos)) &&
+              ((byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95)
+          @scanner.pos += 1
+        end
+        @current_value = @source.byteslice(start, @scanner.pos - start)
+        @current_token = IDENTIFIER
+        return
       end
 
       # Check for decimal part

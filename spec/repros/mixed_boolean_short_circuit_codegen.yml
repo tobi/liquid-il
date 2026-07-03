@@ -1,0 +1,74 @@
+---
+_metadata:
+  hint: mixed AND/OR short-circuit codegen must follow IL jump targets, not flatten adjacent operands
+  doc: implementers/conditions.md
+  render_errors: true
+specs:
+# Liquid's boolean parser is right-recursive. The IL for `c and d or e`
+# means `c and (d or e)`, not `(c and d) or e`. The Ruby expression
+# inliner must respect JUMP_IF_TRUE/JUMP_IF_FALSE targets when lowering this.
+- name: and_right_operand_can_be_or_false_left_blocks_true_fallback
+  template: "{% if c and d or e %}YES{% endif %}"
+  environment:
+    c: false
+    d: false
+    e: true
+  expected: ""
+
+- name: and_right_operand_can_be_or_true_when_right_fallback_true
+  template: "{% if c and d or e %}YES{% endif %}"
+  environment:
+    c: true
+    d: false
+    e: true
+  expected: "YES"
+
+- name: outer_or_operand_can_be_nested_and_with_or_rhs
+  template: "{% if a or b or c and d or e %}YES{% endif %}"
+  environment:
+    a: false
+    b: false
+    c: true
+    d: true
+    e: false
+  expected: "YES"
+
+- name: nested_and_or_respects_right_associativity_inside_outer_or
+  template: "{% if a or b or c and d or e %}YES{% endif %}"
+  environment:
+    a: false
+    b: false
+    c: false
+    d: false
+    e: true
+  expected: ""
+
+- name: nested_or_rhs_can_start_with_comparison_and_fallback_path
+  template: "{% if obj.a > 0 or obj.b or obj.c and val == true or obj.d %}YES{% endif %}"
+  environment:
+    obj:
+      a: 0
+      b: false
+      c: true
+      d: true
+    val: false
+  expected: "YES"
+
+- name: nested_or_rhs_still_blocked_by_left_and_operand
+  template: "{% if obj.a > 0 or obj.b or obj.c and val == true or obj.d %}YES{% endif %}"
+  environment:
+    obj:
+      a: 0
+      b: false
+      c: false
+      d: true
+    val: false
+  expected: ""
+
+- name: constant_or_rhs_can_be_nested_and
+  template: "{% if true or true and false %}YES{% else %}NO{% endif %}"
+  expected: "YES"
+
+- name: constant_and_rhs_can_be_nested_or
+  template: "{% if false and true or true %}YES{% else %}NO{% endif %}"
+  expected: "NO"

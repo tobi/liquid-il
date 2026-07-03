@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "liquid_il/lexer"
+require_relative "liquid_il/core_ext"
 require_relative "liquid_il/tags"
 require_relative "liquid_il/parser"
 require_relative "liquid_il/il"
@@ -89,14 +90,14 @@ module LiquidIL
 
     def initialize(file_system: nil, strict_errors: false, registers: {},
                    strict_variables: false, strict_filters: false,
-                   resource_limits: nil, error_mode: :lax)
+                   resource_limits: nil, error_mode: :strict2)
       @file_system = file_system
       @strict_errors = strict_errors
       @registers = registers
       @strict_variables = strict_variables
       @strict_filters = strict_filters
       @resource_limits = resource_limits  # { output_limit: N, render_score_limit: N }
-      @error_mode = error_mode  # :lax, :warn, :strict
+      @error_mode = error_mode  # :lax, :warn, :strict, :strict2
       # Seed custom filters from global registry; per-context register_filter can override
       global = LiquidIL::Filters.global_registry
       @custom_filters = global.empty? ? {} : global.dup

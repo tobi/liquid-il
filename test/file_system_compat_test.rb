@@ -55,11 +55,14 @@ class FileSystemCompatTest < Minitest::Test
     end
   end
 
-  def test_liquid_blank_file_system_missing_partial_raises_at_compile_time
+  def test_liquid_blank_file_system_missing_partial_uses_render_time_error_handling
     fs = Liquid::BlankFileSystem.new
     ctx = LiquidIL::Context.new(file_system: fs)
 
-    error = assert_raises(RuntimeError) { ctx.render("{% render 'missing' %}") }
-    assert_includes error.message, "Cannot load partial"
+    out = ctx.render("{% render 'missing' %}")
+    assert_includes out, "Liquid error (line 1): Could not find partial 'missing'"
+
+    error = assert_raises(LiquidIL::RuntimeError) { ctx.parse("{% render 'missing' %}").render! }
+    assert_includes error.message, "Could not find partial 'missing'"
   end
 end

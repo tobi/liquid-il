@@ -1,0 +1,30 @@
+---
+_metadata:
+  hint: liquid-tag line syntax must lower through the same normal tag parser/IL path as ordinary tags
+  doc: implementers/tags.md
+  render_errors: true
+specs:
+- name: liquid_tag_nested_if_and_assign_uses_normal_if_codegen
+  template: "{% if product != blank %}{% liquid\nassign x = false\nif a and b\nassign x = true\nendif\nassign y = false\n%}IF_BRANCH x={{ x }} y={{ y }}{% else %}ELSE_BRANCH{% endif %}"
+  environment:
+    product: something
+    a: true
+    b: true
+  expected: "IF_BRANCH x=true y=false"
+
+- name: liquid_tag_unless_else_uses_normal_unless_parser
+  template: "{% liquid\nunless x\necho \"yes\"\nelse\necho \"no\"\nendunless\n%}"
+  environment:
+    x: true
+  expected: "no"
+
+- name: liquid_tag_ifchanged_render_and_tablerow_are_normal_tags
+  template: "{% liquid\nfor i in items\nifchanged\necho i\nendifchanged\nendfor\nrender 'snippet', name: 'World'\ntablerow item in row_items cols:2\necho item\nendtablerow\n%}"
+  environment:
+    items: [1, 1, 2]
+    row_items: [1, 2]
+  filesystem:
+    snippet: "Hello {{ name }}"
+  expected: |
+    12Hello World<tr class="row1">
+    <td class="col1">1</td><td class="col2">2</td></tr>

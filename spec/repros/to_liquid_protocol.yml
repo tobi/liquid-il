@@ -1,0 +1,65 @@
+---
+_metadata:
+  hint: Drop to_liquid/to_liquid_value protocol — all objects must be unwrapped consistently for truthiness, comparisons, and stringification
+  doc: implementers/drops.md
+  render_errors: true
+specs:
+# Root cause: Object#to_liquid and Object#to_liquid_value are now unconditional
+# (return self by default). Drops override them. This eliminates scattered
+# respond_to? checks and ensures drops are always unwrapped.
+- name: to_liquid_value_drop_truthiness_false
+  template: "{% if drop %}true{% endif %}"
+  environment:
+    drop:
+      instantiate:BooleanDrop:
+        value: false
+  expected: ""
+
+- name: to_liquid_value_drop_truthiness_true
+  template: "{% if drop %}yes{% endif %}"
+  environment:
+    drop:
+      instantiate:BooleanDrop:
+        value: true
+  expected: "yes"
+
+# Root cause: inline numeric comparisons didn't unwrap to_liquid_value for drops.
+# IntegerDrop with value=1 should satisfy 'foo > 0'.
+- name: to_liquid_value_integer_drop_comparison
+  template: "{% if foo > 0 %}one{% endif %}"
+  environment:
+    foo:
+      instantiate:IntegerDrop:
+        value: 1
+  expected: "one"
+
+# Root cause: ToSDrop has stateful to_liquid that increments a counter.
+# Each stringification must call to_liquid exactly once, then to_s.
+- name: to_liquid_stateful_drop_one_increment
+  template: "{{ drop | downcase }}"
+  environment:
+    drop:
+      instantiate:ToSDrop:
+        foo: 3
+  expected: "woot: 4"
+
+- name: to_liquid_stateful_drop_direct_output
+  template: "{{ drop }}"
+  environment:
+    drop:
+      instantiate:ToSDrop:
+        foo: 0
+  expected: "woot: 1"
+
+# Root cause: 'or' conditions with comparison operands (d > 1 or items == blank)
+# were not building the comparison operand correctly — only simple variable
+# operands were handled.
+- name: or_condition_with_comparison_operand_blank
+  template: "{% assign d = 2 %}{% if d > 1 or items == blank %}YES{% else %}NO{% endif %}"
+  environment:
+    items: [a, b]
+  expected: "YES"
+
+- name: or_condition_with_comparison_operand_empty
+  template: "{% assign a = 2 %}{% assign b = 1 %}{% if a > b or x == empty %}YES{% else %}NO{% endif %}"
+  expected: "YES"

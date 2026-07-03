@@ -320,7 +320,6 @@ module LiquidIL
       end
 
       def escape(input)
-        return nil if input.nil?
         CGI.escapeHTML(Utils.to_s(input))
       end
 
@@ -603,9 +602,10 @@ module LiquidIL
         options = args.last.is_a?(Hash) ? args.last : {}
         allow_false = options["allow_false"]
 
-        liquid_value = input.respond_to?(:to_liquid_value) ? input.to_liquid_value : input
-        false_check = allow_false ? input.nil? : !liquid_truthy?(liquid_value)
-        false_check || (input.respond_to?(:empty?) && input.empty?) ? default_value : input
+        liquid_input = input.to_liquid
+        liquid_value = liquid_input.to_liquid_value
+        false_check = allow_false ? liquid_input.nil? : !liquid_truthy?(liquid_value)
+        false_check || (liquid_input.respond_to?(:empty?) && liquid_input.empty?) ? default_value : liquid_input
       end
 
       def json(input)
@@ -618,7 +618,7 @@ module LiquidIL
       private
 
       def liquidize(value)
-        value.respond_to?(:to_liquid) ? value.to_liquid : value
+        value.to_liquid
       end
 
       def to_number(value)
@@ -628,9 +628,7 @@ module LiquidIL
         end
 
         # Handle drops with to_liquid_value
-        if value.respond_to?(:to_liquid_value)
-          value = value.to_liquid_value
-        end
+        value = value.to_liquid_value
 
         case value
         when BigDecimal
@@ -817,7 +815,7 @@ module LiquidIL
 
       def each
         @input.each do |e|
-          e = e.to_liquid if e.respond_to?(:to_liquid)
+          e = e.to_liquid
           e.context = @context if @context && e.respond_to?(:context=)
           yield(e)
         end

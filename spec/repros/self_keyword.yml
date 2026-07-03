@@ -1,0 +1,51 @@
+---
+_metadata:
+  hint: The `self` keyword returns a SelfDrop that delegates property/bracket access to the current scope. Implemented via FIND_SELF IL instruction emitted by the parser.
+  doc: implementers/self_keyword.md
+  render_errors: true
+specs:
+# Root cause: the `self` keyword was not implemented at all. It should return
+# a SelfDrop wrapping the current scope, so {{ self.foo }} resolves foo through
+# the normal scope chain. Implemented via FIND_SELF IL instruction.
+- name: self_dot_access_resolves_variable
+  template: "{{ self.foo }}"
+  environment:
+    foo: bar
+  expected: "bar"
+
+- name: self_bracket_access_resolves_variable
+  template: "{{ self['foo'] }}"
+  environment:
+    foo: bar
+  expected: "bar"
+
+- name: self_accesses_assigned_variable
+  template: "{% assign x = 'X' %}{{ self.x }}"
+  expected: "X"
+
+# self can be captured and retains the scope reference
+- name: self_captured_retains_scope
+  template: "{% assign s = self %}{{ s.foo }}"
+  environment:
+    foo: bar
+  expected: "bar"
+
+# self with special names (size, first, last) delegates to scope
+- name: self_size_delegates_to_scope
+  template: "{% assign size = 17 %}{{ self.size }}"
+  expected: "17"
+
+- name: self_first_delegates_to_scope
+  template: "{% assign first = 18 %}{{ self.first }}"
+  expected: "18"
+
+- name: self_last_delegates_to_scope
+  template: "{% assign last = 19 %}{{ self.last }}"
+  expected: "19"
+
+# self in a render boundary keeps the original scope
+- name: self_captured_across_render_boundary
+  template: "{%- assign x = 'outer' -%}{%- assign s = self -%}{{- s.x -}}|{%- render 'snippet1', other_self: s -%}"
+  filesystem:
+    snippet1: "{%- assign x = 'snippet' -%}{{- other_self.x }}|{{ self.x -}}"
+  expected: "outer|outer|snippet"

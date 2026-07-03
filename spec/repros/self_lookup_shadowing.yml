@@ -1,0 +1,43 @@
+---
+_metadata:
+  hint: FIND_SELF must normal-lookup assigned/env/counter self before falling back to synthetic SelfDrop
+  doc: implementers/variables.md
+  render_errors: true
+specs:
+- name: assigned_self_shadows_synthetic_selfdrop
+  template: "{% assign self = 'hello' %}{{ self }}"
+  expected: "hello"
+
+- name: environment_self_shadows_synthetic_selfdrop
+  template: "{{ self }}|{{ self['key'] }}|{{ self.key }}"
+  environment:
+    self:
+      key: value
+  expected: '{"key"=>"value"}|value|value'
+
+- name: increment_self_counter_shadows_synthetic_selfdrop
+  template: "{% increment self %}|{{ self }}"
+  expected: "0|1"
+
+- name: render_param_named_self_preserves_caller_selfdrop
+  template: "{%- assign x = 1 -%}{%- render 'snippet', self: self -%}"
+  filesystem:
+    snippet: "{%- assign x = 2 -%}{{- self['x'] }}|{{ x -}}"
+  expected: "1|2"
+
+- name: captured_environment_self_preserves_environment_value
+  template: "{%- assign s = self -%}{%- render 'snippet', drop: s -%}"
+  environment:
+    self:
+      value: env
+  filesystem:
+    snippet: "{{ drop.value }}"
+  expected: "env"
+
+- name: map_filter_uses_selfdrop_scope_lookup
+  template: "{% assign x = 'X' %}{{ self | map: 'x' | join: ',' }}|{{ self | map: 'missing' | join: ',' }}"
+  expected: "X|"
+
+- name: string_filters_use_liquid_selfdrop_name
+  template: "{{ self | escape }}|{{ self | slice: 0, 6 }}|{{ self | url_encode }}"
+  expected: "Liquid::SelfDrop|Liquid|Liquid%3A%3ASelfDrop"

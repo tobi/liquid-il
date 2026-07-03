@@ -228,17 +228,57 @@ module LiquidIL
       when LiquidIL::RangeValue
         value
       else
-        # Check for to_liquid (Liquid::Drop, custom objects)
-        if value.respond_to?(:to_liquid)
-          liquid_value = value.to_liquid
-          # If to_liquid returns self, the object is a drop — it handles its own security
-          # via invoke_drop. If it returns something else, sanitize that.
-          liquid_value.equal?(value) ? value : sanitize(liquid_value)
-        else
-          # Unknown object type — not safe to expose to templates
-          nil
-        end
+        # to_liquid is defined on all objects (returns self by default).
+        # Drops override it to return self too — they handle their own security
+        # via invoke_drop. If it returns something else, sanitize that.
+        liquid_value = value.to_liquid
+        liquid_value.equal?(value) ? value : sanitize(liquid_value)
       end
+    end
+  end
+
+  # SelfDrop — returned by the special `self` keyword (FIND_SELF IL instruction).
+  # It wraps the current Scope and delegates property/bracket access back to
+  # scope.lookup, so templates can do {{ self.foo }} or {{ self['foo'] }} to
+  # access assigns dynamically without exposing context internals.
+  # When captured via {% assign s = self %}, it retains the scope reference,
+  # so later access resolves through the captured scope, not the current one.
+  class SelfDrop < Drop
+    def initialize(scope)
+      super()
+      @scope = scope
+    end
+
+    def invoke_drop(key)
+      @scope.lookup(key.to_s)
+    end
+
+    # Drop aliases [] to its base invoke_drop method. Override it here so
+    # generic property filters (map/sum/compact) dispatch through SelfDrop's
+    # scope-backed lookup rather than Drop's whitelist-based implementation.
+    def [](key)
+      invoke_drop(key)
+    end
+
+    def key?(key)
+      !@scope.lookup(key.to_s).nil?
+    end
+
+    def to_liquid
+      self
+    end
+
+    # to_liquid_value returns empty string — self is not a scalar value,
+    # it's a scope proxy. When used in a value context (truthiness, comparison),
+    # it should behave like an empty string.
+    def to_liquid_value
+      ""
+    end
+
+    # Match Liquid's public class-name stringification for compatibility. This
+    # is intentionally stringification-only; the class remains LiquidIL::SelfDrop.
+    def to_s
+      "Liquid::SelfDrop"
     end
   end
 end

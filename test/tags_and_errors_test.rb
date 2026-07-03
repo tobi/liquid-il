@@ -111,9 +111,9 @@ class ErrorModeTest < Minitest::Test
     assert_equal "beforeafter", t.render({})
   end
 
-  def test_default_is_lax
+  def test_default_is_strict2
     ctx = LiquidIL::Context.new
-    assert_equal :lax, ctx.error_mode
+    assert_equal :strict2, ctx.error_mode
   end
 
   def test_strict_mode_allows_known_tags

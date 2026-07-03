@@ -74,6 +74,20 @@ rake bench
 rake bench:partials
 ```
 
+## Testing convention (write specs for every fix)
+
+Every inline change — parser, lexer, compiler, runtime, filter — must be accompanied by a **local spec** with a descriptive name and a clear comment explaining the root cause and expected behavior. Do not rely solely on the upstream liquid-spec to catch regressions; write a focused spec that would fail without the fix and pass with it.
+
+Guidelines:
+- Place focused repro specs in `spec/repros/` as YAML files. `liquid-spec` discovers local specs recursively, so keep repros organized in subdirectories when helpful.
+- Use the existing YAML format: `name`, `template`, `expected`, `environment`, `filesystem`, `render_errors`, etc.
+- Name specs descriptively: `lax_mode_ignores_trailing_junk_after_expression`, not `test_parse_1`.
+- Add a `_metadata.hint` or `doc` field explaining the root cause the spec guards against.
+- Test the **behavior**, not the implementation: assert rendered output or raised error.
+- If the fix addresses a category (e.g., nil handling in filters, drop truthiness), write specs for multiple representatives of that category, not just the one case that failed.
+- Run `bundle exec liquid-spec run adapter.rb` to verify both the new spec and no regressions.
+- For Ruby-level unit tests (not YAML specs), place them in `test/` following the existing `*_test.rb` naming convention.
+
 ## Architecture
 
 Pipeline: **Source → Lexer → Parser → IL → Linker → VM**
@@ -136,7 +150,6 @@ Use the `AskUserQuestion` tool to get direction. The goal is to build something 
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```
@@ -149,66 +162,3 @@ Use the `AskUserQuestion` tool to get direction. The goal is to build something 
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
-
-<!-- bv-agent-instructions-v1 -->
-
----
-
-## Beads Workflow Integration
-
-This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
-
-### Essential Commands
-
-```bash
-# View issues (launches TUI - avoid in automated sessions)
-bv
-
-# CLI commands for agents (use these instead)
-bd ready              # Show issues ready to work (no blockers)
-bd list --status=open # All open issues
-bd show <id>          # Full issue details with dependencies
-bd create --title="..." --type=task --priority=2
-bd update <id> --status=in_progress
-bd close <id> --reason="Completed"
-bd close <id1> <id2>  # Close multiple issues at once
-bd sync               # Commit and push changes
-```
-
-### Workflow Pattern
-
-1. **Start**: Run `bd ready` to find actionable work
-2. **Claim**: Use `bd update <id> --status=in_progress`
-3. **Work**: Implement the task
-4. **Complete**: Use `bd close <id>`
-5. **Sync**: Always run `bd sync` at session end
-
-### Key Concepts
-
-- **Dependencies**: Issues can block other issues. `bd ready` shows only unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers, not words)
-- **Types**: task, bug, feature, epic, question, docs
-- **Blocking**: `bd dep add <issue> <depends-on>` to add dependencies
-
-### Session Protocol
-
-**Before ending any session, run this checklist:**
-
-```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-bd sync                 # Commit beads changes
-git commit -m "..."     # Commit code
-bd sync                 # Commit any new beads changes
-git push                # Push to remote
-```
-
-### Best Practices
-
-- Check `bd ready` at session start to find available work
-- Update status as you work (in_progress → closed)
-- Create new issues with `bd create` when you discover tasks
-- Use descriptive titles and set appropriate priority/type
-- Always `bd sync` before ending session
-
-<!-- end-bv-agent-instructions -->

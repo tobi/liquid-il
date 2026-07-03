@@ -26,6 +26,7 @@ module LiquidIL
     FIND_VAR = :FIND_VAR             # [:FIND_VAR, name]
     FIND_VAR_PATH = :FIND_VAR_PATH   # [:FIND_VAR_PATH, name, [path]]
     FIND_VAR_DYNAMIC = :FIND_VAR_DYNAMIC  # [:FIND_VAR_DYNAMIC] - pops name from stack
+    FIND_SELF = :FIND_SELF           # [:FIND_SELF] - pushes a SelfDrop wrapping the current scope
     LOOKUP_KEY = :LOOKUP_KEY         # [:LOOKUP_KEY] - pops key from stack
     LOOKUP_CONST_KEY = :LOOKUP_CONST_KEY  # [:LOOKUP_CONST_KEY, name]
     LOOKUP_CONST_PATH = :LOOKUP_CONST_PATH  # [:LOOKUP_CONST_PATH, [name, ...]]
@@ -133,6 +134,7 @@ module LiquidIL
     I_CONST_EMPTY = [CONST_EMPTY].freeze
     I_CONST_BLANK = [CONST_BLANK].freeze
     I_FIND_VAR_DYNAMIC = [FIND_VAR_DYNAMIC].freeze
+    I_FIND_SELF = [FIND_SELF].freeze
     I_LOOKUP_KEY = [LOOKUP_KEY].freeze
 
     # Instruction builder - creates instructions with minimal allocation
@@ -252,6 +254,10 @@ module LiquidIL
 
       def find_var_dynamic
         @instructions << I_FIND_VAR_DYNAMIC; @spans << @current_span; self
+      end
+
+      def find_self
+        @instructions << I_FIND_SELF; @spans << @current_span; self
       end
 
       def lookup_key

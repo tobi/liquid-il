@@ -1,0 +1,90 @@
+---
+_metadata:
+  hint: strict2 error mode rejects bare bracket access ({{ ['x'] }}) but allows qualified access ({{ product['title'] }}) and dot notation. Default for production; lax is the liquid-spec adapter default.
+  doc: implementers/error_modes.md
+  render_errors: false
+specs:
+# Root cause: strict2 is a new error mode that rejects bare bracket access
+# at the start of an expression. It's a superset of :strict (also rejects
+# unknown tags, incomplete expressions) plus the bare-bracket rule.
+# Implemented via parser#strict? helper and LBRACKET check in parse_primary.
+
+# --- Bare bracket rejection (strict2) ---
+- name: strict2_rejects_bare_bracket_string
+  template: "{{ ['product'] }}"
+  error_mode: strict2
+  errors:
+    parse_error:
+      - "Bare bracket access is not allowed"
+
+- name: strict2_rejects_bare_bracket_double_quoted
+  template: '{{ ["product"] }}'
+  error_mode: strict2
+  errors:
+    parse_error:
+      - "Bare bracket access is not allowed"
+
+- name: strict2_rejects_bare_bracket_dynamic
+  template: "{{ [key] }}"
+  error_mode: strict2
+  errors:
+    parse_error:
+      - "Bare bracket access is not allowed"
+
+- name: strict2_rejects_bare_bracket_in_assign
+  template: "{% assign x = ['product'] %}"
+  error_mode: strict2
+  errors:
+    parse_error:
+      - "Bare bracket access is not allowed"
+
+- name: strict2_rejects_bare_bracket_in_if
+  template: "{% if ['product'] == true %}hello{% endif %}"
+  error_mode: strict2
+  errors:
+    parse_error:
+      - "Bare bracket access is not allowed"
+
+- name: strict2_rejects_bare_bracket_in_for
+  template: "{% for x in ['a', 'b'] %}{{ x }}{% endfor %}"
+  error_mode: strict2
+  errors:
+    parse_error:
+      - "Bare bracket access is not allowed"
+
+- name: strict2_rejects_bare_bracket_in_case
+  template: "{% case ['product'] %}{% when 'a' %}hello{% endcase %}"
+  error_mode: strict2
+  errors:
+    parse_error:
+      - "Bare bracket access is not allowed"
+
+# --- Qualified access still works in strict2 ---
+- name: strict2_accepts_qualified_bracket_access
+  template: "{{ product['title'] }}"
+  environment:
+    product:
+      title: Cool
+  error_mode: strict2
+  expected: "Cool"
+
+- name: strict2_accepts_dot_notation
+  template: "{{ product.title }}"
+  environment:
+    product:
+      title: Cool
+  error_mode: strict2
+  expected: "Cool"
+
+- name: strict2_accepts_self_bracket_access
+  template: "{% assign foo = 'bar' %}{{ self['foo'] }}"
+  error_mode: strict2
+  expected: "bar"
+
+# --- Lax mode still allows bare brackets ---
+- name: lax_allows_bare_bracket_access
+  template: "{{ ['product'] }}"
+  error_mode: :lax
+  environment:
+    product: shoes
+  expected: "shoes"

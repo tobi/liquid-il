@@ -136,7 +136,8 @@ module LiquidIL
 
       unless source
         @partial_names_in_progress.delete(name)
-        raise "Cannot load partial '#{name}'"
+        @partials[name] = { missing: true, name: name }
+        return
       end
 
       # Compile the partial to IL
@@ -374,7 +375,7 @@ module LiquidIL
       end
       code << "  _H = LiquidIL::RuntimeHelpers\n"
       code << "  _U = LiquidIL::Utils\n" if body_code.include?("_U.") || partial_code.include?("_U.")
-      code << "  _F = LiquidIL::Filters\n" if body_code.include?("_F.") || partial_code.include?("_F.")
+      code << "  _F = LiquidIL::Filters\n" if body_code.include?("_F") || partial_code.include?("_F")
       # Frozen array constants must be declared before partial lambdas
       # (lambdas are closures that capture these variables)
       code << generate_frozen_array_constants
@@ -575,7 +576,7 @@ module LiquidIL
           else
             code << "  _O << " << merged.inspect << "\n"
           end
-        when IL::FIND_VAR, IL::FIND_VAR_PATH
+        when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::FIND_SELF
           # Needs peek - delegate to generate_statement
           result = generate_statement(1)
           break if result.nil?
@@ -677,6 +678,10 @@ module LiquidIL
         @pc += 1
         nil
 
+      when IL::NOOP
+        @pc += 1
+        ""
+
       when IL::SET_CONTEXT
         # Current file is compile-time state: later emissions bake it into
         # error-location literals. No runtime assignment needed.
@@ -706,7 +711,7 @@ module LiquidIL
         var_expr = generate_var_path_expr(inst[1], inst[2])
         inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts)
 
-      when IL::FIND_VAR, IL::FIND_VAR_PATH
+      when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::FIND_SELF
         if peek_for_loop?
           generate_for_loop(indent)
         elsif peek_tablerow?
@@ -1045,10 +1050,12 @@ module LiquidIL
                "#{prefix}_O << #{lit("Liquid error (line #{line_num}): Could not find partial '#{name}'")}\n"
       end
 
-      # Syntax error in partial — use dynamic execution to surface the error
-      if @partials[name]&.[](:syntax_error)
+      # Missing/syntax-error partials use dynamic execution to surface the
+      # error at render time, honoring render_errors/render! semantics.
+      if @partials[name]&.[](:missing) || @partials[name]&.[](:syntax_error)
         code = String.new
-        code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (syntax error)\n"
+        reason = @partials[name]&.[](:missing) ? "missing" : "syntax error"
+        code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (#{reason})\n"
         code << "#{prefix}__dyn_assigns__ = {}\n"
         code << "#{prefix}_H.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
         return code
@@ -1153,6 +1160,9 @@ module LiquidIL
         code << "#{prefix}if __for_coll__.is_a?(Array)\n"
         code << "#{prefix}  __for_coll__.each_with_index do |_i_, _x_|\n"
         code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
+        unless isolated
+          code << "#{prefix}    _S.assign(#{item_var.inspect}, _i_)\n"
+        end
         if isolated
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = _x_ }\n"
         end
@@ -1184,6 +1194,9 @@ module LiquidIL
         code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
         code << "#{prefix}else\n"
         code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __for_coll__\n"
+        unless isolated
+          code << "#{prefix}  _S.assign(#{item_var.inspect}, __for_coll__)\n"
+        end
         code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
         code << "#{prefix}end\n"
       elsif with_expr
@@ -1196,13 +1209,16 @@ module LiquidIL
           code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
         else
           # For include, __with_val__ was already looked up BEFORE keyword args modified scope
+          # Assign the with-value to the current scope so the partial can see it
           code << "#{prefix}if __with_val__.is_a?(Array)\n"
           code << "#{prefix}  __with_val__.each do |_i_|\n"
           code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
+          code << "#{prefix}    _S.assign(#{item_var.inspect}, _i_)\n"
           code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
           code << "#{prefix}  end\n"
           code << "#{prefix}else\n"
           code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __with_val__\n"
+          code << "#{prefix}  _S.assign(#{item_var.inspect}, __with_val__)\n"
           code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
           code << "#{prefix}end\n"
         end
@@ -1216,7 +1232,8 @@ module LiquidIL
           assign_keys = arg_expressions.keys.select do |k|
             # Check original body patterns (before _S -> __partial_scope__ substitution)
             info[:compiled_body].include?("_S.lookup(#{k.inspect})") ||
-              info[:compiled_body].include?("__partial_scope__.lookup(#{k.inspect})")
+              info[:compiled_body].include?("__partial_scope__.lookup(#{k.inspect})") ||
+              (k == "self" && info[:compiled_body].include?("lookup_self"))
           end
           arg_expressions.each do |k, expr|
             next unless assign_keys.include?(k)
@@ -1360,46 +1377,50 @@ module LiquidIL
         return "LiquidIL::RangeValue.new(#{Regexp.last_match(1)}, #{Regexp.last_match(2)})"
       end
 
-      # Parse variable path
-      parts = expr_str.scan(/(\w+)|\[(\d+)\]|\[['"](\w+)['"]\]/)
-      return "nil" if parts.empty?
+      # Parse variable paths with both static and dynamic bracket lookups:
+      #   product.title       -> static key "title"
+      #   data['my_key']      -> static key "my_key"
+      #   data[key]           -> dynamic lookup using key's value
+      #   data[config.key]    -> dynamic lookup using a nested expression
+      root_match = expr_str.match(/\A[a-zA-Z_]\w*/)
+      return "nil" unless root_match
 
-      if parts.size == 1
-        first_var = parts[0][0]
-        # Use loop variable alias if available (avoids _S.lookup method call)
-        if @loop_var_aliases[first_var]
-          @loop_var_aliases[first_var]
-        else
-          "_S.lookup(#{first_var.inspect})"
-        end
+      root = root_match[0]
+      result = if root == "self"
+        "_S.lookup_self"
       else
-        first_var = parts[0][0]
-        rest_keys = parts[1..].map do |match|
-          key = match[0] || match[1] || match[2]
-          key.to_s =~ /^\d+$/ ? key.to_i : key.inspect
-        end
-        raw_rest_keys = parts[1..].map { |m| (m[0] || m[1] || m[2]).to_s }
-        # Use loop variable alias if available
-        result = if @loop_var_aliases[first_var]
-          @loop_var_aliases[first_var]
-        else
-          "_S.lookup(#{first_var.inspect})"
-        end
-        if @loop_var_aliases[first_var]
-          # Loop variable is always a Hash — inline lookup for speed
-          # Skip symbol fallback since loop variables always use string keys
-          if rest_keys.size == 1
-            key = rest_keys[0]
-            result = key.is_a?(String) ? "#{result}[#{key}]" : "#{result}[#{key}]"
-          else
-            result = "_H.lh(#{result}, #{rest_keys[0]})"
-            rest_keys[1..].each { |k| result = "_H.lookup(#{result}, #{k})" }
-          end
-        else
-          rest_keys.each { |k| result = "_H.lookup(#{result}, #{k})" }
-        end
-        result
+        @loop_var_aliases[root] || "_S.lookup(#{root.inspect})"
       end
+      i = root.length
+
+      while i < expr_str.length
+        case expr_str.getbyte(i)
+        when 46 # .
+          i += 1
+          key_match = expr_str[i..]&.match(/\A[a-zA-Z_]\w*/)
+          break unless key_match
+          key = key_match[0]
+          result = "_H.lookup(#{result}, #{key.inspect})"
+          i += key.length
+        when 91 # [
+          close = expr_str.index("]", i + 1)
+          break unless close
+          inner = expr_str[(i + 1)...close].strip
+          key_ruby = if inner =~ /\A-?\d+\z/
+            inner.to_i.inspect
+          elsif (m = inner.match(/\A'(.*)'\z/)) || (m = inner.match(/\A"(.*)"\z/))
+            m[1].inspect
+          else
+            generate_var_lookup(inner)
+          end
+          result = "_H.lookup(#{result}, #{key_ruby})"
+          i = close + 1
+        else
+          break
+        end
+      end
+
+      result
     end
 
     # Build a Ruby expression directly from IL instructions.
@@ -1408,6 +1429,11 @@ module LiquidIL
       # Stack of Ruby strings — avoids allocating a second expression tree.
       stack = []
       seen_is_truthy = false
+
+      if (liquid_bool = try_build_liquid_boolean_condition)
+        @pc = liquid_bool[1]
+        return [liquid_bool[0], :none]
+      end
 
       while @pc < @instructions.length
         inst = @instructions[@pc]
@@ -1462,6 +1488,9 @@ module LiquidIL
             stack << "_S.lookup(#{inst[1].inspect})"
           end
           @pc += 1
+        when IL::FIND_SELF
+          stack << "_S.lookup_self"
+          @pc += 1
         when IL::FIND_VAR_PATH
           stack << generate_var_path_expr(inst[1], inst[2])
           @pc += 1
@@ -1514,7 +1543,7 @@ module LiquidIL
               stack << "(#{left_ruby} || 0) #{ruby_op} #{right_ruby}"
             else
               # Unwrap drops via to_liquid_value before numeric comparison
-              stack << "((_t = #{left_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+              stack << "((_t = #{left_ruby}); _t = _t.to_liquid_value; _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
             end
           else
             stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, #{@current_file_lit.inspect})"
@@ -1631,8 +1660,23 @@ module LiquidIL
                 when IL::CONST_NIL then stack << "nil"; @pc += 1
                 when IL::CONST_EMPTY then stack << "LiquidIL::EmptyLiteral.instance"; @pc += 1
                 when IL::CONST_BLANK then stack << "LiquidIL::BlankLiteral.instance"; @pc += 1
-                when IL::FIND_VAR then stack << "_S.lookup(#{build_inst[1].inspect})"; @pc += 1
-                when IL::FIND_VAR_PATH then stack << generate_var_path_expr(build_inst[1], build_inst[2]); @pc += 1
+                when IL::FIND_VAR
+                  part = "_S.lookup(#{build_inst[1].inspect})"
+                  @pc += 1
+                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
+                    part = build_or_chain_from_left(part)
+                    break unless part
+                  end
+                  stack << part
+                when IL::FIND_VAR_PATH
+                  part = generate_var_path_expr(build_inst[1], build_inst[2])
+                  @pc += 1
+                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
+                    part = build_or_chain_from_left(part)
+                    break unless part
+                  end
+                  stack << part
+                when IL::FIND_SELF then stack << "_S.lookup_self"; @pc += 1
                 when IL::LOAD_TEMP then stack << "__temp_#{build_inst[1]}__"; @pc += 1
                 when IL::LOOKUP_CONST_KEY
                   obj_ruby = stack.pop || "nil"
@@ -1649,22 +1693,36 @@ module LiquidIL
                        left_ruby_inner.match?(/\A-?[0-9]+\.?[0-9]*\z/)
                       stack << "(#{left_ruby_inner} || 0) #{ruby_op} #{right_ruby}"
                     else
-                      stack << "((_t = #{left_ruby_inner}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+                      stack << "((_t = #{left_ruby_inner}); _t = _t.to_liquid_value; _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
                     end
                   else
                     stack << "_H.cmp(#{left_ruby_inner}, #{right_ruby}, #{cmp_op.inspect}, _O, #{@current_file_lit.inspect})"
                   end
                   @pc += 1
+                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
+                    part = stack.pop || "false"
+                    part = build_or_chain_from_left(part)
+                    break unless part
+                    stack << part
+                  end
                 when IL::CONTAINS
                   right_ruby = stack.pop || "nil"
                   left_ruby_inner = stack.pop || "nil"
                   stack << "_H.ct(#{left_ruby_inner}, #{right_ruby})"
                   @pc += 1
+                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
+                    part = stack.pop || "false"
+                    part = build_or_chain_from_left(part)
+                    break unless part
+                    stack << part
+                  end
                 when IL::BOOL_NOT
                   operand_ruby = stack.pop || "false"
                   stack << "((_t = #{operand_ruby}); _t.nil? || _t == false)"
                   @pc += 1
-                when IL::IS_TRUTHY then @pc += 1
+                when IL::IS_TRUTHY
+                  seen_is_truthy = true
+                  @pc += 1
                 else @pc += 1
                 end
               else
@@ -1674,6 +1732,7 @@ module LiquidIL
             right_ruby = stack.pop || "false"
             stack << "((#{inline_truthy(left_ruby)}) && (#{inline_truthy(right_ruby)}))"
             if @instructions[@pc]&.[](0) == IL::IS_TRUTHY
+              seen_is_truthy = true
               @pc += 1
             end
           elsif inst[0] == IL::JUMP_IF_TRUE && target_inst&.[](0) == IL::CONST_TRUE && is_short_circuit_pattern
@@ -1686,9 +1745,11 @@ module LiquidIL
 
               case build_inst[0]
               when IL::IS_TRUTHY
+                seen_is_truthy = true
                 @pc += 1
                 break
               when IL::CONST_TRUE
+                or_operands << "true"
                 @pc += 1
               when IL::JUMP
                 jmp_target = build_inst[1]
@@ -1704,6 +1765,15 @@ module LiquidIL
                 or_ruby = build_or_operand_ruby(build_inst[1])
                 or_operands << or_ruby if or_ruby
                 break unless or_ruby
+              when IL::FIND_VAR_PATH
+                @pc += 1
+                or_ruby = build_or_operand_from_value(generate_var_path_expr(build_inst[1], build_inst[2]))
+                or_operands << or_ruby if or_ruby
+                break unless or_ruby
+              when IL::FIND_SELF
+                or_operands << "_S.lookup_self"
+                @pc += 1
+                break
               when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_FALSE, IL::CONST_NIL
                 case build_inst[0]
                 when IL::CONST_INT then or_operands << build_inst[1].inspect
@@ -1734,6 +1804,80 @@ module LiquidIL
       end
 
       [stack.last, :none]
+    end
+
+    # Reconstruct Liquid's right-recursive boolean condition IL into a Ruby
+    # expression. Liquid gives `and`/`or` equal precedence and parses them
+    # right-to-left, so `a or b and c` means `a or (b and c)`. The generic
+    # stack inliner is intentionally simple and can flatten constant-only
+    # chains left-to-right; this helper follows the actual jump targets emitted
+    # by the parser and is used only for condition expressions ending in
+    # IS_TRUTHY + JUMP_IF_*.
+    def try_build_liquid_boolean_condition
+      truthy_pc = @pc
+      while truthy_pc < @instructions.length
+        op = @instructions[truthy_pc]&.[](0)
+        break if op == IL::IS_TRUTHY
+        return nil if op == IL::WRITE_RAW || op == IL::WRITE_VALUE || op == IL::ASSIGN || op == IL::ASSIGN_LOCAL || op == IL::HALT
+        truthy_pc += 1
+      end
+      return nil unless @instructions[truthy_pc]&.[](0) == IL::IS_TRUTHY
+      branch = @instructions[truthy_pc + 1]&.[](0)
+      return nil unless branch == IL::JUMP_IF_FALSE || branch == IL::JUMP_IF_TRUE
+
+      expr, = build_liquid_boolean_expr_at(@pc, truthy_pc)
+      expr && [expr, truthy_pc + 1]
+    end
+
+    def build_liquid_boolean_expr_at(pos, finish_pc)
+      value, next_pos = build_liquid_boolean_value_at(pos, finish_pc)
+      return nil unless value
+      return [inline_truthy(value), next_pos] if next_pos >= finish_pc
+
+      inst = @instructions[next_pos]
+      case inst&.[](0)
+      when IL::JUMP_IF_TRUE
+        target = inst[1]
+        return nil unless target <= finish_pc && @instructions[target]&.[](0) == IL::CONST_TRUE
+        right, = build_liquid_boolean_expr_at(next_pos + 1, target)
+        return nil unless right
+        ["((#{inline_truthy(value)}) || (#{right}))", finish_pc]
+      when IL::JUMP_IF_FALSE
+        target = inst[1]
+        return nil unless target <= finish_pc && @instructions[target]&.[](0) == IL::CONST_FALSE
+        right, = build_liquid_boolean_expr_at(next_pos + 1, target)
+        return nil unless right
+        ["((#{inline_truthy(value)}) && (#{right}))", finish_pc]
+      when IL::JUMP
+        return [inline_truthy(value), inst[1]] if inst[1] >= finish_pc
+        nil
+      else
+        nil
+      end
+    end
+
+    def build_liquid_boolean_value_at(pos, finish_pc)
+      return nil if pos >= finish_pc
+      inst = @instructions[pos]
+      case inst&.[](0)
+      when IL::CONST_INT then [inst[1].inspect, pos + 1]
+      when IL::CONST_FLOAT then [inst[1].inspect, pos + 1]
+      when IL::CONST_STRING then [inst[1].inspect, pos + 1]
+      when IL::CONST_TRUE then ["true", pos + 1]
+      when IL::CONST_FALSE then ["false", pos + 1]
+      when IL::CONST_NIL then ["nil", pos + 1]
+      when IL::CONST_EMPTY then ["LiquidIL::EmptyLiteral.instance", pos + 1]
+      when IL::CONST_BLANK then ["LiquidIL::BlankLiteral.instance", pos + 1]
+      when IL::FIND_VAR
+        ruby = @loop_var_aliases[inst[1]] || "_S.lookup(#{inst[1].inspect})"
+        [ruby, pos + 1]
+      when IL::FIND_SELF
+        ["_S.lookup_self", pos + 1]
+      when IL::FIND_VAR_PATH
+        [generate_var_path_expr(inst[1], inst[2]), pos + 1]
+      else
+        nil
+      end
     end
 
     # Generate variable path access (a.b.c)
@@ -2801,13 +2945,9 @@ module LiquidIL
     INT_LITERAL_RE = /\A-?\d+\z/
 
     def emit_filter_call(filter_name, input_ruby, args, filter_pc)
-      # Identity optimizations: skip filters that are no-ops
-      if (filter_name == "plus" && args.length == 1 && args[0] == "0") ||
-         (filter_name == "minus" && args.length == 1 && args[0] == "0") ||
-         (filter_name == "times" && args.length == 1 && args[0] == "1") ||
-         (filter_name == "divided_by" && args.length == 1 && args[0] == "1")
-        return input_ruby
-      end
+      # Arithmetic filters are not identity operations for Liquid values: even
+      # plus:0/times:1 coerce strings to numbers (e.g. "6-3" | plus:0 => 6).
+      # Do not skip them based only on literal arguments.
 
       # If an earlier filter in this chain went through a dispatcher, its
       # result may be an ErrorMarker. Keep the rest of the chain in
@@ -2819,8 +2959,11 @@ module LiquidIL
         if SAFE_NUMERIC_FILTERS.match?("_F.#{filter_name}(") && args.length > 0 && args.all? { |a| a.match?(INT_LITERAL_RE) }
           return "(#{input_ruby} || 0).to_f.#{filter_name}(#{args.join(', ')})"
         elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
-          # Inline simple filters: Utils.to_s(input).method -> input.to_s.method
-          return "#{input_ruby}.to_s.#{filter_name}"
+          # Inline simple filters: Utils.to_s(input).method
+          # Use to_liquid_s (defined on all objects via core_ext) for correct
+          # Liquid drop stringification. For Hash/Array, to_liquid_s uses the
+          # legacy inspect format matching Liquid filter behavior.
+          return "#{input_ruby}.to_liquid_s.#{filter_name}"
         elsif args.empty?
           return "_F.#{filter_name}(#{input_ruby})"
         else
@@ -2890,13 +3033,12 @@ module LiquidIL
       # For simple inline filters, use a per-filter cache to avoid repeated method calls
       # e.g., input.to_s.capitalize -> (_CAP__ ||= {})[(_v = input.to_s)] ||= _v.capitalize
       cache_pattern = nil
-      if (suffix_m = expr_ruby.match(/\.to_s\.(capitalize|upcase|downcase|strip|lstrip|rstrip)\z/))
+      if (suffix_m = expr_ruby.match(/\.to_liquid_s\.(capitalize|upcase|downcase|strip|lstrip|rstrip)\z/))
         filter_name = suffix_m[1]
         if (cache_var = FILTER_CACHE[filter_name])
-          # Extract the input expression (before .to_s)
-          input_expr = expr_ruby.sub(/\.to_s\.(?:capitalize|upcase|downcase|strip|lstrip|rstrip)\z/, '')
-          # Remove trailing .to_s if present
-          cache_pattern = "(#{cache_var}[(_v = #{input_expr}.to_s)] || (#{cache_var}[_v] = _v.#{filter_name}))"
+          # Extract the input expression (before .to_liquid_s)
+          input_expr = expr_ruby.sub(/\.to_liquid_s\.(?:capitalize|upcase|downcase|strip|lstrip|rstrip)\z/, '')
+          cache_pattern = "(#{cache_var}[(_v = #{input_expr}.to_liquid_s)] || (#{cache_var}[_v] = _v.#{filter_name}))"
         end
       end
       direct = cache_pattern || expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)
@@ -2941,10 +3083,10 @@ module LiquidIL
         "(#{expr_ruby})"
       elsif is_simple
         # Unwrap drops via to_liquid_value (BooleanDrop with false should be falsy)
-        "((_t = #{expr_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t)"
+        "((_t = #{expr_ruby}); _t = _t.to_liquid_value; _t)"
       else
         # Complex expression - use _t temp to avoid double evaluation
-        "((_t = #{expr_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t)"
+        "((_t = #{expr_ruby}); _t = _t.to_liquid_value; _t)"
       end
     end
 
@@ -3053,9 +3195,12 @@ module LiquidIL
 
       def self.compile(source, context: nil, **options)
         opts = options.empty? ? RUBY_DEFAULTS : RUBY_DEFAULTS.merge(options)
-        # Pass error_mode from context to compiler
+        # Pass error_mode from context to compiler (default is :strict2)
         if context&.error_mode && context.error_mode != :lax
           opts = opts.merge(error_mode: context.error_mode)
+        elsif !context
+          # No context: use strict2 default
+          opts = opts.merge(error_mode: :strict2)
         end
         warnings = []
         opts = opts.merge(warnings: warnings)

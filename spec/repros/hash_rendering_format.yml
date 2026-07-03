@@ -1,0 +1,44 @@
+---
+_metadata:
+  hint: Hash/array rendering must use legacy Ruby inspect format (no spaces around =>, symbol keys as :key=>"val")
+  doc: implementers/rendering.md
+  render_errors: true
+specs:
+# Root cause: Ruby 4.0 changed Hash#inspect spacing. Liquid-spec expects
+# legacy hash rendering with no spaces around =>. Inline string filters
+# (upcase, downcase, etc.) must use Liquid stringification rather than
+# Ruby's native .to_s.
+- name: hash_rendering_string_key_downcase_no_spaces
+  template: "{{ a0 | downcase }}"
+  environment:
+    a0:
+      foo: bar
+  expected: "{\"foo\"=>\"bar\"}"
+
+- name: hash_rendering_integer_key_downcase
+  template: "{{ a0 | downcase }}"
+  environment:
+    a0:
+      1: bar
+  expected: "{1=>\"bar\"}"
+
+- name: hash_rendering_string_key_upcase_no_spaces
+  template: "{{ a0 | upcase }}"
+  environment:
+    a0:
+      foo: bar
+  expected: "{\"FOO\"=>\"BAR\"}"
+
+- name: hash_rendering_direct_output_string_key_no_spaces
+  template: "{{ a0 }}"
+  environment:
+    a0:
+      foo: bar
+  expected: "{\"foo\"=>\"bar\"}"
+
+- name: hash_rendering_string_key_strip
+  template: "{{ a0 | strip }}"
+  environment:
+    a0:
+      foo: bar
+  expected: "{\"foo\"=>\"bar\"}"

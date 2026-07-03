@@ -17,7 +17,10 @@ end
 # The compiled template is stored in ctx[:template] for use by the render block.
 LiquidSpec.compile do |ctx, source, options|
   file_system = options[:file_system] || ctx[:file_system]
-  c = LiquidIL::Context.new(file_system: file_system)
+  # liquid-spec specs without error_mode expect lax behavior;
+  # default to lax, override only when the spec explicitly sets one
+  error_mode = options[:error_mode] || :lax
+  c = LiquidIL::Context.new(file_system: file_system, error_mode: error_mode)
   ctx[:template] = c.parse(source, line_numbers: options[:line_numbers])
 end
 

@@ -1,0 +1,30 @@
+---
+_metadata:
+  hint: partial error locations should use template_factory-provided template names when present
+  render_errors: true
+  features:
+    - ruby_drops
+    - inline_errors
+    - template_factory
+specs:
+- name: include_error_uses_template_factory_partial_name
+  template: "{% include 'foo' with errors %}"
+  environment:
+    errors:
+      'instantiate:ErrorDrop:': {}
+  template_factory:
+    'instantiate:StubTemplateFactory:': {}
+  filesystem:
+    foo: "{{ foo.standard_error }}"
+  expected: "Liquid error (some/path/foo line 1): standard error"
+
+- name: render_error_uses_template_factory_partial_name
+  template: "{% render 'foo' with errors %}"
+  environment:
+    errors:
+      'instantiate:ErrorDrop:': {}
+  template_factory:
+    'instantiate:StubTemplateFactory:': {}
+  filesystem:
+    foo: "{{ foo.standard_error }}"
+  expected: "Liquid error (some/path/foo line 1): standard error"
