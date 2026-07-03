@@ -411,10 +411,10 @@ module LiquidIL
         code << "      _O << \"Liquid error (\#{location}): \#{e.message}\"\n"
         code << "    rescue LiquidIL::FilterRuntimeError => e\n"
         code << "      raise unless __parent_scope__.render_errors\n"
-        code << "      _O << \"Liquid error (#{name} line 1): \#{e.message}\"\n"
+        code << "      _O << (#{lit("Liquid error (#{name} line 1): ")} + e.message.to_s)\n"
         code << "    rescue StandardError => e\n"
         code << "      raise unless __parent_scope__.render_errors\n"
-        code << "      _O << \"Liquid error (#{name} line 1): \#{LiquidIL.clean_error_message(e.message)}\"\n"
+        code << "      _O << (#{lit("Liquid error (#{name} line 1): ")} + LiquidIL.clean_error_message(e.message).to_s)\n"
         code << "    ensure\n"
         code << "      __parent_scope__.current_file = __prev_file__\n"
         code << "      _F = __prev_f__\n"
@@ -916,6 +916,27 @@ module LiquidIL
       end
     end
 
+    # ── Codegen security invariant ──────────────────────────────
+    # All template-derived strings (partial names, tag types, lookup
+    # keys, etc.) must be emitted into generated Ruby source ONLY through
+    # `lit` (for string literals) or `comment_safe` (for comments).
+    # Raw interpolation of template values into emitted code is prohibited
+    # — it is an RCE primitive (a malicious name like `evil#{pwn}name`
+    # would execute `pwn` at render time). See test/code_injection_test.rb.
+
+    # Emit a template-derived string as a safe Ruby string literal.
+    # This is the single codegen primitive for string-literal emission.
+    def lit(str)
+      str.to_s.inspect
+    end
+
+    # Escape a template-derived string for safe embedding in a generated
+    # Ruby comment. Comments are newline-terminated, so only newlines
+    # need escaping to prevent breaking out of the comment.
+    def comment_safe(str)
+      str.to_s.gsub("\n", "\\n")
+    end
+
     # Generate a partial call (render or include)
     def generate_partial_call(inst, pc, indent, isolated:)
       @pc += 1
@@ -930,20 +951,20 @@ module LiquidIL
       # Handle invalid/dynamic partial names — emit inline error
       if args["__invalid_name__"]
         return "#{prefix}# #{tag_type} with invalid name\n" \
-               "#{prefix}_O << \"Liquid error (line #{line_num}): Argument error in tag '#{tag_type}' - Illegal template name\"\n"
+               "#{prefix}_O << #{lit("Liquid error (line #{line_num}): Argument error in tag '#{tag_type}' - Illegal template name")}\n"
       end
       if args["__dynamic_name__"]
         return generate_dynamic_partial(inst, pc, indent, isolated: isolated)
       end
       if !@context&.file_system
-        return "#{prefix}# #{tag_type} '#{name}' (no file system)\n" \
-               "#{prefix}_O << \"Liquid error (line #{line_num}): Could not find partial '#{name}'\"\n"
+        return "#{prefix}# #{tag_type} '#{comment_safe(name)}' (no file system)\n" \
+               "#{prefix}_O << #{lit("Liquid error (line #{line_num}): Could not find partial '#{name}'")}\n"
       end
 
       # Syntax error in partial — use dynamic execution to surface the error
       if @partials[name]&.[](:syntax_error)
         code = String.new
-        code << "#{prefix}# #{tag_type} '#{name}' (syntax error)\n"
+        code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (syntax error)\n"
         code << "#{prefix}__dyn_assigns__ = {}\n"
         code << "#{prefix}_H.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
         return code
@@ -952,7 +973,7 @@ module LiquidIL
       # Recursive partials use runtime resolution
       if @partials[name]&.[](:recursive)
         code = String.new
-        code << "#{prefix}# #{tag_type} '#{name}' (recursive — runtime resolution)\n"
+        code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (recursive — runtime resolution)\n"
         code << "#{prefix}__dyn_assigns__ = {}\n"
         args.each do |k, v|
           next if k.start_with?("__")
@@ -973,7 +994,7 @@ module LiquidIL
 
       lambda_name = partial_lambda_name(name)
       code = String.new
-      code << "#{prefix}# #{tag_type} '#{name}'\n"
+      code << "#{prefix}# #{tag_type} '#{comment_safe(name)}'\n"
 
       # Handle with/for expressions
       with_expr = args["__with__"]
