@@ -323,7 +323,6 @@ module LiquidIL
       end
 
       def escape(input)
-        return nil if input.nil?
         CGI.escapeHTML(Utils.to_s(input))
       end
 

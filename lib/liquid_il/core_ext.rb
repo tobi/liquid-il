@@ -22,4 +22,39 @@ class Object
       self
     end
   end
+
+  # Liquid stringification — converts any value to its Liquid string
+  # representation. Override for types with special rendering (Hash, Array, Drops).
+  # Default: call to_liquid then to_s.
+  unless method_defined?(:to_liquid_s)
+    def to_liquid_s
+      v = to_liquid
+      v.equal?(self) ? to_s : v.to_liquid_s
+    end
+  end
+end
+
+# Core type overrides for to_liquid_s
+class NilClass
+  def to_liquid_s; ""; end
+end
+
+class TrueClass
+  def to_liquid_s; "true"; end
+end
+
+class FalseClass
+  def to_liquid_s; "false"; end
+end
+
+class Integer
+  def to_liquid_s; to_s; end
+end
+
+class Float
+  def to_liquid_s; to_s; end
+end
+
+class String
+  def to_liquid_s; self; end
 end
