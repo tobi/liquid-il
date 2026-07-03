@@ -3,7 +3,6 @@
 require "cgi"
 require "json"
 require "liquid"
-require "zlib"
 
 module LiquidIL
   # Lightweight Shopify storefront surface for liquid-spec adapters.
@@ -79,8 +78,7 @@ module LiquidIL
         Filters.singleton_class.class_eval do
           def asset_url(input)
             name = LiquidIL::ShopifyMock.asset_name(input)
-            version = Zlib.crc32(name).to_s
-            "#{LiquidIL::ShopifyMock::CDN_BASE}/#{CGI.escape(name)}?v=#{version}"
+            "#{LiquidIL::ShopifyMock::CDN_BASE}/#{CGI.escape(name)}?v=1"
           end
 
           def img_url(input, size = nil)
@@ -143,13 +141,12 @@ module LiquidIL
             LiquidIL::ShopifyMock.default_pagination(paginate)
           end
 
-          def t(input, *_args)
-            input.to_s
+          def t(input, *args)
+            LiquidIL::ShopifyMock.translate(input, args.last.is_a?(Hash) ? args.last : nil)
           end
 
           def placeholder_svg_tag(type, css_class = nil)
-            klass = css_class ? %( class="#{CGI.escapeHTML(css_class.to_s)}") : ""
-            %(<svg xmlns="http://www.w3.org/2000/svg"#{klass}><title>#{CGI.escapeHTML(type.to_s)}</title><rect width="100%" height="100%"/></svg>)
+            LiquidIL::ShopifyMock.placeholder_svg_tag(type, css_class)
           end
 
           def color_to_rgb(input) = input.to_s
@@ -189,6 +186,47 @@ module LiquidIL
 
     def self.asset_name(input)
       File.basename(input.to_s.empty? ? "asset" : input.to_s)
+    end
+
+    def self.translate(key, variables = nil)
+      value = key.to_s.split('.').reduce(locale_data) { |node, part| node.is_a?(Hash) ? node[part] : nil }
+      value = plural_translation(value, variables) if value.is_a?(Hash)
+      value ||= key.to_s
+      interpolate_translation(value.to_s, variables)
+    end
+
+    def self.plural_translation(value, variables)
+      count = variables && (variables["count"] || variables[:count])
+      value[count.to_i == 1 ? "one" : "other"] || value.values.first
+    end
+
+    def self.interpolate_translation(value, variables)
+      return value unless variables
+
+      value.gsub(/\{\{\s*([\w.]+)\s*\}\}|%\{([\w.]+)\}/) do
+        name = Regexp.last_match(1) || Regexp.last_match(2)
+        replacement = variables[name] || variables[name.to_sym]
+        replacement.nil? ? "" : replacement.to_s
+      end
+    end
+
+    def self.locale_data
+      @locale_data ||= load_theme_json("locales/en.default.json") || {}
+    end
+
+    def self.placeholder_svg_tag(type, css_class = nil)
+      svg = placeholder_svg(type.to_s)
+      return "" unless svg
+
+      css = css_class.to_s
+      return svg if css.empty?
+
+      svg.sub("<svg ", %(<svg class="#{CGI.escapeHTML(css)}" ))
+    end
+
+    def self.placeholder_svg(name)
+      path = File.join(STOREFRONT_DAWN_ROOT, "..", "..", "..", "..", "..", "app/assets/svg/placeholders", "#{name}.svg")
+      File.file?(path) ? File.read(path) : nil
     end
 
     def self.image_url_for(input, size: nil, width: nil, height: nil, crop: nil, format: nil, prefix: "")
@@ -323,9 +361,20 @@ module LiquidIL
       when Array
         value.map { |v| normalize_theme_value(v) }
       when String
-        value.match?(/\A\s*\{\{.*\}\}\s*\z/m) ? nil : value
+        return nil if value.match?(/\A\s*\{\{.*\}\}\s*\z/m)
+        normalize_shopify_url(value)
       else
         value
+      end
+    end
+
+    def self.normalize_shopify_url(value)
+      case value
+      when "shopify://collections/all" then "/collections/all"
+      when /\Ashopify:\/\/collections\/(.+)\z/ then "/collections/#{Regexp.last_match(1)}"
+      when /\Ashopify:\/\/products\/(.+)\z/ then "/products/#{Regexp.last_match(1)}"
+      when /\Ashopify:\/\/pages\/(.+)\z/ then "/pages/#{Regexp.last_match(1)}"
+      else value
       end
     end
 
