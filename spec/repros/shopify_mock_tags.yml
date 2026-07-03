@@ -45,6 +45,20 @@ specs:
       settings: {}
       blocks: []
   expected: "<script id=\"sections-script\" data-sections=\"header,footer\" defer=\"defer\" src=\"//cdn.shopify.shopify-uh49.marcandre-cournoyer.eu.spin.dev/s/files/1/0000/0001/t/1/assets/sections.js\"></script>\n"
+- name: shopify_mock_translation_filter_uses_dawn_locale_and_pluralizes
+  template: "{{ 'sections.header.announcement' | t }}|{{ 'sections.header.cart_count' | t: count: 2 }}"
+  expected: "Announcement|2 items"
+- name: shopify_mock_placeholder_svg_tag_uses_storefront_assets
+  template: "{{ 'image' | placeholder_svg_tag: 'placeholder-svg' }}"
+  expected_pattern: "(?m)\\A<svg class=\"placeholder-svg\" xmlns=\"http://www\\.w3\\.org/2000/svg\" viewBox=\"0 0 525\\.5 525\\.5\">.*</svg>\\z"
+- name: shopify_mock_section_defaults_resolve_dawn_schema_and_menu_handles
+  template: "{{ section.settings.menu.links.size }}:{% for link in section.settings.menu.links %}[{{ link.title }}={{ link.url }}]{% endfor %}"
+  environment:
+    section:
+      id: header
+      settings: {}
+      blocks: []
+  expected: "3:[Home=/][Catalog=/collections/all][Contact=/pages/contact]"
 - name: shopify_mock_app_block_render_noop
   template: "A{% render block %}B"
   expected: "AB"

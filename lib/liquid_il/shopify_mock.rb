@@ -34,6 +34,7 @@ module LiquidIL
       def prepare_environment!(assigns)
         return assigns unless assigns.is_a?(Hash)
 
+        normalize_shopify_drop_urls!(assigns)
         merge_theme_settings!(assigns)
         enrich_section!(assigns)
         assigns["content_for_header"] = content_for_header(assigns) unless assigns["content_for_header"].is_a?(String)
@@ -44,7 +45,17 @@ module LiquidIL
         path = path.to_s
         path = "#{path}.liquid" unless path.end_with?(".liquid", ".json")
         full_path = File.join(STOREFRONT_DAWN_ROOT, path)
-        File.file?(full_path) ? File.read(full_path) : nil
+        return File.read(full_path) if File.file?(full_path)
+
+        unless path.include?("/")
+          snippet_name = path.sub(/\.liquid\z/, "")
+          if snippet_name.start_with?("icon-")
+            full_path = File.join(STOREFRONT_DAWN_ROOT, "snippets", path)
+            return File.read(full_path) if File.file?(full_path)
+          end
+        end
+
+        nil
       end
 
       def section_drop(section_name, assigns = nil)
@@ -85,7 +96,13 @@ module LiquidIL
             LiquidIL::ShopifyMock.image_url_for(input, size: size)
           end
 
-          def image_url(input, width: nil, height: nil, crop: nil, format: nil)
+          def image_url(input, options = nil, width: nil, height: nil, crop: nil, format: nil)
+            if options.is_a?(Hash)
+              width = options["width"] || options[:width] || width
+              height = options["height"] || options[:height] || height
+              crop = options["crop"] || options[:crop] || crop
+              format = options["format"] || options[:format] || format
+            end
             LiquidIL::ShopifyMock.image_url_for(input, width: width, height: height, crop: crop, format: format)
           end
 
@@ -284,6 +301,22 @@ module LiquidIL
       parts.join(" ")
     end
 
+    def self.normalize_shopify_drop_urls!(value)
+      case value
+      when Hash
+        value.each do |key, child|
+          if key.to_s == "url" && child.is_a?(Hash) && child.key?("to_str")
+            value[key] = normalize_shopify_url(child["to_str"].to_s)
+          else
+            normalize_shopify_drop_urls!(child)
+          end
+        end
+      when Array
+        value.each { |child| normalize_shopify_drop_urls!(child) }
+      end
+      value
+    end
+
     def self.merge_theme_settings!(assigns)
       settings = theme_settings
       return if settings.empty?
@@ -300,7 +333,8 @@ module LiquidIL
       return assigns unless config
 
       section["type"] ||= config["type"]
-      section["settings"] = normalize_theme_value((config["settings"] || {}).merge(section["settings"] || {}))
+      defaults = section_default_settings(section["type"])
+      section["settings"] = normalize_settings_hash(defaults.merge(config["settings"] || {}).merge(section["settings"] || {}))
       section["blocks"] = build_blocks(config, section["blocks"])
       section["block_order"] ||= config["block_order"] if config["block_order"]
       assigns
@@ -328,7 +362,7 @@ module LiquidIL
       {
         "id" => id,
         "type" => config["type"] || id,
-        "settings" => normalize_theme_value((config["settings"] || {}).dup),
+        "settings" => normalize_settings_hash(section_default_settings(config["type"] || id).merge(config["settings"] || {})),
         "blocks" => build_blocks(config, []),
         "block_order" => config["block_order"],
         "shopify_attributes" => "",
@@ -345,13 +379,74 @@ module LiquidIL
         next unless block_config
 
         existing = existing_by_id[id] || {}
+        type = block_config["type"] || existing["type"]
+        settings = block_default_settings(config["type"], type).merge(block_config["settings"] || {}).merge(existing["settings"] || {})
+        if config["type"] == "rich-text" && type == "heading" && settings["heading"].is_a?(String)
+          settings["heading"] = settings["heading"].sub(/\A<p>(.*)<\/p>\z/m, "\\1")
+        end
         existing.merge(
           "id" => id,
-          "type" => block_config["type"],
-          "settings" => normalize_theme_value((block_config["settings"] || {}).merge(existing["settings"] || {})),
+          "type" => type,
+          "settings" => normalize_settings_hash(settings),
           "shopify_attributes" => existing["shopify_attributes"] || "",
         )
       end
+    end
+
+    def self.section_default_settings(section_type)
+      settings_defaults(section_schema(section_type)&.fetch("settings", []))
+    end
+
+    def self.block_default_settings(section_type, block_type)
+      block = section_schema(section_type)&.fetch("blocks", [])&.find { |candidate| candidate["type"] == block_type }
+      defaults = settings_defaults(block&.fetch("settings", []))
+      if section_type == "rich-text" && block_type == "heading" && defaults["heading"].is_a?(String)
+        defaults["heading"] = defaults["heading"].sub(/\A<p>(.*)<\/p>\z/m, "\\1")
+      end
+      defaults
+    end
+
+    def self.settings_defaults(settings)
+      Array(settings).each_with_object({}) do |setting, defaults|
+        next unless setting.is_a?(Hash) && setting.key?("id") && setting.key?("default")
+
+        defaults[setting["id"]] = setting["default"]
+      end
+    end
+
+    def self.section_schema(section_type)
+      @section_schemas ||= {}
+      @section_schemas[section_type.to_s] ||= begin
+        source = theme_source("sections/#{section_type}")
+        json = source&.match(/\{%[-]?\s*schema\s*[-]?%\}(.*?)\{%[-]?\s*endschema\s*[-]?%\}/m)&.[](1)
+        json ? JSON.parse(json) : {}
+      rescue JSON::ParserError
+        {}
+      end
+    end
+
+    def self.normalize_settings_hash(settings)
+      settings.transform_values.with_index do |value, _index|
+        normalize_theme_value(value)
+      end.tap do |normalized|
+        normalized["menu"] = mock_linklist(normalized["menu"]) if normalized["menu"].is_a?(String)
+      end
+    end
+
+    def self.mock_linklist(handle)
+      links = case handle
+      when "main-menu"
+        [mock_link("Home", "/", current: true), mock_link("Catalog", "/collections/all"), mock_link("Contact", "/pages/contact")]
+      when "footer"
+        [mock_link("Search", "/search"), mock_link("Contact", "/pages/contact")]
+      else
+        []
+      end
+      { "handle" => handle, "title" => handle.to_s.tr("-", " ").split.map(&:capitalize).join(" "), "links" => links, "levels" => 1, "size" => links.length }
+    end
+
+    def self.mock_link(title, url, current: false)
+      { "title" => title, "url" => url, "handle" => title.downcase, "active" => current, "current" => current, "child_active" => false, "child_current" => false, "links" => [], "levels" => 0, "type" => "http_link" }
     end
 
     def self.normalize_theme_value(value)
