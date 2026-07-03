@@ -86,7 +86,7 @@ module LiquidIL
     }
 
     IS_TRUTHY = ->(value) {
-      value = value.to_liquid_value if value.respond_to?(:to_liquid_value)
+      value = value.to_liquid_value
       case value
       when nil, false then false
       when LiquidIL::EmptyLiteral, LiquidIL::BlankLiteral then false
@@ -98,7 +98,7 @@ module LiquidIL
       return nil if obj.nil?
 
       # Call to_liquid to unwrap drops/proxies before property access
-      obj = obj.to_liquid if obj.respond_to?(:to_liquid)
+      obj = obj.to_liquid
 
       result = case obj
       when Hash
@@ -153,7 +153,7 @@ module LiquidIL
       end
 
       # to_liquid on the result for nested drops
-      result.respond_to?(:to_liquid) ? result.to_liquid : result
+      result.to_liquid
     end
 
     # Lambda wrapper for backward compatibility with generated code
@@ -217,8 +217,8 @@ module LiquidIL
     end
 
     def self.compare(left, right, op, output = nil, current_file = nil)
-      left = left.to_liquid_value if left.respond_to?(:to_liquid_value)
-      right = right.to_liquid_value if right.respond_to?(:to_liquid_value)
+      left = left.to_liquid_value
+      right = right.to_liquid_value
 
       if left.is_a?(Range) && right.is_a?(LiquidIL::RangeValue)
         left = LiquidIL::RangeValue.new(left.begin, left.end)
@@ -377,8 +377,8 @@ module LiquidIL
     def self.bracket_lookup(obj, key)
       return nil if obj.nil?
       return nil if key.is_a?(LiquidIL::RangeValue) || key.is_a?(Range)
-      key = key.to_liquid_value if key.respond_to?(:to_liquid_value)
-      obj = obj.to_liquid if obj.respond_to?(:to_liquid)
+      key = key.to_liquid_value
+      obj = obj.to_liquid
       case obj
       when Hash
         result = obj[key]

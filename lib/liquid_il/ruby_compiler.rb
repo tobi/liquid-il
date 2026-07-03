@@ -1514,7 +1514,7 @@ module LiquidIL
               stack << "(#{left_ruby} || 0) #{ruby_op} #{right_ruby}"
             else
               # Unwrap drops via to_liquid_value before numeric comparison
-              stack << "((_t = #{left_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+              stack << "((_t = #{left_ruby}); _t = _t.to_liquid_value; _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
             end
           else
             stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, #{@current_file_lit.inspect})"
@@ -1649,7 +1649,7 @@ module LiquidIL
                        left_ruby_inner.match?(/\A-?[0-9]+\.?[0-9]*\z/)
                       stack << "(#{left_ruby_inner} || 0) #{ruby_op} #{right_ruby}"
                     else
-                      stack << "((_t = #{left_ruby_inner}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+                      stack << "((_t = #{left_ruby_inner}); _t = _t.to_liquid_value; _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
                     end
                   else
                     stack << "_H.cmp(#{left_ruby_inner}, #{right_ruby}, #{cmp_op.inspect}, _O, #{@current_file_lit.inspect})"
@@ -2938,10 +2938,10 @@ module LiquidIL
         "(#{expr_ruby})"
       elsif is_simple
         # Unwrap drops via to_liquid_value (BooleanDrop with false should be falsy)
-        "((_t = #{expr_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t)"
+        "((_t = #{expr_ruby}); _t = _t.to_liquid_value; _t)"
       else
         # Complex expression - use _t temp to avoid double evaluation
-        "((_t = #{expr_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t)"
+        "((_t = #{expr_ruby}); _t = _t.to_liquid_value; _t)"
       end
     end
 

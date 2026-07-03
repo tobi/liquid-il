@@ -204,7 +204,7 @@ module LiquidIL
               if var_ruby.include?("&.size") || var_ruby.include?("&.length")
                 result = "(#{var_ruby} || 0) #{ruby_op} #{const_ruby}"
               else
-                result = "((_t = #{var_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t.is_a?(Numeric) && _t #{ruby_op} #{const_ruby})"
+                result = "((_t = #{var_ruby}); _t = _t.to_liquid_value; _t.is_a?(Numeric) && _t #{ruby_op} #{const_ruby})"
               end
             else
               result = "_H.cmp(#{var_ruby}, #{const_ruby}, #{cmp_op.inspect}, _O, _F)"

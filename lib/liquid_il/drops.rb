@@ -228,16 +228,11 @@ module LiquidIL
       when LiquidIL::RangeValue
         value
       else
-        # Check for to_liquid (Liquid::Drop, custom objects)
-        if value.respond_to?(:to_liquid)
-          liquid_value = value.to_liquid
-          # If to_liquid returns self, the object is a drop — it handles its own security
-          # via invoke_drop. If it returns something else, sanitize that.
-          liquid_value.equal?(value) ? value : sanitize(liquid_value)
-        else
-          # Unknown object type — not safe to expose to templates
-          nil
-        end
+        # to_liquid is defined on all objects (returns self by default).
+        # Drops override it to return self too — they handle their own security
+        # via invoke_drop. If it returns something else, sanitize that.
+        liquid_value = value.to_liquid
+        liquid_value.equal?(value) ? value : sanitize(liquid_value)
       end
     end
   end

@@ -23,13 +23,13 @@ module LiquidIL
         array_inspect(obj, seen || {})
       else
         # Call to_liquid first (drops may have stateful to_liquid like ToSDrop)
-        obj = obj.to_liquid if obj.respond_to?(:to_liquid) && !obj.is_a?(String)
+        obj = obj.to_liquid
         obj.to_s
       end
     end
 
     def self.to_liquid_value(obj)
-      obj.respond_to?(:to_liquid_value) ? obj.to_liquid_value : obj
+      obj.to_liquid_value
     end
 
     def self.inspect(obj, seen = nil)
@@ -88,8 +88,6 @@ module LiquidIL
       when EmptyLiteral, BlankLiteral
         ""
       else
-        # Only check to_liquid for objects that might be Drops
-        value = value.to_liquid if value.respond_to?(:to_liquid)
         to_s(value)
       end
     end
@@ -121,8 +119,8 @@ module LiquidIL
     # Similar to VM's case_compare but simplified for ruby compiler
     def self.case_equal?(when_value, case_value)
       # Handle drops with to_liquid_value for comparisons
-      case_value = case_value.to_liquid_value if case_value.respond_to?(:to_liquid_value)
-      when_value = when_value.to_liquid_value if when_value.respond_to?(:to_liquid_value)
+      case_value = case_value.to_liquid_value
+      when_value = when_value.to_liquid_value
 
       # Handle blank/empty comparisons
       if case_value.is_a?(BlankLiteral)
