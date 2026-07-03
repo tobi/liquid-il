@@ -436,26 +436,12 @@ module LiquidIL
 
       if lexer.current == ExpressionLexer::AND
         lexer.advance
-        label_false = @builder.new_label
-        label_end = @builder.new_label
-
-        @builder.jump_if_false(label_false)
         parse_logical_expression(lexer)  # Right-recursive for right operand
-        @builder.jump(label_end)
-        @builder.label(label_false)
-        @builder.const_false
-        @builder.label(label_end)
+        @builder.bool_and
       elsif lexer.current == ExpressionLexer::OR
         lexer.advance
-        label_true = @builder.new_label
-        label_end = @builder.new_label
-
-        @builder.jump_if_true(label_true)
         parse_logical_expression(lexer)  # Right-recursive for right operand
-        @builder.jump(label_end)
-        @builder.label(label_true)
-        @builder.const_true
-        @builder.label(label_end)
+        @builder.bool_or
       end
     end
 
@@ -799,11 +785,8 @@ module LiquidIL
 
       parse_condition_expression(condition_str)
 
-      label_else = @builder.new_label
-      label_end = @builder.new_label
-
       @builder.is_truthy
-      @builder.jump_if_false(label_else)
+      @builder.if_start
 
       branch_blanks = []
       branch_raws = []
@@ -816,14 +799,12 @@ module LiquidIL
 
       case end_tag
       when 'elsif'
-        @builder.jump(label_end)
-        @builder.label(label_else)
-        elsif_blanks, elsif_raws = parse_elsif_chain(label_end)
+        @builder.else_start
+        elsif_blanks, elsif_raws = parse_elsif_chain
         branch_blanks.concat(elsif_blanks)
         branch_raws.concat(elsif_raws)
       when 'else'
-        @builder.jump(label_end)
-        @builder.label(label_else)
+        @builder.else_start
         advance_template
         # Stop at elsif/else/endif - any elsif/else after else is malformed but ignored
         end_tag, else_blank, else_raws = parse_block_body(%w[elsif else endif])
@@ -839,17 +820,17 @@ module LiquidIL
         end
         advance_template # consume endif
       when 'endif'
-        @builder.label(label_else)
         advance_template
       end
 
-      @builder.label(label_end)
+      @builder.end_if
       tag_blank = branch_blanks.all?
       branch_raws.each { |indices| strip_blank_raws(indices) } if tag_blank
       tag_blank
     end
 
-    def parse_elsif_chain(label_end)
+    # Each elsif becomes ELSE + nested IF; this level's END_IF is emitted here.
+    def parse_elsif_chain
       branch_blanks = []
       branch_raws = []
 
@@ -861,10 +842,8 @@ module LiquidIL
 
       parse_condition_expression(condition_str)
 
-      label_else = @builder.new_label
-
       @builder.is_truthy
-      @builder.jump_if_false(label_else)
+      @builder.if_start
 
       advance_template
       end_tag, body_blank, body_raws = parse_block_body(%w[elsif else endif])
@@ -873,24 +852,22 @@ module LiquidIL
 
       case end_tag
       when 'elsif'
-        @builder.jump(label_end)
-        @builder.label(label_else)
-        nested_blanks, nested_raws = parse_elsif_chain(label_end)
+        @builder.else_start
+        nested_blanks, nested_raws = parse_elsif_chain
         branch_blanks.concat(nested_blanks)
         branch_raws.concat(nested_raws)
       when 'else'
-        @builder.jump(label_end)
-        @builder.label(label_else)
+        @builder.else_start
         advance_template
         _end_tag, else_blank, else_raws = parse_block_body(%w[endif])
         branch_blanks << else_blank
         branch_raws << else_raws
         advance_template
       when 'endif'
-        @builder.label(label_else)
         advance_template
       end
 
+      @builder.end_if
       [branch_blanks, branch_raws]
     end
 
@@ -898,11 +875,8 @@ module LiquidIL
       expr_lexer = expr_lexer_for(condition_str)
       parse_expression(expr_lexer)
 
-      label_else = @builder.new_label
-      label_end = @builder.new_label
-
       @builder.is_truthy
-      @builder.jump_if_true(label_else) # NOTE: opposite of if
+      @builder.if_start(true) # NOTE: negated - opposite of if
 
       branch_blanks = []
       branch_raws = []
@@ -913,31 +887,28 @@ module LiquidIL
 
       case end_tag
       when 'elsif'
-        @builder.jump(label_end)
-        @builder.label(label_else)
-        elsif_blanks, elsif_raws = parse_elsif_chain_unless(label_end)
+        @builder.else_start
+        elsif_blanks, elsif_raws = parse_elsif_chain_unless
         branch_blanks.concat(elsif_blanks)
         branch_raws.concat(elsif_raws)
       when 'else'
-        @builder.jump(label_end)
-        @builder.label(label_else)
+        @builder.else_start
         advance_template
         _end_tag, else_blank, else_raws = parse_block_body(%w[endunless])
         branch_blanks << else_blank
         branch_raws << else_raws
         advance_template
       when 'endunless'
-        @builder.label(label_else)
         advance_template
       end
 
-      @builder.label(label_end)
+      @builder.end_if
       tag_blank = branch_blanks.all?
       branch_raws.each { |indices| strip_blank_raws(indices) } if tag_blank
       tag_blank
     end
 
-    def parse_elsif_chain_unless(label_end)
+    def parse_elsif_chain_unless
       branch_blanks = []
       branch_raws = []
 
@@ -946,10 +917,8 @@ module LiquidIL
       expr_lexer = expr_lexer_for(condition_str)
       parse_expression(expr_lexer)
 
-      label_else = @builder.new_label
-
       @builder.is_truthy
-      @builder.jump_if_false(label_else)
+      @builder.if_start # elsif branches of unless are NOT negated
 
       advance_template
       end_tag, body_blank, body_raws = parse_block_body(%w[elsif else endunless])
@@ -958,24 +927,22 @@ module LiquidIL
 
       case end_tag
       when 'elsif'
-        @builder.jump(label_end)
-        @builder.label(label_else)
-        nested_blanks, nested_raws = parse_elsif_chain_unless(label_end)
+        @builder.else_start
+        nested_blanks, nested_raws = parse_elsif_chain_unless
         branch_blanks.concat(nested_blanks)
         branch_raws.concat(nested_raws)
       when 'else'
-        @builder.jump(label_end)
-        @builder.label(label_else)
+        @builder.else_start
         advance_template
         _end_tag, else_blank, else_raws = parse_block_body(%w[endunless])
         branch_blanks << else_blank
         branch_raws << else_raws
         advance_template
       when 'endunless'
-        @builder.label(label_else)
         advance_template
       end
 
+      @builder.end_if
       [branch_blanks, branch_raws]
     end
 
@@ -1043,30 +1010,41 @@ module LiquidIL
     def parse_when_clause_with_flag(case_value_temp, case_flag_temp)
       when_values_str = extract_tag_args
 
-      # Parse comma-separated values
-      label_body = @builder.new_label
-      label_next = @builder.new_label
+      # Build the condition as an OR chain of CASE_COMPAREs. Each value is
+      # parsed into a throwaway builder so a mid-expression SyntaxError can't
+      # leave partial instructions (and an unbalanced stack) behind.
+      cond_count = 0
 
       # Split on commas or "or" and check each value
       when_values_str.split(/\s*(?:,|\bor\b)\s*/).each do |val_str|
         val_str = val_str.strip
         next if val_str.empty?
 
+        saved_builder = @builder
         begin
           expr_lexer = expr_lexer_for(val_str)
 
+          @builder = IL::Builder.new
           @builder.load_temp(case_value_temp)   # Load case value
           parse_expression(expr_lexer)          # Push when value
           @builder.case_compare                 # Case-specific compare
-          @builder.jump_if_true(label_body)
+          value_builder = @builder
         rescue SyntaxError
           # Skip invalid when expressions
           next
+        ensure
+          @builder = saved_builder
         end
+
+        @builder.emit_from(value_builder)
+        @builder.bool_or if cond_count > 0
+        cond_count += 1
       end
 
-      @builder.jump(label_next)
-      @builder.label(label_body)
+      # No valid values: condition is constant false (body still parsed, never runs)
+      @builder.const_false if cond_count.zero?
+
+      @builder.if_start
 
       # Set the "any_when_matched" flag to true
       @builder.const_true
@@ -1075,28 +1053,21 @@ module LiquidIL
       advance_template
       end_tag, body_blank, body_raws = parse_block_body(%w[when else endcase])
 
-      @builder.label(label_next)
+      @builder.end_if
 
       [end_tag, body_blank, body_raws]
     end
 
     def parse_else_clause_with_flag(case_flag_temp)
       # Only execute else body if no when has matched yet
-      label_skip = @builder.new_label
-      label_end = @builder.new_label
-
       @builder.load_temp(case_flag_temp)  # Load "any_when_matched" flag
-      @builder.jump_if_true(label_skip)  # Skip else if any when matched
+      @builder.is_truthy
+      @builder.if_start(true) # negated: run else only when flag is false
 
       advance_template
       end_tag, body_blank, body_raws = parse_block_body(%w[when else endcase])
 
-      @builder.jump(label_end)
-      @builder.label(label_skip)
-
-      # Still need to parse and skip the else body content
-      # But we already parsed it above, so just continue
-      @builder.label(label_end)
+      @builder.end_if
 
       [end_tag, body_blank, body_raws]
     end

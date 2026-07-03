@@ -75,19 +75,23 @@ Instructions are simple arrays (`[:OPCODE, arg1, arg2]`) for minimal allocation.
 | `LOOKUP_CONST_KEY` | `[:LOOKUP_CONST_KEY, name]` | Pop object, push object[name] |
 | `LOOKUP_COMMAND` | `[:LOOKUP_COMMAND, name]` | Optimized lookup for size/first/last |
 | **Control Flow** |||
-| `LABEL` | `[:LABEL, id]` | Define jump target (removed by linker) |
-| `JUMP` | `[:JUMP, target]` | Unconditional jump |
-| `JUMP_IF_FALSE` | `[:JUMP_IF_FALSE, target]` | Pop, jump if falsy |
-| `JUMP_IF_TRUE` | `[:JUMP_IF_TRUE, target]` | Pop, jump if truthy |
+| `LABEL` | `[:LABEL, id]` | Define jump target (removed by linker; loops only) |
+| `JUMP` | `[:JUMP, target]` | Unconditional jump (loops only) |
 | `JUMP_IF_EMPTY` | `[:JUMP_IF_EMPTY, target]` | Peek, jump if empty (for else in for) |
 | `JUMP_IF_INTERRUPT` | `[:JUMP_IF_INTERRUPT, target]` | Jump if break/continue pending |
 | `HALT` | `[:HALT]` | End execution |
+| **Structured Conditionals** |||
+| `IF` | `[:IF, negate]` | Pop condition; run then-block when truthy (falsy if negate) |
+| `ELSE` | `[:ELSE]` | Begin else-block (elsif desugars to ELSE + nested IF) |
+| `END_IF` | `[:END_IF]` | Close conditional block (markers always properly nested) |
 | **Comparison** |||
 | `COMPARE` | `[:COMPARE, op]` | Pop b, a, push a op b (eq/ne/lt/le/gt/ge) |
 | `CASE_COMPARE` | `[:CASE_COMPARE]` | Stricter comparison for case/when |
 | `CONTAINS` | `[:CONTAINS]` | Pop b, a, push a.include?(b) |
 | `BOOL_NOT` | `[:BOOL_NOT]` | Pop, push logical negation |
 | `IS_TRUTHY` | `[:IS_TRUTHY]` | Pop, push boolean (only nil/false are falsy) |
+| `BOOL_AND` | `[:BOOL_AND]` | Pop r, l; push truthy(l) && truthy(r) |
+| `BOOL_OR` | `[:BOOL_OR]` | Pop r, l; push truthy(l) \|\| truthy(r) |
 | **Scope & Assignment** |||
 | `PUSH_SCOPE` | `[:PUSH_SCOPE]` | Push new variable scope |
 | `POP_SCOPE` | `[:POP_SCOPE]` | Pop variable scope |
@@ -136,12 +140,12 @@ Template: `{% if user %}Hello {{ user.name }}{% endif %}`
 ```
 FIND_VAR "user"
 IS_TRUTHY
-JUMP_IF_FALSE L1
+IF
 WRITE_RAW "Hello "
 FIND_VAR "user"
 LOOKUP_CONST_KEY "name"
 WRITE_VALUE
-LABEL L1
+END_IF
 HALT
 ```
 

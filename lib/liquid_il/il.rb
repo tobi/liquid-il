@@ -36,11 +36,9 @@ module LiquidIL
     PUSH_CAPTURE = :PUSH_CAPTURE     # [:PUSH_CAPTURE]
     POP_CAPTURE = :POP_CAPTURE       # [:POP_CAPTURE]
 
-    # Control flow
+    # Control flow (loop-related; conditionals use the structured IF markers below)
     LABEL = :LABEL                   # [:LABEL, id]
     JUMP = :JUMP                     # [:JUMP, label_id]
-    JUMP_IF_FALSE = :JUMP_IF_FALSE   # [:JUMP_IF_FALSE, label_id]
-    JUMP_IF_TRUE = :JUMP_IF_TRUE     # [:JUMP_IF_TRUE, label_id]
     JUMP_IF_EMPTY = :JUMP_IF_EMPTY   # [:JUMP_IF_EMPTY, label_id]
     JUMP_IF_INTERRUPT = :JUMP_IF_INTERRUPT  # [:JUMP_IF_INTERRUPT, label_id]
     HALT = :HALT                     # [:HALT]
@@ -51,6 +49,15 @@ module LiquidIL
     CONTAINS = :CONTAINS             # [:CONTAINS]
     BOOL_NOT = :BOOL_NOT             # [:BOOL_NOT] - logical negation
     IS_TRUTHY = :IS_TRUTHY           # [:IS_TRUTHY] - convert to boolean
+    BOOL_AND = :BOOL_AND             # [:BOOL_AND] - pops r, l; pushes truthy(l) && truthy(r)
+    BOOL_OR = :BOOL_OR               # [:BOOL_OR]  - pops r, l; pushes truthy(l) || truthy(r)
+
+    # Structured conditionals (block markers, always properly nested)
+    # Emitted as: <condition ops> IS_TRUTHY [:IF, negate] <then ops> [[:ELSE] <else ops>] [:END_IF]
+    # elsif desugars at parse time to ELSE + nested IF.
+    IF = :IF                         # [:IF, negate] - pops condition; then-block runs when truthy (falsy if negate)
+    ELSE = :ELSE                     # [:ELSE]
+    END_IF = :END_IF                 # [:END_IF]
 
     # Scope and assignment
     PUSH_SCOPE = :PUSH_SCOPE         # [:PUSH_SCOPE]
@@ -117,6 +124,10 @@ module LiquidIL
     I_CONTAINS = [CONTAINS].freeze
     I_BOOL_NOT = [BOOL_NOT].freeze
     I_IS_TRUTHY = [IS_TRUTHY].freeze
+    I_BOOL_AND = [BOOL_AND].freeze
+    I_BOOL_OR = [BOOL_OR].freeze
+    I_ELSE = [ELSE].freeze
+    I_END_IF = [END_IF].freeze
     I_PUSH_SCOPE = [PUSH_SCOPE].freeze
     I_POP_SCOPE = [POP_SCOPE].freeze
     I_NEW_RANGE = [NEW_RANGE].freeze
@@ -304,14 +315,6 @@ module LiquidIL
         emit1(JUMP, label_id)
       end
 
-      def jump_if_false(label_id)
-        emit1(JUMP_IF_FALSE, label_id)
-      end
-
-      def jump_if_true(label_id)
-        emit1(JUMP_IF_TRUE, label_id)
-      end
-
       def jump_if_empty(label_id)
         emit1(JUMP_IF_EMPTY, label_id)
       end
@@ -342,6 +345,26 @@ module LiquidIL
 
       def is_truthy
         @instructions << I_IS_TRUTHY; @spans << @current_span; self
+      end
+
+      def bool_and
+        @instructions << I_BOOL_AND; @spans << @current_span; self
+      end
+
+      def bool_or
+        @instructions << I_BOOL_OR; @spans << @current_span; self
+      end
+
+      def if_start(negate = false)
+        emit1(IF, negate)
+      end
+
+      def else_start
+        @instructions << I_ELSE; @spans << @current_span; self
+      end
+
+      def end_if
+        @instructions << I_END_IF; @spans << @current_span; self
       end
 
       def push_scope
@@ -489,8 +512,7 @@ module LiquidIL
       while i < len
         inst = instructions[i]
         opcode = inst[0]
-        if opcode == JUMP || opcode == JUMP_IF_FALSE || opcode == JUMP_IF_TRUE ||
-           opcode == JUMP_IF_EMPTY || opcode == JUMP_IF_INTERRUPT
+        if opcode == JUMP || opcode == JUMP_IF_EMPTY || opcode == JUMP_IF_INTERRUPT
           inst[1] = label_positions[inst[1]] || raise("Unknown label: #{inst[1]}")
         elsif opcode == FOR_NEXT || opcode == TABLEROW_NEXT
           inst[1] = label_positions[inst[1]] || raise("Unknown label: #{inst[1]}")

@@ -7,7 +7,8 @@ module LiquidIL
 
     # Opcodes that mark control flow boundaries (used for O(1) lookup)
     CONTROL_FLOW_OPCODES = [
-      IL::LABEL, IL::JUMP, IL::JUMP_IF_TRUE, IL::JUMP_IF_FALSE, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT,
+      IL::LABEL, IL::JUMP, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT,
+      IL::IF, IL::ELSE, IL::END_IF,
       IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END, IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
       IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HALT,
       IL::ASSIGN, IL::ASSIGN_LOCAL,
@@ -187,7 +188,8 @@ module LiquidIL
 
           # Pass 6: Remove redundant IS_TRUTHY after boolean ops
           if p6 && next_opcode == IL::IS_TRUTHY
-            if opcode == IL::COMPARE || opcode == IL::CASE_COMPARE || opcode == IL::CONTAINS || opcode == IL::BOOL_NOT
+            if opcode == IL::COMPARE || opcode == IL::CASE_COMPARE || opcode == IL::CONTAINS ||
+               opcode == IL::BOOL_NOT || opcode == IL::BOOL_AND || opcode == IL::BOOL_OR
               instructions.delete_at(i + 1)
               spans.delete_at(i + 1)
               i += 1
@@ -289,36 +291,39 @@ module LiquidIL
               instructions.delete_at(i + 1)
               spans.delete_at(i + 1)
               next
-            when IL::JUMP_IF_FALSE
+            when IL::IF
+              # Static branch elimination: the marker structure makes branch
+              # extents explicit, so a constant condition selects one branch.
               truthy = const_evaluator.truthy?(val1)
-              if truthy
-                # Never jump: remove both
-                instructions.delete_at(i + 1)
-                spans.delete_at(i + 1)
-                instructions.delete_at(i)
-                spans.delete_at(i)
-                next
-              else
-                # Always jump: replace with JUMP
-                instructions[i] = [IL::JUMP, next_inst[1]]
-                spans[i] = spans[i + 1]
-                instructions.delete_at(i + 1)
-                spans.delete_at(i + 1)
-                next
-              end
-            when IL::JUMP_IF_TRUE
-              truthy = const_evaluator.truthy?(val1)
-              if truthy
-                instructions[i] = [IL::JUMP, next_inst[1]]
-                spans[i] = spans[i + 1]
-                instructions.delete_at(i + 1)
-                spans.delete_at(i + 1)
-                next
-              else
-                instructions.delete_at(i + 1)
-                spans.delete_at(i + 1)
-                instructions.delete_at(i)
-                spans.delete_at(i)
+              take_then = next_inst[1] ? !truthy : truthy
+              else_idx, end_idx = find_if_branch_bounds(instructions, i + 1)
+              if end_idx
+                if take_then
+                  # Keep then-branch: drop ELSE..END_IF (or just END_IF), then CONST+IF
+                  if else_idx
+                    count = end_idx - else_idx + 1
+                    instructions.slice!(else_idx, count)
+                    spans.slice!(else_idx, count)
+                  else
+                    instructions.delete_at(end_idx)
+                    spans.delete_at(end_idx)
+                  end
+                  instructions.slice!(i, 2)
+                  spans.slice!(i, 2)
+                else
+                  # Keep else-branch (if any): drop END_IF, then CONST..ELSE (or everything)
+                  if else_idx
+                    instructions.delete_at(end_idx)
+                    spans.delete_at(end_idx)
+                    count = else_idx - i + 1
+                    instructions.slice!(i, count)
+                    spans.slice!(i, count)
+                  else
+                    count = end_idx - i + 1
+                    instructions.slice!(i, count)
+                    spans.slice!(i, count)
+                  end
+                end
                 next
               end
             end
@@ -364,6 +369,17 @@ module LiquidIL
                   spans.delete_at(i + 1)
                   next
                 end
+              when IL::BOOL_AND, IL::BOOL_OR
+                l = const_evaluator.truthy?(val1)
+                r = const_evaluator.truthy?(val2)
+                result = inst3[0] == IL::BOOL_AND ? l && r : l || r
+                instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+                spans[i] = spans[i + 2]
+                instructions.delete_at(i + 2)
+                spans.delete_at(i + 2)
+                instructions.delete_at(i + 1)
+                spans.delete_at(i + 1)
+                next
               end
             end
           end
@@ -371,6 +387,29 @@ module LiquidIL
 
         i += 1
       end
+    end
+
+    # Given the index of an IF marker, return [else_idx, end_idx] for its
+    # (depth-matched) ELSE and END_IF markers. else_idx is nil when the
+    # block has no else branch; both are nil when the block is unterminated.
+    def find_if_branch_bounds(instructions, if_idx)
+      depth = 0
+      else_idx = nil
+      i = if_idx + 1
+      len = instructions.length
+      while i < len
+        case instructions[i][0]
+        when IL::IF
+          depth += 1
+        when IL::ELSE
+          else_idx = i if depth.zero? && else_idx.nil?
+        when IL::END_IF
+          return [else_idx, i] if depth.zero?
+          depth -= 1
+        end
+        i += 1
+      end
+      [nil, nil]
     end
 
     def fold_const_writes(instructions, spans)
@@ -439,7 +478,8 @@ module LiquidIL
       while i < instructions.length
         if instructions[i][0] == IL::IS_TRUTHY
           prev = instructions[i - 1][0]
-          if prev == IL::COMPARE || prev == IL::CASE_COMPARE || prev == IL::CONTAINS || prev == IL::BOOL_NOT
+          if prev == IL::COMPARE || prev == IL::CASE_COMPARE || prev == IL::CONTAINS ||
+             prev == IL::BOOL_NOT || prev == IL::BOOL_AND || prev == IL::BOOL_OR
             instructions.delete_at(i)
             spans.delete_at(i)
             next
@@ -772,7 +812,8 @@ module LiquidIL
             # Keep original span for error reporting
           end
 
-        when IL::LABEL, IL::JUMP, IL::JUMP_IF_TRUE, IL::JUMP_IF_FALSE, IL::JUMP_IF_INTERRUPT,
+        when IL::LABEL, IL::JUMP, IL::JUMP_IF_INTERRUPT,
+             IL::IF, IL::ELSE, IL::END_IF,
              IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END, IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
              IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
           # Control flow or partial render - invalidate all known constants
@@ -863,7 +904,7 @@ module LiquidIL
       # Adjust all jump targets
       instructions.each do |inst|
         case inst[0]
-        when IL::JUMP, IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT
+        when IL::JUMP, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT
           target = inst[1]
           inst[1] = target - adjustment[target] if target < adjustment.length
         when IL::FOR_NEXT, IL::TABLEROW_NEXT
@@ -934,8 +975,7 @@ module LiquidIL
 
         # Resolve and adjust jump targets
         opcode = inst[0]
-        if opcode == IL::JUMP || opcode == IL::JUMP_IF_FALSE || opcode == IL::JUMP_IF_TRUE ||
-           opcode == IL::JUMP_IF_EMPTY || opcode == IL::JUMP_IF_INTERRUPT
+        if opcode == IL::JUMP || opcode == IL::JUMP_IF_EMPTY || opcode == IL::JUMP_IF_INTERRUPT
           target = label_positions[inst[1]]
           inst[1] = target - label_count[target]
         elsif opcode == IL::FOR_NEXT || opcode == IL::TABLEROW_NEXT

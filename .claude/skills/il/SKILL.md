@@ -64,13 +64,23 @@ All instructions are arrays: `[:OPCODE, arg1, arg2, ...]`
 
 | Instruction | Format | Description |
 |-------------|--------|-------------|
-| `LABEL` | `[:LABEL, id]` | Jump target marker |
-| `JUMP` | `[:JUMP, label_id]` | Unconditional jump |
-| `JUMP_IF_FALSE` | `[:JUMP_IF_FALSE, label_id]` | Jump if stack top is falsy |
-| `JUMP_IF_TRUE` | `[:JUMP_IF_TRUE, label_id]` | Jump if stack top is truthy |
+| `LABEL` | `[:LABEL, id]` | Jump target marker (loops only) |
+| `JUMP` | `[:JUMP, label_id]` | Unconditional jump (loops only) |
 | `JUMP_IF_EMPTY` | `[:JUMP_IF_EMPTY, label_id]` | Jump if stack top is empty |
 | `JUMP_IF_INTERRUPT` | `[:JUMP_IF_INTERRUPT, label_id]` | Jump if break/continue pending |
 | `HALT` | `[:HALT]` | End execution |
+
+### Structured Conditionals
+
+Conditionals are block markers, not jumps — always properly nested.
+`elsif` desugars at parse time to `ELSE` + nested `IF`; `case/when` lowers to
+temp slots + `CASE_COMPARE`/`BOOL_OR` chains feeding `IF` markers.
+
+| Instruction | Format | Description |
+|-------------|--------|-------------|
+| `IF` | `[:IF, negate]` | Pop condition; run then-block when truthy (falsy if negate, i.e. `unless`) |
+| `ELSE` | `[:ELSE]` | Begin else-block |
+| `END_IF` | `[:END_IF]` | Close conditional block |
 
 ### Comparison & Logic
 
@@ -81,6 +91,8 @@ All instructions are arrays: `[:OPCODE, arg1, arg2, ...]`
 | `CONTAINS` | `[:CONTAINS]` | Pop needle, pop haystack, push boolean |
 | `BOOL_NOT` | `[:BOOL_NOT]` | Logical negation |
 | `IS_TRUTHY` | `[:IS_TRUTHY]` | Convert to boolean |
+| `BOOL_AND` | `[:BOOL_AND]` | Pop r, l; push truthy(l) && truthy(r) (`and`) |
+| `BOOL_OR` | `[:BOOL_OR]` | Pop r, l; push truthy(l) \|\| truthy(r) (`or`) |
 
 ### Scope & Assignment
 

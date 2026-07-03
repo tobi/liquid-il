@@ -591,11 +591,6 @@ module LiquidIL
         when IL::ASSIGN_LOCAL
           @pc += 1
           code << "  _S.assign_local(#{inst[1].inspect}, _S.lookup(#{inst[2].inspect}))\n"
-        when IL::IS_TRUTHY
-          @pc += 1
-          code << "  _S.to_liquid_value("
-          code << inst[1]
-          code << ").is_truthy?\n"
         when IL::JUMP_IF_INTERRUPT
           @pc += 1
           code << "  next if _S.has_interrupt?\n"
@@ -738,7 +733,7 @@ module LiquidIL
           generate_expression_statement(indent)
         end
 
-      when IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE
+      when IL::IF
         generate_if_statement(indent)
 
       when IL::FOR_INIT
@@ -1005,9 +1000,6 @@ module LiquidIL
         slot = @instructions[@pc][1]
         @pc += 1
         temp_code + "#{prefix}__temp_#{slot}__ = #{expr_ruby}\n"
-      when :condition
-        @pc -= 1
-        nil
       else
         temp_code + "#{prefix}#{expr_ruby}\n"
       end
@@ -1436,12 +1428,6 @@ module LiquidIL
     def build_expression
       # Stack of Ruby strings — avoids allocating a second expression tree.
       stack = []
-      seen_is_truthy = false
-
-      if (liquid_bool = try_build_liquid_boolean_condition)
-        @pc = liquid_bool[1]
-        return [liquid_bool[0], :none]
-      end
 
       while @pc < @instructions.length
         inst = @instructions[@pc]
@@ -1563,8 +1549,19 @@ module LiquidIL
           operand_ruby = stack.pop || "false"
           stack << "((_t = #{operand_ruby}); _t.nil? || _t == false || _t == \"\")"
           @pc += 1
+        when IL::BOOL_AND
+          right_ruby = stack.pop || "false"
+          left_ruby = stack.pop || "false"
+          stack << "((#{inline_truthy(left_ruby)}) && (#{inline_truthy(right_ruby)}))"
+          @pc += 1
+        when IL::BOOL_OR
+          right_ruby = stack.pop || "false"
+          left_ruby = stack.pop || "false"
+          stack << "((#{inline_truthy(left_ruby)}) || (#{inline_truthy(right_ruby)}))"
+          @pc += 1
         when IL::IS_TRUTHY
-          seen_is_truthy = true
+          # Conditions are truthy-wrapped at IF emission (inline_truthy); the
+          # marker itself adds nothing to the value expression.
           @pc += 1
         when IL::STORE_TEMP
           if stack.length > 1
@@ -1603,9 +1600,6 @@ module LiquidIL
           input_ruby = stack.pop || "nil"
           stack << emit_filter_call(inst[1], input_ruby, args, filter_pc)
           @pc += 1
-        when IL::JUMP
-          # Follow unconditional jumps (optimizer may insert these for constant folding)
-          @pc = inst[1]
         when IL::WRITE_VALUE
           @pc += 1
           return [stack.last, :write_value]
@@ -1615,193 +1609,10 @@ module LiquidIL
         when IL::ASSIGN_LOCAL
           @pc += 1
           return [stack.last, :assign_local]
-        when IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE
-          # Check if this is a short-circuit and/or pattern, not an actual if condition
-          # Pattern: JUMP_IF_FALSE -> CONST_FALSE -> end (this is the false branch of 'and')
-          # Pattern: JUMP_IF_TRUE -> CONST_TRUE -> end (this is the true branch of 'or')
-          #
-          # If we've already seen IS_TRUTHY, this JUMP_IF_* is the actual condition branch
-          if seen_is_truthy
-            return [stack.last, :condition]
-          end
-
-          jump_target = inst[1]
-          # Skip LABEL instructions to find the actual target
-          actual_target = jump_target
-          while @instructions[actual_target]&.[](0) == IL::LABEL
-            actual_target += 1
-          end
-          target_inst = @instructions[actual_target]
-
-          # For short-circuit detection, check if CONST_TRUE/FALSE is followed by expression continuation
-          # vs STORE_TEMP (which indicates case/when pattern where it sets a "matched" flag)
-          next_after_target = @instructions[actual_target + 1]
-          is_short_circuit_pattern = next_after_target &&
-            next_after_target[0] != IL::STORE_TEMP &&
-            next_after_target[0] != IL::WRITE_RAW &&
-            next_after_target[0] != IL::WRITE_VALUE
-          if inst[0] == IL::JUMP_IF_FALSE && target_inst&.[](0) == IL::CONST_FALSE && is_short_circuit_pattern
-            left_ruby = stack.pop || "false"
-            @pc += 1
-            right_start = @pc
-            while @pc < jump_target
-              build_inst = @instructions[@pc]
-              break if build_inst.nil?
-              case build_inst[0]
-              when IL::JUMP
-                @pc = build_inst[1]
-                break
-              when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE,
-                   IL::CONST_NIL, IL::CONST_EMPTY, IL::CONST_BLANK, IL::CONST_RANGE, IL::NEW_RANGE,
-                   IL::FIND_VAR, IL::FIND_VAR_PATH, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY, IL::LOOKUP_CONST_PATH,
-                   IL::LOOKUP_COMMAND, IL::COMPARE, IL::CONTAINS, IL::BOOL_NOT, IL::IS_TRUTHY, IL::CALL_FILTER,
-                   IL::LOAD_TEMP
-                case build_inst[0]
-                when IL::CONST_INT then stack << build_inst[1].inspect; @pc += 1
-                when IL::CONST_FLOAT then stack << build_inst[1].inspect; @pc += 1
-                when IL::CONST_STRING then stack << build_inst[1].inspect; @pc += 1
-                when IL::CONST_TRUE then stack << "true"; @pc += 1
-                when IL::CONST_FALSE then stack << "false"; @pc += 1
-                when IL::CONST_NIL then stack << "nil"; @pc += 1
-                when IL::CONST_EMPTY then stack << "LiquidIL::EmptyLiteral.instance"; @pc += 1
-                when IL::CONST_BLANK then stack << "LiquidIL::BlankLiteral.instance"; @pc += 1
-                when IL::FIND_VAR
-                  part = "_S.lookup(#{build_inst[1].inspect})"
-                  @pc += 1
-                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
-                    part = build_or_chain_from_left(part)
-                    break unless part
-                  end
-                  stack << part
-                when IL::FIND_VAR_PATH
-                  part = generate_var_path_expr(build_inst[1], build_inst[2])
-                  @pc += 1
-                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
-                    part = build_or_chain_from_left(part)
-                    break unless part
-                  end
-                  stack << part
-                when IL::FIND_SELF then stack << "_S.lookup_self"; @pc += 1
-                when IL::LOAD_TEMP then stack << "__temp_#{build_inst[1]}__"; @pc += 1
-                when IL::LOOKUP_CONST_KEY
-                  obj_ruby = stack.pop || "nil"
-                  stack << inline_lookup(obj_ruby, build_inst[1])
-                  @pc += 1
-                when IL::COMPARE
-                  right_ruby = stack.pop || "nil"
-                  left_ruby_inner = stack.pop || "nil"
-                  cmp_op = build_inst[1]
-                  # Inline numeric comparisons: skip _H.cmp for numeric literals
-                  if NUMERIC_COMPARE_OPS.key?(cmp_op) && right_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
-                    ruby_op = COMPARE_OPS[cmp_op]
-                    if left_ruby_inner.include?("&.size") || left_ruby_inner.include?("&.length") ||
-                       left_ruby_inner.match?(/\A-?[0-9]+\.?[0-9]*\z/)
-                      stack << "(#{left_ruby_inner} || 0) #{ruby_op} #{right_ruby}"
-                    else
-                      stack << "((_t = #{left_ruby_inner}); _t = _t.to_liquid_value; _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
-                    end
-                  else
-                    stack << "_H.cmp(#{left_ruby_inner}, #{right_ruby}, #{cmp_op.inspect}, _O, #{@current_file_lit.inspect})"
-                  end
-                  @pc += 1
-                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
-                    part = stack.pop || "false"
-                    part = build_or_chain_from_left(part)
-                    break unless part
-                    stack << part
-                  end
-                when IL::CONTAINS
-                  right_ruby = stack.pop || "nil"
-                  left_ruby_inner = stack.pop || "nil"
-                  stack << "_H.ct(#{left_ruby_inner}, #{right_ruby})"
-                  @pc += 1
-                  if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE
-                    part = stack.pop || "false"
-                    part = build_or_chain_from_left(part)
-                    break unless part
-                    stack << part
-                  end
-                when IL::BOOL_NOT
-                  operand_ruby = stack.pop || "false"
-                  stack << "((_t = #{operand_ruby}); _t.nil? || _t == false || _t == \"\")"
-                  @pc += 1
-                when IL::IS_TRUTHY
-                  seen_is_truthy = true
-                  @pc += 1
-                else @pc += 1
-                end
-              else
-                break
-              end
-            end
-            right_ruby = stack.pop || "false"
-            stack << "((#{inline_truthy(left_ruby)}) && (#{inline_truthy(right_ruby)}))"
-            if @instructions[@pc]&.[](0) == IL::IS_TRUTHY
-              seen_is_truthy = true
-              @pc += 1
-            end
-          elsif inst[0] == IL::JUMP_IF_TRUE && target_inst&.[](0) == IL::CONST_TRUE && is_short_circuit_pattern
-            or_operands = [stack.pop || "false"]
-            @pc += 1
-
-            while @pc < @instructions.length
-              build_inst = @instructions[@pc]
-              break if build_inst.nil?
-
-              case build_inst[0]
-              when IL::IS_TRUTHY
-                seen_is_truthy = true
-                @pc += 1
-                break
-              when IL::CONST_TRUE
-                or_operands << "true"
-                @pc += 1
-              when IL::JUMP
-                jmp_target = build_inst[1]
-                if @instructions[jmp_target]&.[](0) == IL::CONST_TRUE || @instructions[jmp_target]&.[](0) == IL::IS_TRUTHY
-                  @pc = jmp_target
-                else
-                  @pc += 1
-                end
-              when IL::LABEL
-                @pc += 1
-              when IL::FIND_VAR
-                # Build Ruby string for this OR operand
-                or_ruby = build_or_operand_ruby(build_inst[1])
-                or_operands << or_ruby if or_ruby
-                break unless or_ruby
-              when IL::FIND_VAR_PATH
-                @pc += 1
-                or_ruby = build_or_operand_from_value(generate_var_path_expr(build_inst[1], build_inst[2]))
-                or_operands << or_ruby if or_ruby
-                break unless or_ruby
-              when IL::FIND_SELF
-                or_operands << "_S.lookup_self"
-                @pc += 1
-                break
-              when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_FALSE, IL::CONST_NIL
-                case build_inst[0]
-                when IL::CONST_INT then or_operands << build_inst[1].inspect
-                when IL::CONST_FLOAT then or_operands << build_inst[1].inspect
-                when IL::CONST_STRING then or_operands << build_inst[1].inspect
-                when IL::CONST_FALSE then or_operands << "false"
-                when IL::CONST_NIL then or_operands << "nil"
-                end
-                @pc += 1
-                if @instructions[@pc]&.[](0) == IL::JUMP
-                  @pc = @instructions[@pc][1]
-                end
-                break
-              else
-                break
-              end
-            end
-
-            stack << or_operands.map { |c| "(#{inline_truthy(c)})" }.join(" || ")
-          else
-            # Regular if condition
-            return [stack.last, :condition]
-          end
+        when IL::IF
+          # Structured conditional marker: the finished condition is on the
+          # stack. Leave @pc at the IF so the caller reads its negate flag.
+          return [stack.last, :if]
         else
           # Unknown or terminating instruction
           break
@@ -1809,80 +1620,6 @@ module LiquidIL
       end
 
       [stack.last, :none]
-    end
-
-    # Reconstruct Liquid's right-recursive boolean condition IL into a Ruby
-    # expression. Liquid gives `and`/`or` equal precedence and parses them
-    # right-to-left, so `a or b and c` means `a or (b and c)`. The generic
-    # stack inliner is intentionally simple and can flatten constant-only
-    # chains left-to-right; this helper follows the actual jump targets emitted
-    # by the parser and is used only for condition expressions ending in
-    # IS_TRUTHY + JUMP_IF_*.
-    def try_build_liquid_boolean_condition
-      truthy_pc = @pc
-      while truthy_pc < @instructions.length
-        op = @instructions[truthy_pc]&.[](0)
-        break if op == IL::IS_TRUTHY
-        return nil if op == IL::WRITE_RAW || op == IL::WRITE_VALUE || op == IL::ASSIGN || op == IL::ASSIGN_LOCAL || op == IL::HALT
-        truthy_pc += 1
-      end
-      return nil unless @instructions[truthy_pc]&.[](0) == IL::IS_TRUTHY
-      branch = @instructions[truthy_pc + 1]&.[](0)
-      return nil unless branch == IL::JUMP_IF_FALSE || branch == IL::JUMP_IF_TRUE
-
-      expr, = build_liquid_boolean_expr_at(@pc, truthy_pc)
-      expr && [expr, truthy_pc + 1]
-    end
-
-    def build_liquid_boolean_expr_at(pos, finish_pc)
-      value, next_pos = build_liquid_boolean_value_at(pos, finish_pc)
-      return nil unless value
-      return [inline_truthy(value), next_pos] if next_pos >= finish_pc
-
-      inst = @instructions[next_pos]
-      case inst&.[](0)
-      when IL::JUMP_IF_TRUE
-        target = inst[1]
-        return nil unless target <= finish_pc && @instructions[target]&.[](0) == IL::CONST_TRUE
-        right, = build_liquid_boolean_expr_at(next_pos + 1, target)
-        return nil unless right
-        ["((#{inline_truthy(value)}) || (#{right}))", finish_pc]
-      when IL::JUMP_IF_FALSE
-        target = inst[1]
-        return nil unless target <= finish_pc && @instructions[target]&.[](0) == IL::CONST_FALSE
-        right, = build_liquid_boolean_expr_at(next_pos + 1, target)
-        return nil unless right
-        ["((#{inline_truthy(value)}) && (#{right}))", finish_pc]
-      when IL::JUMP
-        return [inline_truthy(value), inst[1]] if inst[1] >= finish_pc
-        nil
-      else
-        nil
-      end
-    end
-
-    def build_liquid_boolean_value_at(pos, finish_pc)
-      return nil if pos >= finish_pc
-      inst = @instructions[pos]
-      case inst&.[](0)
-      when IL::CONST_INT then [inst[1].inspect, pos + 1]
-      when IL::CONST_FLOAT then [inst[1].inspect, pos + 1]
-      when IL::CONST_STRING then [inst[1].inspect, pos + 1]
-      when IL::CONST_TRUE then ["true", pos + 1]
-      when IL::CONST_FALSE then ["false", pos + 1]
-      when IL::CONST_NIL then ["nil", pos + 1]
-      when IL::CONST_EMPTY then ["LiquidIL::EmptyLiteral.instance", pos + 1]
-      when IL::CONST_BLANK then ["LiquidIL::BlankLiteral.instance", pos + 1]
-      when IL::FIND_VAR
-        ruby = @loop_var_aliases[inst[1]] || "_S.lookup(#{inst[1].inspect})"
-        [ruby, pos + 1]
-      when IL::FIND_SELF
-        ["_S.lookup_self", pos + 1]
-      when IL::FIND_VAR_PATH
-        [generate_var_path_expr(inst[1], inst[2]), pos + 1]
-      else
-        nil
-      end
     end
 
     # Generate variable path access (a.b.c)
@@ -1936,7 +1673,13 @@ module LiquidIL
              IL::CONST_FALSE, IL::CONST_NIL, IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK,
              IL::FIND_VAR, IL::FIND_VAR_PATH, IL::NEW_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
              IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::CALL_FILTER, IL::COMPARE, IL::CONTAINS,
-             IL::BOOL_NOT, IL::IS_TRUTHY, IL::STORE_TEMP, IL::LOAD_TEMP, IL::CASE_COMPARE
+             IL::BOOL_NOT, IL::IS_TRUTHY, IL::LOAD_TEMP, IL::CASE_COMPARE
+          i += 1
+        when IL::STORE_TEMP
+          # Standalone STORE_TEMP ends the statement (e.g. a case/when matched
+          # flag); only DUP + STORE_TEMP caching is part of the expression.
+          prev = i > 0 ? @instructions[i - 1] : nil
+          return false unless prev && prev[0] == IL::DUP
           i += 1
         else
           return false
@@ -1960,7 +1703,11 @@ module LiquidIL
              IL::CONST_FALSE, IL::CONST_NIL, IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK,
              IL::FIND_VAR, IL::FIND_VAR_PATH, IL::NEW_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
              IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::CALL_FILTER,
-             IL::STORE_TEMP, IL::LOAD_TEMP, IL::DUP
+             IL::LOAD_TEMP, IL::DUP
+          i += 1
+        when IL::STORE_TEMP
+          prev = i > 0 ? @instructions[i - 1] : nil
+          return false unless prev && prev[0] == IL::DUP
           i += 1
         else
           return false
@@ -1969,18 +1716,15 @@ module LiquidIL
       false
     end
 
-    # Check if current position starts an if statement
+    # Check if the expression starting at @pc feeds a structured IF marker
     def peek_if_statement?
       pos = @pc
-      iterations = 0
       while (next_inst = @instructions[pos])
         case next_inst[0]
-        when IL::IS_TRUTHY
-          following = @instructions[pos + 1]
-          return following&.[](0) == IL::JUMP_IF_FALSE || following&.[](0) == IL::JUMP_IF_TRUE
-        when IL::JUMP_IF_FALSE, IL::JUMP_IF_TRUE
+        when IL::IF
           return true
-        when IL::FOR_INIT, IL::HALT, IL::WRITE_VALUE, IL::ASSIGN, IL::ASSIGN_LOCAL
+        when IL::FOR_INIT, IL::TABLEROW_INIT, IL::HALT, IL::WRITE_VALUE, IL::WRITE_RAW,
+             IL::ASSIGN, IL::ASSIGN_LOCAL, IL::ELSE, IL::END_IF, IL::JUMP_IF_EMPTY
           # These terminate the expression without being an if condition
           return false
         when IL::STORE_TEMP
@@ -1989,19 +1733,9 @@ module LiquidIL
           prev = pos > 0 ? @instructions[pos - 1] : nil
           return false unless prev && prev[0] == IL::DUP
           pos += 1
-        when IL::JUMP
-          # Follow forward jumps to find IS_TRUTHY/JUMP_IF_FALSE (optimizer chains JUMPs)
-          target = next_inst[1]
-          if target > pos
-            pos = target
-          else
-            pos += 1
-          end
         else
           pos += 1
         end
-        iterations += 1
-        break if iterations > 50 # Safety limit for very long chains
       end
       false
     end
@@ -2683,6 +2417,10 @@ module LiquidIL
     end
 
     # Generate an if statement
+    # Generate a structured conditional: <condition expr> [:IF, negate]
+    # <then statements> [[:ELSE] <else statements>] [:END_IF]. The markers are
+    # always properly nested, so this is a plain recursive-descent walk — no
+    # jump-target analysis.
     def generate_if_statement(indent)
       prefix = INDENT[indent]
 
@@ -2700,33 +2438,32 @@ module LiquidIL
         @temp_assignments = nil
       end
 
-      # Should now be at JUMP_IF_FALSE or JUMP_IF_TRUE
+      # Should now be at the IF marker
       inst = @instructions[@pc]
-      return nil unless inst && (inst[0] == IL::JUMP_IF_FALSE || inst[0] == IL::JUMP_IF_TRUE)
+      return nil unless inst && inst[0] == IL::IF
 
-      jump_type = inst[0]
-      jump_target = inst[1]
+      negate = inst[1]
       @pc += 1
 
-      # Detect case/when OR pattern: multiple JUMP_IF_TRUE to same target
-      # Pattern: CASE_COMPARE, JUMP_IF_TRUE target, LOAD_TEMP, CONST, CASE_COMPARE, JUMP_IF_TRUE target, ...
-      # All pointing to CONST_TRUE, STORE_TEMP (success marker)
-      if jump_type == IL::JUMP_IF_TRUE && is_case_when_or_pattern?(jump_target)
-        return generate_case_when_or(cond_expr, jump_target, indent)
-      end
-
-      # Parse then branch (until jump_target or JUMP)
       then_code = String.new
-      end_target = nil
+      else_code = nil
 
-      while @pc < @instructions.length && @pc < jump_target
+      loop do
         inst = @instructions[@pc]
         break if inst.nil?
 
         case inst[0]
-        when IL::JUMP
-          end_target = inst[1]
+        when IL::END_IF
+          break
+        when IL::ELSE
           @pc += 1
+          else_code = String.new
+          while (else_inst = @instructions[@pc])
+            break if else_inst[0] == IL::END_IF
+            result = generate_statement(indent + 1)
+            break if result.nil?
+            else_code << result
+          end
           break
         when IL::HALT
           break
@@ -2737,148 +2474,24 @@ module LiquidIL
         end
       end
 
-      # Skip to jump_target if we haven't reached it
-      @pc = jump_target if @pc < jump_target
-
-      # Parse else branch (only if there IS an else - indicated by end_target being set)
-      else_code = String.new
-
-      if end_target
-        while @pc < @instructions.length && @pc < end_target
-          inst = @instructions[@pc]
-          break if inst.nil?
-
-          case inst[0]
-          when IL::HALT
-            break
-          when IL::JUMP
-            @pc += 1
-            break
-          when IL::LABEL
-            @pc += 1
-          else
-            result = generate_statement(indent + 1)
-            break if result.nil?
-            else_code << result
-          end
-        end
-      end
+      # Consume the END_IF marker
+      @pc += 1 if @instructions[@pc]&.[](0) == IL::END_IF
 
       # Generate code
       code = temp_code
       cond_ruby = cond_expr || "nil"
 
-      if jump_type == IL::JUMP_IF_FALSE
-        code << "#{prefix}if #{inline_truthy(cond_ruby)}\n"
-      else
+      if negate
         code << "#{prefix}unless #{inline_truthy(cond_ruby)}\n"
+      else
+        code << "#{prefix}if #{inline_truthy(cond_ruby)}\n"
       end
 
       code << then_code
 
-      unless else_code.empty?
+      if else_code && !else_code.empty?
         code << "#{prefix}else\n"
         code << else_code
-      end
-
-      code << "#{prefix}end\n"
-      code
-    end
-
-    # Detect case/when OR pattern: multiple conditions jumping to same success block
-    # Target should be CONST_TRUE followed by STORE_TEMP (case/when success marker)
-    def is_case_when_or_pattern?(jump_target)
-      return false if jump_target >= @instructions.length
-
-      target_inst = @instructions[jump_target]
-      next_inst = @instructions[jump_target + 1]
-
-      # Success block starts with CONST_TRUE, STORE_TEMP
-      target_inst&.[](0) == IL::CONST_TRUE && next_inst&.[](0) == IL::STORE_TEMP
-    end
-
-    # Generate case/when with OR conditions (when 1, 2, 3 or when 1 or 2 or 3)
-    def generate_case_when_or(first_cond, success_target, indent)
-      prefix = INDENT[indent]
-      conditions = [first_cond]
-      case_end = nil
-
-      # Collect remaining OR conditions that jump to the same target
-      while @pc < success_target
-        inst = @instructions[@pc]
-        break if inst.nil?
-
-        case inst[0]
-        when IL::LOAD_TEMP, IL::CONST_INT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_NIL
-          # Start of next condition - build expression
-          expr, _ = build_expression
-          # Should now be at JUMP_IF_TRUE
-          if @instructions[@pc]&.[](0) == IL::JUMP_IF_TRUE && @instructions[@pc][1] == success_target
-            conditions << expr
-            @pc += 1
-          else
-            break
-          end
-        when IL::JUMP
-          # No more conditions, this is the "else" jump. Its target marks the
-          # end of the whole case statement — used below to bound the success
-          # body (otherwise the LAST when branch, having no following
-          # LOAD_TEMP matched-flag check, would swallow statements after the
-          # case: scope pops, trailing raw text, loop-back jumps, ...).
-          case_end = inst[1]
-          break
-        else
-          break
-        end
-      end
-
-      # Skip to success target
-      @pc = success_target
-
-      # Skip CONST_TRUE and get the STORE_TEMP slot (success marker)
-      success_slot = nil
-      @pc += 1 if @instructions[@pc]&.[](0) == IL::CONST_TRUE
-      if @instructions[@pc]&.[](0) == IL::STORE_TEMP
-        success_slot = @instructions[@pc][1]
-        @pc += 1
-      end
-
-      # Generate the combined OR condition
-      cond_parts = conditions
-      combined_cond = cond_parts.map { |c| "(#{inline_truthy(c)})" }.join(" || ")
-
-      code = String.new
-      code << "#{prefix}if #{combined_cond}\n"
-
-      # Set the success flag to prevent else branch
-      code << "#{prefix}  __temp_#{success_slot}__ = true\n" if success_slot
-
-      # Parse success body until the end of the branch: a LOAD_TEMP
-      # (next when's matched-flag check), a jump out of the case, or case_end
-      while @pc < @instructions.length && (case_end.nil? || @pc < case_end)
-        inst = @instructions[@pc]
-        break if inst.nil?
-
-        case inst[0]
-        when IL::LOAD_TEMP
-          # This is checking the matched flag for else branch - done with body
-          break
-        when IL::HALT
-          break
-        when IL::JUMP
-          # Forward jump to (or past) the end of the case — branch exit
-          if case_end && inst[1] >= case_end
-            @pc += 1
-            break
-          end
-          result = generate_statement(indent + 1)
-          break if result.nil?
-          code << result
-        else
-          result = generate_statement(indent + 1)
-          break if result.nil?
-          code << result
-        end
       end
 
       code << "#{prefix}end\n"

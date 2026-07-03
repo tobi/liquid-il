@@ -176,17 +176,17 @@ class Pass1FoldConstOpsTest < Minitest::Test
     assert_equal "yes", template.render
   end
 
-  def test_const_jump_if_false_eliminated
+  def test_const_false_branch_eliminated
     template = @ctx.parse("{% if false %}no{% else %}yes{% endif %}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    refute_includes opcodes, LiquidIL::IL::JUMP_IF_FALSE
+    refute_includes opcodes, LiquidIL::IL::IF
     assert_equal "yes", template.render
   end
 
-  def test_const_jump_if_true_eliminated
+  def test_const_true_branch_eliminated
     template = @ctx.parse("{% if true %}yes{% endif %}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    refute_includes opcodes, LiquidIL::IL::JUMP_IF_TRUE
+    refute_includes opcodes, LiquidIL::IL::IF
     assert_equal "yes", template.render
   end
 end
@@ -387,7 +387,7 @@ class Pass6RemoveRedundantIsTruthyTest < Minitest::Test
   end
 
   def test_unless_keeps_is_truthy
-    # unless uses IS_TRUTHY + JUMP_IF_TRUE, not BOOL_NOT
+    # unless uses IS_TRUTHY + a negated IF marker, not BOOL_NOT
     # IS_TRUTHY is only removed after boolean-producing ops (COMPARE, etc.)
     template = @ctx.parse("{% unless x %}yes{% endunless %}", optimize: true)
     # Should still work correctly
@@ -419,13 +419,11 @@ class Pass8RemoveJumpToNextLabelTest < Minitest::Test
     @ctx = LiquidIL::Context.new
   end
 
-  def test_jump_to_immediate_label_removed
-    # {% if false %}a{% endif %} would generate JUMP to next label
+  def test_const_false_if_removed_entirely
     template = @ctx.parse("{% if false %}a{% endif %}", optimize: true)
-    # After optimization, the false branch is eliminated
+    # After optimization, the whole conditional is eliminated
     opcodes = template.instructions.map(&:first)
-    # Should not have any conditional jumps since condition is constant
-    refute_includes opcodes, LiquidIL::IL::JUMP_IF_FALSE
+    refute_includes opcodes, LiquidIL::IL::IF
     assert_equal "", template.render
   end
 end

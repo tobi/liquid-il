@@ -104,10 +104,6 @@ module LiquidIL
         format_simple("POP_CAPTURE", [], idx, comment: "→ captured string")
       when IL::JUMP
         format_jump("JUMP", args[0], idx)
-      when IL::JUMP_IF_FALSE
-        format_jump("JUMP_IF_FALSE", args[0], idx, comment: "pop, jump if falsy")
-      when IL::JUMP_IF_TRUE
-        format_jump("JUMP_IF_TRUE", args[0], idx, comment: "pop, jump if truthy")
       when IL::JUMP_IF_EMPTY
         format_jump("JUMP_IF_EMPTY", args[0], idx, comment: "peek, jump if empty")
       when IL::JUMP_IF_INTERRUPT
@@ -120,8 +116,18 @@ module LiquidIL
         format_simple("CONTAINS", [], idx, comment: "pop a, b → a contains b")
       when IL::BOOL_NOT
         format_simple("BOOL_NOT", [], idx, comment: "pop → !value")
+      when IL::BOOL_AND
+        format_simple("BOOL_AND", [], idx, comment: "pop r, l → truthy(l) && truthy(r)")
+      when IL::BOOL_OR
+        format_simple("BOOL_OR", [], idx, comment: "pop r, l → truthy(l) || truthy(r)")
       when IL::IS_TRUTHY
         format_simple("IS_TRUTHY", [], idx, comment: "pop → bool")
+      when IL::IF
+        format_simple("IF", args[0] ? ["negated"] : [], idx, comment: "pop cond, begin then-block")
+      when IL::ELSE
+        format_simple("ELSE", [], idx)
+      when IL::END_IF
+        format_simple("END_IF", [], idx)
       when IL::PUSH_SCOPE
         format_simple("PUSH_SCOPE", [], idx)
       when IL::POP_SCOPE
