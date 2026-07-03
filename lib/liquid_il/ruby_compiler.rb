@@ -518,14 +518,16 @@ module LiquidIL
           @pc += 1
           # no-op in Ruby compiler
         when IL::JUMP
-          @pc += 1
-          code << "  next\n"
+          target = inst[1]
+          # Forward jump: skip dead code, continue at target
+          # Backward jump: loop-back, handled by loop structure (no-op)
+          @pc = target > @pc ? target : @pc + 1
         when IL::PUSH_SCOPE
           @pc += 1
-          code << "  _sp << _S.scope\n"
+          code << "  _S.push_scope\n"
         when IL::POP_SCOPE
           @pc += 1
-          code << "  _S.scope = _sp.pop\n"
+          code << "  _S.pop_scope\n"
         when IL::FOR_INIT
           @pc += 1
           code << "  __for_#{inst[2]}__ = _H.wrap_for_loop(#{generate_var_lookup(inst[1])}, "
