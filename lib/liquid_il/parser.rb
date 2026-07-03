@@ -684,14 +684,15 @@ module LiquidIL
         # Check for keyword argument
         if lexer.current == ExpressionLexer::IDENTIFIER
           # Look ahead for colon
-          saved_state = lexer.save_state
+          key = lexer.value
+          lexer.save_state
           lexer.advance
 
           if lexer.current == ExpressionLexer::COLON
             # This is a keyword argument
             lexer.advance
-            key = saved_state[:value]
-            
+
+
             # Use a temporary builder to capture instructions for keyword args
             kw_builder = IL::Builder.new
 
@@ -703,7 +704,7 @@ module LiquidIL
             kw_args_builders << kw_builder
           else
             # Not a keyword arg, restore and parse as positional
-            lexer.restore_state(saved_state)
+            lexer.restore_state
             parse_expression(lexer)
             pos_args_count += 1
           end
@@ -1752,12 +1753,12 @@ module LiquidIL
 
           # Peek ahead to see if this is a keyword argument (identifier followed by colon)
           if paren_depth == 0
-            saved_state = lexer.save_state
             saved_value = lexer.value
+            lexer.save_state
             lexer.advance
             if lexer.current == ExpressionLexer::COLON
               # This identifier is a keyword arg name - restore state so caller sees it
-              lexer.restore_state(saved_state)
+              lexer.restore_state
               break
             end
             parts << saved_value

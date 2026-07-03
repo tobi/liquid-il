@@ -146,24 +146,6 @@ module LiquidIL
       scan_raw_token
     end
 
-    # Legacy compatibility: returns [type, content, trim_left, trim_right, start_pos, end_pos]
-    def next_token_tuple
-      type = next_token
-      [type, token_content, @trim_left, @trim_right, @token_start, @token_end]
-    end
-
-    # Tokenize entire template into array of tuples (legacy)
-    def tokenize
-      reset
-      tokens = []
-      loop do
-        type = next_token
-        break if type == EOF
-        tokens << [type, token_content, @trim_left, @trim_right, @token_start, @token_end]
-      end
-      tokens
-    end
-
     private
 
     def scan_raw_token
@@ -364,33 +346,9 @@ module LiquidIL
     COMP_TABLE["<".ord] = :LT_START
     COMP_TABLE[">".ord] = :GT_START
 
-    # Keywords — all lowercase, lengths 2-8
-    # We use a perfect hash to avoid .downcase allocation.
-    #
-    # Keywords and their 2nd+3rd bytes (as 16-bit LE int):
-    #   nil(2)→skip  null(3)→"ul"  true(3)→"ru"  false(4)→"al"
-    #   empty(4)→"mp"  blank(4)→"la"  and(2)→skip  or(1)→skip
-    #   contains(7)→"on"
-    #
-    # For len=3: "ul"=27765, "ru"=30066  → unique by byte pair
-    # For len=4: "al"=27745, "mp"=28781, "la"=24940  → unique
-    # For len=5: "al"=27745 (false) — collision with blank? No: false len=5, blank len=5
-    #   false→"al"=27745, blank→"la"=24940, empty→"mp"=28781 → unique
-    # For len=8: "on"=28527 (contains) → unique
-    #
-    # Actually let's just build the table properly.
-
-    # Build perfect hash for keywords
-    # Strategy: length disambiguates most, then 2nd byte for collisions
-    KW_BY_LEN = {}.tap do |h|
-      { "nil" => NIL, "null" => NIL, "true" => TRUE, "false" => FALSE,
-        "empty" => EMPTY, "blank" => BLANK, "and" => AND, "or" => OR,
-        "contains" => CONTAINS }.each do |word, tok|
-        (h[word.length] ||= []) << [word, tok]
-      end
-    end.freeze
-
-    # For lengths with multiple keywords, build byte-based disambiguation
+    # Keywords: nil null true false empty blank and or contains
+    # (all lowercase, matched case-insensitively without .downcase allocation)
+    # Disambiguated by length, then first byte:
     # len 2: "or" (only one)
     # len 3: "nil", "and" — disambiguate by 1st byte: 'n'=110 vs 'a'=97
     # len 4: "null", "true" — 1st byte: 'n'=110 vs 't'=116
@@ -413,13 +371,6 @@ module LiquidIL
     KW_LEN5_TABLE["f".ord] = ["false", FALSE]
     KW_LEN5_TABLE["e".ord] = ["empty", EMPTY]
     KW_LEN5_TABLE["b".ord] = ["blank", BLANK]
-
-    # Legacy hash for fallback (case-insensitive)
-    KEYWORDS = {
-      "nil" => NIL, "null" => NIL, "true" => TRUE, "false" => FALSE,
-      "empty" => EMPTY, "blank" => BLANK, "and" => AND, "or" => OR,
-      "contains" => CONTAINS,
-    }.freeze
 
     CONTAINS_BYTES = "contains".bytes.freeze
 
@@ -456,17 +407,22 @@ module LiquidIL
       @peeked = false
     end
 
-    # Save current lexer state for backtracking
+    # Save current lexer state for backtracking (single slot, no allocation).
+    # Both call sites save+restore immediately with no overlap, so nested
+    # saves are not supported.
     def save_state
-      { pos: @scanner.pos, token: @current_token, value: @current_value, peeked: @peeked }
+      @saved_pos = @scanner.pos
+      @saved_token = @current_token
+      @saved_value = @current_value
+      @saved_peeked = @peeked
     end
 
-    # Restore lexer state from saved state
-    def restore_state(state)
-      @scanner.pos = state[:pos]
-      @current_token = state[:token]
-      @current_value = state[:value]
-      @peeked = state[:peeked]
+    # Restore lexer state from the last save_state
+    def restore_state
+      @scanner.pos = @saved_pos
+      @current_token = @saved_token
+      @current_value = @saved_value
+      @peeked = @saved_peeked
     end
 
     # Get current token type (no allocation if already peeked)
