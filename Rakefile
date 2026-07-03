@@ -93,6 +93,18 @@ module LiquidVmRake
     system(bundle_env, *command, chdir: path) || abort("command failed: #{command.shelljoin}")
   end
 
+  def run_liquid_spec!(*argv)
+    liquid_spec_root = Gem.loaded_specs.fetch("liquid-spec").full_gem_path
+    command = [
+      "bundle", "exec", "ruby",
+      "-I#{File.join(liquid_spec_root, "lib")}",
+      File.join(liquid_spec_root, "bin", "liquid-spec"),
+      *argv.flatten.map(&:to_s),
+    ]
+    puts "(cd #{path.shellescape} && #{command.shelljoin})"
+    system(bundle_env.merge(env), *command, chdir: path) || abort("command failed: #{command.shelljoin}")
+  end
+
   def ensure_adapter!(path = adapter)
     return if File.file?(path)
 
@@ -201,8 +213,8 @@ namespace :liquid_vm do
   desc "Run liquid-spec matrix for liquid_ruby, LiquidIL, liquid-vm, and liquid-vm SSA"
   task spec: :setup do
     LiquidVmRake.ensure_adapters!
-    LiquidVmRake.run!(
-      "bundle", "exec", "liquid-spec", "matrix",
+    LiquidVmRake.run_liquid_spec!(
+      "matrix",
       "--adapters=liquid_ruby",
       "--adapter=#{File.expand_path(ADAPTER)}",
       "--adapter=#{LiquidVmRake.adapter(:vm)}",
@@ -215,8 +227,8 @@ namespace :liquid_vm do
   desc "Benchmark liquid_ruby, LiquidIL, liquid-vm, and liquid-vm SSA"
   task bench: :setup do
     LiquidVmRake.ensure_adapters!
-    LiquidVmRake.run!(
-      "bundle", "exec", "liquid-spec", "bench",
+    LiquidVmRake.run_liquid_spec!(
+      "bench",
       "--adapters=liquid_ruby",
       "--adapter=#{File.expand_path(ADAPTER)}",
       "--adapter=#{LiquidVmRake.adapter(:vm)}",
