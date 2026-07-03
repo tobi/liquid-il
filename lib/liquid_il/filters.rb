@@ -66,22 +66,17 @@ module LiquidIL
       def clear_global_registry!
         @global_registry.clear
       end
-      # Private methods that shouldn't be callable as filters
-      INTERNAL_METHODS = %w[to_number to_integer to_safe_integer clamp_i64 strftime_filter apply].freeze
-
-      # Cache of valid filter method names for O(1) dispatch
-      # Built lazily on first call, avoids respond_to?/method/owner checks per call
+      # Cache of valid filter method names for O(1) dispatch.
+      # Built lazily from the public methods added by the built-in filter
+      # section below; host-registered filters stay dynamic via Scope.
       def valid_filter_methods
         @valid_filter_methods ||= begin
-          methods = private_instance_methods(false) | public_instance_methods(false)
-          # Get methods defined directly on our singleton class
-          own_methods = singleton_class.instance_methods(false) | singleton_class.private_instance_methods(false)
+          own_methods = singleton_methods(false) - LiquidIL::Filters::FILTER_METHOD_BASELINE
           set = {}
           own_methods.each do |m|
-            name = m.to_s
-            set[name] = true unless INTERNAL_METHODS.include?(name)
+            set[m.to_s] = true
           end
-          set
+          set.freeze
         end
       end
 
@@ -175,6 +170,8 @@ module LiquidIL
 
       # Filter methods — made public so RubyCompiler can call them directly without send()
       public
+
+      LiquidIL::Filters::FILTER_METHOD_BASELINE = LiquidIL::Filters.singleton_methods(false).freeze
 
       # --- String filters ---
 
@@ -618,6 +615,7 @@ module LiquidIL
       end
 
       # --- Utility ---
+      private
 
       def liquidize(value)
         value.respond_to?(:to_liquid) ? value.to_liquid : value

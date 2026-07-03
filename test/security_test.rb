@@ -1007,6 +1007,25 @@ end
 # ════════════════════════════════════════════════════════════
 
 class WhitelistCorrectnessTest < Minitest::Test
+  def test_filter_whitelist_excludes_internal_module_methods
+    filters = LiquidIL::Filters.valid_filter_methods
+
+    assert filters["upcase"]
+    assert filters["map"]
+    assert filters["raisy"]
+    refute filters["global_registry"]
+    refute filters["apply_fast"]
+    refute filters["context"]
+    refute filters["to_number"]
+    refute filters["parse_date"]
+  end
+
+  def test_internal_module_methods_are_not_template_callable_filters
+    assert_equal "x", LiquidIL.render('{{ "x" | global_registry }}')
+    assert_equal "x", LiquidIL.render('{{ "x" | apply_fast }}')
+    assert_equal "x", LiquidIL.render('{{ "x" | to_number }}')
+  end
+
   def test_only_subclass_methods_are_invokable
     expected = Set.new(%w[name price to_liquid])
     assert_equal expected, VictimDrop.invokable_methods
