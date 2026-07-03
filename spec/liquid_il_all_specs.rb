@@ -6,7 +6,7 @@
 
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"
-require_relative "../lib/liquid_il/shopify_mock"
+require_relative "helpers/shopify_mock"
 
 LiquidSpec.setup do |ctx|
   require "liquid"

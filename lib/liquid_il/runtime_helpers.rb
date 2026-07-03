@@ -146,6 +146,8 @@ module LiquidIL
         # then fall back to [] only for Hash-like objects that are known safe.
         if obj.respond_to?(:invoke_drop)
           obj.invoke_drop(key.to_s)
+        elsif obj.respond_to?(:liquid_method_missing)
+          obj.liquid_method_missing(key.to_s)
         elsif obj.is_a?(Hash) || (obj.respond_to?(:key?) && obj.respond_to?(:[]))
           obj[key.to_s]
         else

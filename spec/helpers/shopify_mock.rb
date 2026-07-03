@@ -162,6 +162,27 @@ module LiquidIL
             LiquidIL::ShopifyMock.translate(input, args.last.is_a?(Hash) ? args.last : nil)
           end
 
+          def read_current_tags(input)
+            (@context&.lookup("current_tags") || input)
+          end
+
+          def read_template(input)
+            (@context&.lookup("template") || input)
+          end
+
+          def fakey(input)
+            "#{input} (fake)"
+          end
+
+          def modify_case(input, options = nil)
+            requested_case = options.is_a?(Hash) ? (options["case"] || options[:case]) : nil
+            requested_case.to_s == "upcase" ? input.to_s.upcase : input.to_s
+          end
+
+          def raisy(_input)
+            raise LiquidIL::FilterRuntimeError, "internal"
+          end
+
           def placeholder_svg_tag(type, css_class = nil)
             LiquidIL::ShopifyMock.placeholder_svg_tag(type, css_class)
           end
@@ -208,8 +229,13 @@ module LiquidIL
     def self.translate(key, variables = nil)
       value = key.to_s.split('.').reduce(locale_data) { |node, part| node.is_a?(Hash) ? node[part] : nil }
       value = plural_translation(value, variables) if value.is_a?(Hash)
-      value ||= key.to_s
+      value ||= fallback_translation(key)
       interpolate_translation(value.to_s, variables)
+    end
+
+    def self.fallback_translation(key)
+      key_s = key.to_s
+      key_s.include?(".") ? key_s : "translated-#{key_s}-"
     end
 
     def self.plural_translation(value, variables)

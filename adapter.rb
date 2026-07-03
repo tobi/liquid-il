@@ -8,7 +8,7 @@
 
 require "liquid"
 require_relative "lib/liquid_il"
-require_relative "lib/liquid_il/shopify_mock"
+require_relative "spec/helpers/shopify_mock"
 
 LiquidIL::ShopifyMock.install!
 
