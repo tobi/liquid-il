@@ -261,8 +261,13 @@ module LiquidIL
       self
     end
 
-    def to_s
+    # to_liquid_value returns empty string — self is not a scalar value,
+    # it's a scope proxy. When used in a value context (truthiness, comparison),
+    # it should behave like an empty string.
+    def to_liquid_value
       ""
     end
+
+    # to_s inherited from Drop: returns class name for stringification in filters
   end
 end
