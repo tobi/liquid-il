@@ -6,8 +6,9 @@ GIT
       bigdecimal
       strscan (>= 3.1.1)
 
-PATH
-  remote: /home/tobi/src/github.com/Shopify/liquid-spec
+GIT
+  remote: https://github.com/Shopify/liquid-spec
+  revision: edfd3d6d64ab1748df01f63f89da9f68cd6c6c27
   specs:
     liquid-spec (1.2.0)
       super_diff (~> 0.18)

@@ -2,8 +2,7 @@
 
 source "https://rubygems.org"
 
-# TEMP: local checkout until the local-suites commit (edfd3d6) is pushed upstream
-gem "liquid-spec", path: "#{Dir.home}/src/github.com/Shopify/liquid-spec"
+gem "liquid-spec", git: "https://github.com/Shopify/liquid-spec"
 gem "liquid", git: "https://github.com/Shopify/liquid"
 gem "base64"
 gem "rake"
