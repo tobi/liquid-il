@@ -33,3 +33,11 @@ specs:
   filesystem:
     snippet: "{{ drop.value }}"
   expected: "env"
+
+- name: map_filter_uses_selfdrop_scope_lookup
+  template: "{% assign x = 'X' %}{{ self | map: 'x' | join: ',' }}|{{ self | map: 'missing' | join: ',' }}"
+  expected: "X|"
+
+- name: string_filters_use_liquid_selfdrop_name
+  template: "{{ self | escape }}|{{ self | slice: 0, 6 }}|{{ self | url_encode }}"
+  expected: "Liquid::SelfDrop|Liquid|Liquid%3A%3ASelfDrop"

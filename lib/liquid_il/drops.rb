@@ -253,6 +253,13 @@ module LiquidIL
       @scope.lookup(key.to_s)
     end
 
+    # Drop aliases [] to its base invoke_drop method. Override it here so
+    # generic property filters (map/sum/compact) dispatch through SelfDrop's
+    # scope-backed lookup rather than Drop's whitelist-based implementation.
+    def [](key)
+      invoke_drop(key)
+    end
+
     def key?(key)
       !@scope.lookup(key.to_s).nil?
     end
@@ -268,6 +275,10 @@ module LiquidIL
       ""
     end
 
-    # to_s inherited from Drop: returns class name for stringification in filters
+    # Match Liquid's public class-name stringification for compatibility. This
+    # is intentionally stringification-only; the class remains LiquidIL::SelfDrop.
+    def to_s
+      "Liquid::SelfDrop"
+    end
   end
 end
