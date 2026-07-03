@@ -1440,7 +1440,8 @@ module LiquidIL
                left_ruby.include?(").round(") || left_ruby.include?(").ceil") || left_ruby.include?(").floor")
               stack << "(#{left_ruby} || 0) #{ruby_op} #{right_ruby}"
             else
-              stack << "((_t = #{left_ruby}); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+              # Unwrap drops via to_liquid_value before numeric comparison
+              stack << "((_t = #{left_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
             end
           else
             stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, _F)"
@@ -1598,7 +1599,7 @@ module LiquidIL
                        left_ruby_inner.match?(/\A-?[0-9]+\.?[0-9]*\z/)
                       stack << "(#{left_ruby_inner} || 0) #{ruby_op} #{right_ruby}"
                     else
-                      stack << "((_t = #{left_ruby_inner}); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+                      stack << "((_t = #{left_ruby_inner}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
                     end
                   else
                     stack << "_H.cmp(#{left_ruby_inner}, #{right_ruby}, #{cmp_op.inspect}, _O, _F)"
