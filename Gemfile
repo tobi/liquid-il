@@ -2,7 +2,9 @@
 
 source "https://rubygems.org"
 
-gem "liquid-spec", git: "https://github.com/Shopify/liquid-spec"
+# Local checkout with the compiled-artifact bench protocol
+# (branch artifact-bench-protocol — switch back to git: once merged upstream)
+gem "liquid-spec", path: "#{Dir.home}/src/github.com/Shopify/liquid-spec"
 gem "liquid", git: "https://github.com/Shopify/liquid"
 gem "base64"
 gem "rake"

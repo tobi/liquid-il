@@ -63,7 +63,11 @@ bundle exec liquid-spec run adapter.rb --list
 # hard-fails unless artifact/fresh/reference outputs all match
 rake bench:cold
 
-# Warm benchmark (must not regress when trading warm speed for artifact size)
+# Warm benchmark (must not regress when trading warm speed for artifact size).
+# The adapter implements liquid-spec's compiled-artifact protocol
+# (LiquidSpec.dump_artifact / load_artifact), so this also reports a "Load"
+# stage per spec: artifact bytes, cold load @1, load+first-render cold total,
+# and steady-state load time/allocs — with roundtrip output verification.
 rake bench
 ```
 

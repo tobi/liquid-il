@@ -76,6 +76,8 @@ The budget is accounted by the summed size of the loaded artifacts; once it is e
 
 Before this optimization pass the same pages cost 45–81µs cold with 18–37KB artifacts: the wins came from hoisting per-partial boilerplate into the (already-jitted) runtime, a census-based inline-vs-shared-lambda policy for partials, baking error locations in as compile-time literals, and replacing the Marshal envelope with the framed binary.
 
+The liquid-spec adapter also implements liquid-spec's **compiled-artifact protocol** (`LiquidSpec.dump_artifact` / `LiquidSpec.load_artifact`), so `rake bench` reports the same artifact stage on liquid-spec's own benchmark suite — payload bytes, cold load, load+first-render, steady-state load time and allocations — with GC-disciplined timing, real percentiles, and a dump → load → render roundtrip check per spec.
+
 ## Quick Start
 
 ```ruby

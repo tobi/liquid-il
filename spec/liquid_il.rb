@@ -67,5 +67,18 @@ end
 LiquidSpec.render do |ctx, assigns, render_options|
   strict_errors = render_options.fetch(:strict_errors, false)
   render_errors = !strict_errors
-  ctx[:template].render(assigns, render_errors: render_errors)
+  # Registers passthrough: artifact-loaded templates have no compile context,
+  # so dynamic partials resolve through the render-time file_system register.
+  registers = render_options[:registers]
+  ctx[:template].render(assigns, render_errors: render_errors, registers: registers)
+end
+
+# Compiled-artifact protocol: the production path this implementation is
+# optimized for (compile once -> persist LQIL blob -> cold load+render).
+LiquidSpec.dump_artifact do |ctx|
+  ctx[:template].to_artifact
+end
+
+LiquidSpec.load_artifact do |ctx, blob, _options|
+  ctx[:template] = LiquidIL::Artifact.load(blob)
 end
