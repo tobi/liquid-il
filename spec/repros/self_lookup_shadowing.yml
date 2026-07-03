@@ -13,7 +13,7 @@ specs:
   environment:
     self:
       key: value
-  expected: "{"key"=>"value"}|value|value"
+  expected: '{"key"=>"value"}|value|value'
 
 - name: increment_self_counter_shadows_synthetic_selfdrop
   template: "{% increment self %}|{{ self }}"

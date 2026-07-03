@@ -1,7 +1,7 @@
 ---
 _metadata:
   hint: Minimal repro for collection page include+paginate behavior with hash products
-  required_features:
+  features:
     - shopify_tags
 specs:
 - name: shopify_paginate_include_hash_items_repro

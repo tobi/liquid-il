@@ -2,7 +2,7 @@
 _metadata:
   hint: strict2 error mode rejects bare bracket access ({{ ['x'] }}) but allows qualified access ({{ product['title'] }}) and dot notation. Default for production; lax is the liquid-spec adapter default.
   doc: implementers/error_modes.md
-  render_errors: true
+  render_errors: false
 specs:
 # Root cause: strict2 is a new error mode that rejects bare bracket access
 # at the start of an expression. It's a superset of :strict (also rejects

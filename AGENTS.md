@@ -72,7 +72,7 @@ rake bench
 Every inline change — parser, lexer, compiler, runtime, filter — must be accompanied by a **local spec** with a descriptive name and a clear comment explaining the root cause and expected behavior. Do not rely solely on the upstream liquid-spec to catch regressions; write a focused spec that would fail without the fix and pass with it.
 
 Guidelines:
-- Place specs in `spec/repros/` as YAML files (automatically picked up by `bundle exec liquid-spec run adapter.rb`).
+- Place specs in `spec/repros/` as YAML files. The repository has a `specs -> spec/repros` symlink because `liquid-spec` auto-discovers only top-level `./specs/*.yml`; do not remove the symlink.
 - Use the existing YAML format: `name`, `template`, `expected`, `environment`, `filesystem`, `render_errors`, etc.
 - Name specs descriptively: `lax_mode_ignores_trailing_junk_after_expression`, not `test_parse_1`.
 - Add a `_metadata.hint` or `doc` field explaining the root cause the spec guards against.
