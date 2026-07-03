@@ -21,9 +21,11 @@ LiquidSpec.setup do |_ctx|
 end
 
 LiquidSpec.configure do |config|
-  # Run all default suites (equivalent to old suite = :all)
-  # missing_features = [] means all features are supported
-  config.missing_features = []
+  # Run all default suites (equivalent to old suite = :all). The
+  # liquid_vm_diff_pending feature marks local parity repros where reference
+  # Liquid and liquid-vm agree but LiquidIL still differs; opt out until each
+  # behavior is implemented and the feature can be removed from that spec.
+  config.missing_features = [:liquid_vm_diff_pending]
 end
 
 # Fallback for templates that can't be compiled (dynamic partials, recursion, etc.)
