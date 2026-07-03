@@ -708,6 +708,7 @@ module LiquidIL
         "#{prefix}_S.pop_scope\n"
 
       when IL::PUSH_CAPTURE
+        @uses_captures = true
         @pc += 1
         "#{prefix}_cst << _O; _O = String.new\n"
 
@@ -720,6 +721,7 @@ module LiquidIL
           @pc += 1
           "#{prefix}__captured__ = _O; _O = _cst.pop; _S.assign(#{var.inspect}, __captured__)\n"
         elsif @instructions[@pc]&.[](0) == IL::IFCHANGED_CHECK
+          @uses_ifchanged = true
           tag_id = @instructions[@pc][1]
           @pc += 1
           # ifchanged: output captured content only if it differs from previous
@@ -736,6 +738,7 @@ module LiquidIL
         end
 
       when IL::CYCLE_STEP
+        @uses_cycles = true
         @pc += 1
         identity = inst[1]
         raw_values = inst[2]
@@ -764,6 +767,7 @@ module LiquidIL
         end
 
       when IL::CYCLE_STEP_VAR
+        @uses_cycles = true
         @pc += 1
         var_name = inst[1]
         raw_values = inst[2]

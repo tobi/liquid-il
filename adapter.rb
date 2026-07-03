@@ -16,9 +16,9 @@ end
 # Compile a template string into a LiquidIL template object.
 # The compiled template is stored in ctx[:template] for use by the render block.
 LiquidSpec.compile do |ctx, source, options|
-  file_system = ctx[:file_system]
+  file_system = options[:file_system] || ctx[:file_system]
   c = LiquidIL::Context.new(file_system: file_system)
-  ctx[:template] = c.parse(source)
+  ctx[:template] = c.parse(source, line_numbers: options[:line_numbers])
 end
 
 # Render the compiled template (stored in ctx[:template]) with the given assigns.
