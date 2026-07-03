@@ -524,7 +524,16 @@ module LiquidIL
       if punct == :DOT_OR_DOTDOT
         next_byte = @source.getbyte(@scanner.pos + 1)
         if next_byte == 46 # another . -> DOTDOT
-          @scanner.pos += 2
+          # Liquid laxly treats an extra dot in ranges, e.g. (1...5), as (1..5).
+          # If the third dot is followed by a digit, consume it as range noise
+          # instead of letting it start a leading-decimal number (.5).
+          third_byte = @source.getbyte(@scanner.pos + 2)
+          fourth_byte = @source.getbyte(@scanner.pos + 3)
+          if third_byte == 46 && fourth_byte && fourth_byte >= 48 && fourth_byte <= 57
+            @scanner.pos += 3
+          else
+            @scanner.pos += 2
+          end
           @current_token = DOTDOT
         elsif next_byte && next_byte >= 48 && next_byte <= 57 # digit -> float like .5
           scan_leading_decimal_number
@@ -640,6 +649,21 @@ module LiquidIL
       # Consume digits
       while (byte = @source.getbyte(@scanner.pos)) && byte >= 48 && byte <= 57
         @scanner.pos += 1
+      end
+
+      # If a digit-starting token continues directly with identifier characters
+      # (e.g. 123foo), Liquid laxly treats the whole token as a variable name.
+      # Keep ordinary numeric literals numeric by only switching when the next
+      # byte is a letter/underscore before any decimal part is consumed.
+      byte = @source.getbyte(@scanner.pos)
+      if @source.getbyte(start) != 45 && byte && ((byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95)
+        while (byte = @source.getbyte(@scanner.pos)) &&
+              ((byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95)
+          @scanner.pos += 1
+        end
+        @current_value = @source.byteslice(start, @scanner.pos - start)
+        @current_token = IDENTIFIER
+        return
       end
 
       # Check for decimal part

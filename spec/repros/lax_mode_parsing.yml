@@ -62,3 +62,11 @@ specs:
   environment:
     foo: bar
   expected: "bar"
+
+- name: lax_mode_extra_dot_in_range_is_ignored
+  template: "{% for i in (1...5) %}{{ i }}{% endfor %}"
+  expected: "12345"
+
+- name: lax_mode_digit_starting_variable_name_lookup
+  template: "{% assign 123foo = 'bar' %}{{ 123foo }}"
+  expected: "bar"
