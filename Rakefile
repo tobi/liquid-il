@@ -7,6 +7,7 @@ task default: :test
 
 ADAPTER = "spec/liquid_il.rb"
 ADAPTER_VM = "spec/liquid_vm.rb"
+ADAPTER_VM_SSA = "spec/liquid_vm_ssa.rb"
 ADAPTER_RUBY = "spec/liquid_ruby_bench.rb"
 LIQUID_VM_REPO = "https://github.com/Shopify/liquid-vm"
 LIQUID_VM_DEFAULT_PATH = "/tmp/liquid-vm"
@@ -35,24 +36,41 @@ module LiquidVmRake
     ENV.fetch("LIQUID_VM_REPO", LIQUID_VM_REPO)
   end
 
-  def adapter
-    explicit = ENV["LIQUID_VM_ADAPTER"]
-    return File.expand_path(explicit) if explicit && !explicit.empty?
+  def adapter(backend = nil)
+    if backend.nil?
+      explicit = ENV["LIQUID_VM_ADAPTER"]
+      return File.expand_path(explicit) if explicit && !explicit.empty?
 
-    backend = ENV["LIQUID_VM_BACKEND"] == "ssa" ? "liquid_vm_ssa.rb" : "liquid_vm.rb"
-    File.join(path, "test", "adapters", backend)
+      backend = ENV["LIQUID_VM_BACKEND"] == "ssa" ? :ssa : :vm
+    end
+
+    filename = backend.to_sym == :ssa ? "liquid_vm_ssa.rb" : "liquid_vm.rb"
+    File.join(path, "test", "adapters", filename)
+  end
+
+  def adapters
+    [adapter(:vm), adapter(:ssa)]
   end
 
   def gemfile
     File.join(path, "Gemfile")
   end
 
-  def env
+  def bundle_env
     {
       "BUNDLE_GEMFILE" => gemfile,
       "BUNDLE_WITHOUT" => ENV.fetch("BUNDLE_WITHOUT", "development"),
+      "RUBY_YJIT_ENABLE" => "1",
+    }
+  end
+
+  def env
+    ruby_lib = [File.join(path, "gem", "lib"), ENV["RUBYLIB"]].compact.reject(&:empty?).join(File::PATH_SEPARATOR)
+    {
       "LIQUID_VM_PATH" => path,
-      "LIQUID_VM_ADAPTER" => adapter,
+      "LIQUID_VM_ADAPTER" => adapter(:vm),
+      "LIQUID_VM_SSA_ADAPTER" => adapter(:ssa),
+      "RUBYLIB" => ruby_lib,
     }
   end
 
@@ -66,18 +84,28 @@ module LiquidVmRake
   def run!(*argv, extra_env: {})
     command = argv.flatten.map(&:to_s)
     puts command.shelljoin
-    system(env.merge(extra_env), *command) || abort("command failed: #{command.shelljoin}")
+    system(env.merge({ "RUBY_YJIT_ENABLE" => "1" }, extra_env), *command) || abort("command failed: #{command.shelljoin}")
   end
 
-  def ensure_adapter!
-    return if File.file?(adapter)
+  def run_in_checkout!(*argv)
+    command = argv.flatten.map(&:to_s)
+    puts "(cd #{path.shellescape} && #{command.shelljoin})"
+    system(bundle_env, *command, chdir: path) || abort("command failed: #{command.shelljoin}")
+  end
+
+  def ensure_adapter!(path = adapter)
+    return if File.file?(path)
 
     abort <<~MSG
-      liquid-vm adapter not found: #{adapter}
+      liquid-vm adapter not found: #{path}
 
-      Run `bundle exec rake liquid_vm:setup` to clone Shopify/liquid-vm into #{path},
+      Run `bundle exec rake liquid_vm:setup` to clone Shopify/liquid-vm into #{self.path},
       or set LIQUID_VM_PATH=/path/to/liquid-vm / LIQUID_VM_ADAPTER=/path/to/adapter.rb.
     MSG
+  end
+
+  def ensure_adapters!
+    adapters.each { |path| ensure_adapter!(path) }
   end
 end
 
@@ -110,8 +138,8 @@ end
 desc "Run spec matrix against reference Liquid"
 task :matrix do
   adapters = "--adapters=liquid_ruby --adapter=#{ADAPTER}"
-  adapters += " --adapter=#{ADAPTER_VM}" if ENV["WITH_LIQUID_VM"] == "1"
-  system "bash -c 'bundle exec liquid-spec matrix #{adapters} --no-max-failures 2> >(grep -v \"missing extensions\" >&2)'"
+  adapters += " --adapter=#{ADAPTER_VM} --adapter=#{ADAPTER_VM_SSA}" if ENV["WITH_LIQUID_VM"] == "1"
+  system "bash -c 'RUBY_YJIT_ENABLE=1 bundle exec liquid-spec matrix #{adapters} --no-max-failures 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
 # Benchmarks run through liquid-spec's harness (GC-disciplined timing, real
@@ -155,34 +183,45 @@ namespace :liquid_vm do
 
   desc "Install the optional liquid-vm bundle"
   task bundle: :clone do
-    LiquidVmRake.run!("bundle", "install")
+    LiquidVmRake.run_in_checkout!("bundle", "install")
   end
 
-  desc "Clone/update liquid-vm and install its bundle"
-  task setup: :bundle
+  desc "Build the optional liquid-vm native extension"
+  task compile: :bundle do
+    unless system("which", "cargo", out: File::NULL)
+      abort "cargo is required to build Shopify/liquid-vm; install Rust/Cargo and rerun `bundle exec rake liquid_vm:setup`"
+    end
 
-  desc "Run liquid-spec matrix for LiquidIL and optional Shopify/liquid-vm"
+    LiquidVmRake.run_in_checkout!("bundle", "exec", "rake", "compile")
+  end
+
+  desc "Clone/update liquid-vm, install its bundle, and build its native extension"
+  task setup: :compile
+
+  desc "Run liquid-spec matrix for liquid_ruby, LiquidIL, liquid-vm, and liquid-vm SSA"
   task spec: :setup do
-    LiquidVmRake.ensure_adapter!
+    LiquidVmRake.ensure_adapters!
     LiquidVmRake.run!(
       "bundle", "exec", "liquid-spec", "matrix",
-      "--adapter=#{LiquidVmRake.adapter}",
+      "--adapters=liquid_ruby",
       "--adapter=#{File.expand_path(ADAPTER)}",
+      "--adapter=#{LiquidVmRake.adapter(:vm)}",
+      "--adapter=#{LiquidVmRake.adapter(:ssa)}",
       "--no-max-failures",
       LiquidVmRake.extra_args
     )
   end
 
-  desc "Benchmark LiquidIL against optional Shopify/liquid-vm"
+  desc "Benchmark liquid_ruby, LiquidIL, liquid-vm, and liquid-vm SSA"
   task bench: :setup do
-    LiquidVmRake.ensure_adapter!
+    LiquidVmRake.ensure_adapters!
     LiquidVmRake.run!(
       "bundle", "exec", "liquid-spec", "bench",
       "--adapters=liquid_ruby",
-      "--adapter=#{LiquidVmRake.adapter}",
       "--adapter=#{File.expand_path(ADAPTER)}",
-      LiquidVmRake.extra_args,
-      extra_env: { "RUBY_YJIT_ENABLE" => "1" }
+      "--adapter=#{LiquidVmRake.adapter(:vm)}",
+      "--adapter=#{LiquidVmRake.adapter(:ssa)}",
+      LiquidVmRake.extra_args
     )
   end
 end
