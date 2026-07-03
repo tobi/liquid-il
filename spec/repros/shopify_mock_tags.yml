@@ -1,0 +1,24 @@
+---
+_metadata:
+  hint: >
+    Shopify theme tags are adapter-level extensions. LiquidIL::ShopifyMock should
+    make them available without pulling in Shopify runtime classes: style wraps
+    evaluated CSS, raw definition tags render nothing, form emits a simple form
+    shell, and app-block/section hooks no-op safely.
+  features:
+    - shopify_tags
+specs:
+- name: shopify_mock_style_tag_wraps_evaluated_css
+  template: "{% assign color = 'red' %}{% style %}.x { color: {{ color }}; }{% endstyle %}"
+  expected: "<style data-shopify>.x { color: red; }</style>"
+- name: shopify_mock_raw_definition_tags_discard_content
+  template: "A{% schema %}{\"name\": \"ignored\"}{% endschema %}B{% javascript %}alert('{{ x }}'){% endjavascript %}C{% stylesheet %}.x { color: {{ x }} }{% endstylesheet %}D"
+  environment:
+    x: red
+  expected: "ABCD"
+- name: shopify_mock_form_tag_outputs_simple_form_shell
+  template: "{% form 'contact' %}<input name=\"contact[email]\">{% endform %}"
+  expected: "<form method=\"post\" action=\"/contact#contact_form\" accept-charset=\"UTF-8\"><input type=\"hidden\" name=\"form_type\" value=\"contact\" /><input type=\"hidden\" name=\"utf8\" value=\"✓\" /><input name=\"contact[email]\"></form>"
+- name: shopify_mock_section_and_app_block_render_noop
+  template: "A{% section 'header' %}B{% render block %}C"
+  expected: "ABC"

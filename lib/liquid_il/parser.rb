@@ -33,6 +33,7 @@ module LiquidIL
     # strict2 additionally rejects bare bracket access like {{ ['x'] }}
     def strict? = @error_mode == :strict || @error_mode == :strict2
     def strict2? = @error_mode == :strict2
+    def warn? = @error_mode == :warn
 
     attr_reader :warnings
 
@@ -169,7 +170,8 @@ module LiquidIL
         if current_template_type == TemplateLexer::TAG
           tag_name = @template_lexer.tag_name
           # Track nesting for tags that can nest
-          if NESTING_OPEN_TAGS.include?(tag_name) || Tags.registered?(tag_name)
+          tag_def = Tags[tag_name]
+          if NESTING_OPEN_TAGS.include?(tag_name) || (tag_def && tag_def.end_tag)
             depth += 1
           elsif NESTING_CLOSE_TAGS.include?(tag_name) || Tags.end_tag?(tag_name)
             if tag_name == end_tag_name && depth == 1
@@ -319,11 +321,16 @@ module LiquidIL
           advance_template unless tag_def.mode == :raw
           parse_registered_tag(tag_def, tag_args)
         else
-          raise SyntaxError.new(
-            "Unknown tag '#{tag_name}'",
-            position: start_pos,
-            source: @source
-          )
+          if strict?
+            raise SyntaxError.new(
+              "Unknown tag '#{tag_name}'",
+              position: start_pos,
+              source: @source
+            )
+          end
+          @warnings << "Unknown tag '#{tag_name}'" if warn?
+          advance_template
+          true
         end
       end.tap { @builder.clear_span }
     end
@@ -344,6 +351,9 @@ module LiquidIL
         @builder.write_raw(content) if content && !content.empty?
         # Resynchronize the template lexer after raw scanning
         advance_template
+      when :standalone
+        tag_def.setup&.call(tag_args, @builder)
+        tag_def.teardown&.call(tag_args, @builder)
       end
       true
     end
@@ -1636,6 +1646,11 @@ module LiquidIL
     end
 
     def parse_render_tag(tag_args)
+      # Shopify app blocks use `{% render block %}` to delegate to a runtime
+      # block renderer. The liquid-spec mock environment has no app-block
+      # runtime, so treat it as a no-op rather than rejecting the unquoted name.
+      return true if tag_args.strip == "block"
+
       # Parse: 'partial_name' [with expr | for expr] [as alias] [, var1: val1]
       lexer = expr_lexer_for_partial_tag(tag_args)
 

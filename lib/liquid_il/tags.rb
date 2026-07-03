@@ -22,9 +22,9 @@ module LiquidIL
     @registry = {}
 
     class << self
-      def register(name, end_tag:, mode: :passthrough, setup: nil, teardown: nil)
+      def register(name, end_tag: nil, mode: :passthrough, setup: nil, teardown: nil)
         name = name.to_s.freeze
-        end_tag = end_tag.to_s.freeze
+        end_tag = end_tag.to_s.freeze if end_tag
         @registry[name] = TagDef.new(
           name: name,
           end_tag: end_tag,
@@ -32,9 +32,13 @@ module LiquidIL
           setup: setup,
           teardown: teardown,
         )
-        # Also register end tag name so the nesting tracker knows about it
-        @end_tags ||= Set.new
-        @end_tags.add(end_tag)
+        # Also register end tag name so the nesting tracker knows about it.
+        # Standalone mock tags (for example Shopify's {% section %}) have no
+        # matching end tag and must not affect block-depth tracking.
+        if end_tag
+          @end_tags ||= Set.new
+          @end_tags.add(end_tag)
+        end
       end
 
       def registered?(name)
@@ -49,9 +53,9 @@ module LiquidIL
         @end_tags&.include?(name.to_s)
       end
 
-      # All registered start tag names (for nesting tracking)
+      # Registered block start tag names (for nesting tracking)
       def start_tags
-        @registry.keys
+        @registry.each_value.filter_map { |tag_def| tag_def.name if tag_def.end_tag }
       end
 
       # All registered end tag names

@@ -8,15 +8,22 @@
 
 require "liquid"
 require_relative "lib/liquid_il"
+require_relative "lib/liquid_il/shopify_mock"
+
+LiquidIL::ShopifyMock.install!
 
 LiquidSpec.configure do |config|
-  config.suite = :liquid_ruby
+  # LiquidIL::ShopifyMock provides Shopify theme tags/filters/objects for
+  # liquid-spec's shopify_* suites. Shopify-specific include quirks and
+  # production error formatting remain outside this adapter surface.
+  config.missing_features = [:shopify_includes, :shopify_error_handling]
 end
 
 # Compile a template string into a LiquidIL template object.
 # The compiled template is stored in ctx[:template] for use by the render block.
 LiquidSpec.compile do |ctx, source, options|
   file_system = options[:file_system] || ctx[:file_system]
+  file_system = LiquidIL::ShopifyMock.wrap_file_system(file_system) if LiquidIL::ShopifyMock.shopify_template?(source)
   # liquid-spec specs without error_mode expect lax behavior;
   # default to lax, override only when the spec explicitly sets one
   error_mode = options[:error_mode] || :lax

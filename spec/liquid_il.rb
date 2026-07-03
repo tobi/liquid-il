@@ -6,9 +6,11 @@
 
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"
+require_relative "../lib/liquid_il/shopify_mock"
 
 LiquidSpec.setup do |_ctx|
   require "liquid"
+  LiquidIL::ShopifyMock.install!
 
   # Mock Time.now to return frozen time for date filter tests
   # liquid-spec expects time frozen to 2024-01-01 00:01:58 UTC
@@ -21,16 +23,10 @@ LiquidSpec.setup do |_ctx|
 end
 
 LiquidSpec.configure do |config|
-  # Run all default suites, excluding Shopify runtime extensions that require
-  # Shopify theme objects, filters, include quirks, or production error formats
-  # outside core LiquidIL.
-  config.missing_features = [
-    :shopify_tags,
-    :shopify_objects,
-    :shopify_filters,
-    :shopify_includes,
-    :shopify_error_handling,
-  ]
+  # Run Shopify theme-tag suites through the lightweight mock storefront
+  # surface in LiquidIL::ShopifyMock. Shopify include quirks and production
+  # error formatting are still outside the mock environment.
+  config.missing_features = [:shopify_includes, :shopify_error_handling]
 end
 
 # Fallback for templates that can't be compiled (dynamic partials, recursion, etc.)
@@ -54,8 +50,11 @@ class FallbackTemplate
 end
 
 LiquidSpec.compile do |ctx, source, compile_options|
+  file_system = compile_options[:file_system]
+  file_system = LiquidIL::ShopifyMock.wrap_file_system(file_system) if LiquidIL::ShopifyMock.shopify_template?(source)
+
   context = LiquidIL::Context.new(
-    file_system: compile_options[:file_system],
+    file_system: file_system,
     registers: compile_options[:registers],
     strict_errors: compile_options[:strict_errors],
     strict_variables: compile_options[:strict_variables] || false,

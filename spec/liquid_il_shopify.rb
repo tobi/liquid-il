@@ -6,9 +6,11 @@
 
 require "liquid/spec/cli/adapter_dsl"
 require_relative "../lib/liquid_il"
+require_relative "../lib/liquid_il/shopify_mock"
 
 LiquidSpec.setup do |ctx|
   require "liquid"
+  LiquidIL::ShopifyMock.install!
 
 
   module TimeMock
@@ -151,6 +153,7 @@ LiquidSpec.setup do |ctx|
   end
 
   LiquidIL::Filters.instance_variable_set(:@valid_filter_methods, nil)
+  LiquidIL::ShopifyMock.install!
 end
 
 LiquidSpec.configure do |config|
@@ -181,8 +184,11 @@ class FallbackTemplate
 end
 
 LiquidSpec.compile do |ctx, source, compile_options|
+  file_system = compile_options[:file_system]
+  file_system = LiquidIL::ShopifyMock.wrap_file_system(file_system) if LiquidIL::ShopifyMock.shopify_template?(source)
+
   context = LiquidIL::Context.new(
-    file_system: compile_options[:file_system],
+    file_system: file_system,
     registers: compile_options[:registers],
     strict_errors: compile_options[:strict_errors]
   )
