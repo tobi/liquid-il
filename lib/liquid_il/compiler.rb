@@ -16,7 +16,11 @@ module LiquidIL
     ].to_set.freeze
 
     # Passes handled by fused_peephole (used for conditional dispatch)
-    FUSED_PEEPHOLE_PASSES = [3, 4, 5, 6, 7, 8, 9, 13, 20].to_set.freeze
+    FUSED_PEEPHOLE_PASSES = Passes.resolve(%i[
+      fold_const_writes collapse_const_paths collapse_find_var_paths
+      remove_redundant_is_truthy remove_noops remove_jump_to_next_label
+      merge_raw_writes remove_empty_raw_writes fuse_write_var
+    ])
 
     def initialize(source, **options)
       @source = source
@@ -40,7 +44,7 @@ module LiquidIL
 
       # Fuse link + strip_labels when strip_labels is enabled
       # This saves 3 passes over the instruction array (17-20µs for typical templates)
-      if @options[:optimize] && Passes.enabled.include?(21)
+      if @options[:optimize] && Passes.enabled.include?(Passes::STRIP_LABELS)
         link_and_strip(instructions)
       else
         IL.link(instructions)
@@ -56,14 +60,15 @@ module LiquidIL
     # See LiquidIL::Passes for configuration options
     def optimize(instructions, skip_passes: nil)
       enabled = Passes.enabled
-      enabled = enabled - skip_passes if skip_passes
+      # skip_passes may mix pass ids and symbolic names
+      enabled = enabled - Passes.resolve(skip_passes) if skip_passes
 
       # Lazy-initialized max temp index, cached across passes
       @cached_max_temp_index = nil
 
       # Phase 2: Constant folding (order matters: ops before filters before writes)
-      fold_const_ops(instructions) if enabled.include?(1)
-      fold_const_filters(instructions) if enabled.include?(2)
+      fold_const_ops(instructions) if enabled.include?(Passes::FOLD_CONST_OPS)
+      fold_const_filters(instructions) if enabled.include?(Passes::FOLD_CONST_FILTERS)
 
       # Phase 3: Fused peephole pass — combines passes 3-9, 13, 20 in one scan
       # Each was a separate linear scan; now one pass handles:
@@ -79,31 +84,31 @@ module LiquidIL
       fused_peephole(instructions, enabled) if FUSED_PEEPHOLE_PASSES.intersect?(enabled)
 
       # Phase 4: Structural passes (need global analysis, can't easily fuse)
-      remove_unreachable(instructions) if enabled.include?(10)
+      remove_unreachable(instructions) if enabled.include?(Passes::REMOVE_UNREACHABLE)
 
       # Phase 5: Post-cleanup fused peephole (re-merge after removals = old pass 11)
-      fused_peephole(instructions, enabled) if enabled.include?(11)
+      fused_peephole(instructions, enabled) if enabled.include?(Passes::MERGE_RAW_WRITES_2)
 
       # Phase 6: Constant captures
-      fold_const_captures(instructions) if enabled.include?(12)
+      fold_const_captures(instructions) if enabled.include?(Passes::FOLD_CONST_CAPTURES)
 
       # Phase 7: Constant propagation + re-fold
-      propagate_constants(instructions) if enabled.include?(14)
-      if enabled.include?(15)
+      propagate_constants(instructions) if enabled.include?(Passes::PROPAGATE_CONSTANTS)
+      if enabled.include?(Passes::FOLD_CONST_FILTERS_2)
         fold_const_filters(instructions)
         fused_peephole(instructions, enabled)
       end
 
       # Phase 8: Loop & block-level optimizations
-      hoist_loop_invariants(instructions) if enabled.include?(16)
-      cache_repeated_lookups(instructions) if enabled.include?(17)
-      value_numbering(instructions) if enabled.include?(18)
+      hoist_loop_invariants(instructions) if enabled.include?(Passes::HOIST_LOOP_INVARIANTS)
+      cache_repeated_lookups(instructions) if enabled.include?(Passes::CACHE_REPEATED_LOOKUPS)
+      value_numbering(instructions) if enabled.include?(Passes::VALUE_NUMBERING)
 
       # Phase 9: Register allocation
-      RegisterAllocator.optimize(instructions) if enabled.include?(19)
+      RegisterAllocator.optimize(instructions) if enabled.include?(Passes::REGISTER_ALLOCATION)
 
       # Phase 10: Final cleanup
-      remove_interrupt_checks(instructions) if enabled.include?(22)
+      remove_interrupt_checks(instructions) if enabled.include?(Passes::REMOVE_INTERRUPT_CHECKS)
 
       instructions
     end
@@ -112,15 +117,15 @@ module LiquidIL
     # Avoids N separate array walks by combining all simple peephole patterns.
     def fused_peephole(instructions, enabled)
       # Pre-compute pass flags to avoid Set#include? per instruction
-      p3 = enabled.include?(3)
-      p4 = enabled.include?(4)
-      p5 = enabled.include?(5)
-      p6 = enabled.include?(6)
-      p7 = enabled.include?(7)
-      p8 = enabled.include?(8)
-      p9 = enabled.include?(9)
-      p13 = enabled.include?(13)
-      p20 = enabled.include?(20)
+      p3 = enabled.include?(Passes::FOLD_CONST_WRITES)
+      p4 = enabled.include?(Passes::COLLAPSE_CONST_PATHS)
+      p5 = enabled.include?(Passes::COLLAPSE_FIND_VAR_PATHS)
+      p6 = enabled.include?(Passes::REMOVE_REDUNDANT_IS_TRUTHY)
+      p7 = enabled.include?(Passes::REMOVE_NOOPS)
+      p8 = enabled.include?(Passes::REMOVE_JUMP_TO_NEXT_LABEL)
+      p9 = enabled.include?(Passes::MERGE_RAW_WRITES)
+      p13 = enabled.include?(Passes::REMOVE_EMPTY_RAW_WRITES)
+      p20 = enabled.include?(Passes::FUSE_WRITE_VAR)
 
       i = 0
       while i < instructions.length

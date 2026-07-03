@@ -8,7 +8,7 @@ module LiquidIL
   #
   # ## Environment Variable Format
   #
-  # LIQUID_PASSES accepts these formats:
+  # LIQUID_PASSES accepts these formats (numbers and names interchangeable):
   #   - (not set) - Enable all passes (default for production)
   #   - "*"       - Enable all passes
   #   - ""        - Disable all passes (baseline for testing)
@@ -16,6 +16,8 @@ module LiquidIL
   #   - "*,-2"    - Enable all passes except pass 2
   #   - "*,-2,-3" - Enable all passes except passes 2 and 3
   #   - "1,2,-1"  - Enable pass 2 only (1 added then removed)
+  #   - "fold_const_filters"          - Enable only pass 2, by name
+  #   - "*,-register_allocation"      - All passes except pass 19, by name
   #
   # ## Available Passes
   #
@@ -48,10 +50,6 @@ module LiquidIL
   # ## Testing with Rake
   #
   #   rake passes                   # List all optimization passes
-  #   rake test_pass[2]             # Run unit tests with only pass 2
-  #   rake test_pass["*,-2"]        # Run unit tests with all except pass 2
-  #   rake spec_pass[2]             # Run liquid-spec with only pass 2
-  #   rake spec_each_pass           # Run spec with each pass individually
   #
   # ## Testing with liquidil CLI
   #
@@ -59,6 +57,7 @@ module LiquidIL
   #   bin/liquidil parse "{{ 'hi' | upcase }}" -p 2    # Parse with only pass 2
   #   bin/liquidil parse "{{ 'hi' | upcase }}" -p ""   # Parse with no passes
   #   bin/liquidil parse "{{ 'hi' | upcase }}" -p "*,-2" # All except pass 2
+  #   bin/liquidil parse "{{ x }}" -p fuse_write_var   # Only pass 20, by name
   #
   # ## Testing with Environment Variable
   #
@@ -72,40 +71,49 @@ module LiquidIL
   #   LIQUID_PASSES="" ruby -Ilib test/optimization_passes_test.rb
   #
   module Passes
-    # Names for each pass (for debugging/logging)
-    # Add new passes here - ALL_PASSES is derived from this
+    # Pass id => symbolic name. This is the single source of truth for pass
+    # numbering — everything else (NAME_TO_ID, ALL_PASSES, per-pass ID
+    # constants) is derived from it. Add or renumber passes here only.
     PASS_NAMES = {
-      1 => "fold_const_ops",
-      2 => "fold_const_filters",
-      3 => "fold_const_writes",
-      4 => "collapse_const_paths",
-      5 => "collapse_find_var_paths",
-      6 => "remove_redundant_is_truthy",
-      7 => "remove_noops",
-      8 => "remove_jump_to_next_label",
-      9 => "merge_raw_writes",
-      10 => "remove_unreachable",
-      11 => "merge_raw_writes_2",
-      12 => "fold_const_captures",
-      13 => "remove_empty_raw_writes",
-      14 => "propagate_constants",
-      15 => "fold_const_filters_2",
-      16 => "hoist_loop_invariants",
-      17 => "cache_repeated_lookups",
-      18 => "value_numbering",
-      19 => "register_allocation",
-      20 => "fuse_write_var",
-      21 => "strip_labels",
-      22 => "remove_interrupt_checks"
+      1 => :fold_const_ops,
+      2 => :fold_const_filters,
+      3 => :fold_const_writes,
+      4 => :collapse_const_paths,
+      5 => :collapse_find_var_paths,
+      6 => :remove_redundant_is_truthy,
+      7 => :remove_noops,
+      8 => :remove_jump_to_next_label,
+      9 => :merge_raw_writes,
+      10 => :remove_unreachable,
+      11 => :merge_raw_writes_2,
+      12 => :fold_const_captures,
+      13 => :remove_empty_raw_writes,
+      14 => :propagate_constants,
+      15 => :fold_const_filters_2,
+      16 => :hoist_loop_invariants,
+      17 => :cache_repeated_lookups,
+      18 => :value_numbering,
+      19 => :register_allocation,
+      20 => :fuse_write_var,
+      21 => :strip_labels,
+      22 => :remove_interrupt_checks
     }.freeze
+
+    # Symbolic name => pass id
+    NAME_TO_ID = PASS_NAMES.invert.freeze
 
     # All available pass numbers (derived from PASS_NAMES)
     ALL_PASSES = PASS_NAMES.keys.sort.freeze
 
+    # One ID constant per pass (e.g. Passes::FUSE_WRITE_VAR == 20) so internal
+    # code addresses passes by name and survives renumbering automatically.
+    PASS_NAMES.each { |id, name| const_set(name.to_s.upcase, id) }
+
     class << self
       # Parse a pass specification string into a Set of enabled pass numbers
       #
-      # @param spec [String, nil] Pass specification (e.g., "*", "0,1,2", "*,-2")
+      # @param spec [String, nil] Pass specification; tokens may be pass numbers
+      #   or symbolic names (e.g., "*", "0,1,2", "*,-2", "*,-register_allocation")
       # @return [Set<Integer>] Set of enabled pass numbers
       #
       # Special values:
@@ -128,13 +136,27 @@ module LiquidIL
           if part == "*"
             ALL_PASSES.each { |i| passes << i }
           elsif part.start_with?("-")
-            passes.delete(part[1..].to_i)
+            passes.delete(resolve_token(part[1..]))
           else
-            passes << part.to_i
+            passes << resolve_token(part)
           end
         end
 
         passes
+      end
+
+      # Resolve a mixed list of pass ids (Integer) and symbolic names (Symbol)
+      # into a frozen Set of pass ids.
+      #
+      # @param list [Enumerable<Integer, Symbol>]
+      # @return [Set<Integer>]
+      def resolve(list)
+        list.map { |pass| pass.is_a?(Integer) ? pass : NAME_TO_ID.fetch(pass) }.to_set.freeze
+      end
+
+      # Replace the enabled set from a spec string (used by bin/liquidil -p)
+      def override!(spec)
+        @enabled = parse(spec).freeze
       end
 
       # Get the current enabled passes (from LIQUID_PASSES env var)
@@ -167,6 +189,18 @@ module LiquidIL
         yield
       ensure
         @enabled = old_enabled
+      end
+
+      private
+
+      # A spec token is either a pass number or a symbolic pass name
+      def resolve_token(token)
+        return token.to_i if token.match?(/\A\d+\z/)
+
+        NAME_TO_ID.fetch(token.to_sym) do
+          raise ArgumentError,
+            "unknown optimization pass #{token.inspect} (known: #{NAME_TO_ID.keys.join(", ")})"
+        end
       end
     end
 

@@ -25,8 +25,6 @@ TEST_FILES = %w[
   test/liquid_vm_optional_test.rb
 ].freeze
 
-require_relative "lib/liquid_il/passes"
-
 module LiquidVmRake
   module_function
 

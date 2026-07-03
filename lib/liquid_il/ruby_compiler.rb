@@ -11,6 +11,21 @@ module LiquidIL
 
     OUTPUT_CAPACITY = 8192
 
+    # IL passes skipped when compiling a partial's IL for the Ruby backend.
+    # Kept: the cheap peephole passes (const folding/writes, path collapsing,
+    # noop removal, raw-write merging, fuse_write_var) that shrink the IL the
+    # codegen walks. Skipped: global-analysis passes whose work the generated
+    # Ruby makes redundant. (strip_labels here is inert — label stripping runs
+    # in Compiler#compile keyed on the globally enabled set, not skip_passes —
+    # but is listed to keep this the exact complement of the kept peepholes.)
+    PARTIAL_SKIP_PASSES = Passes.resolve(%i[
+      remove_redundant_is_truthy remove_jump_to_next_label remove_unreachable
+      merge_raw_writes_2 fold_const_captures remove_empty_raw_writes
+      propagate_constants fold_const_filters_2 hoist_loop_invariants
+      cache_repeated_lookups value_numbering register_allocation
+      strip_labels remove_interrupt_checks
+    ])
+
     class CompilationResult
       attr_reader :proc, :source, :can_compile, :partials, :partial_constants
 
@@ -134,7 +149,7 @@ module LiquidIL
 
       # Compile the partial to IL
       begin
-        compiler = LiquidIL::Compiler.new(source, optimize: true, skip_passes: [6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22])
+        compiler = LiquidIL::Compiler.new(source, optimize: true, skip_passes: PARTIAL_SKIP_PASSES)
         result = compiler.compile
       rescue LiquidIL::SyntaxError => e
         @partial_names_in_progress.delete(name)
@@ -2739,13 +2754,12 @@ module LiquidIL
     # Ruby compiler — the default (and only) compilation path.
     # Generates YJIT-friendly Ruby with native control flow.
     module Ruby
-      # Active passes: [21]
-      #   21: strip_labels - removes LABEL instructions (REQUIRED for Ruby compiler correctness)
-      #   The Ruby compiler generates native Ruby control flow (if/for/while),
-      #   so most IL optimizations (constant folding, instruction merging) don't
-      #   provide benefit and only add compile overhead.
-      # Skipped: [1..20, 22] - all passes except strip_labels.
-      RUBY_SKIP_PASSES = ((1..22).to_a - [21]).freeze
+      # Active passes: strip_labels only — it removes LABEL instructions
+      # (REQUIRED for Ruby compiler correctness). The Ruby compiler generates
+      # native Ruby control flow (if/for/while), so most IL optimizations
+      # (constant folding, instruction merging) don't provide benefit and only
+      # add compile overhead.
+      RUBY_SKIP_PASSES = (Passes::ALL_PASSES - [Passes::STRIP_LABELS]).freeze
       RUBY_DEFAULTS = { optimize: true, skip_passes: RUBY_SKIP_PASSES }.freeze
 
       def self.compile(source, context: nil, **options)

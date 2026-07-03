@@ -5,11 +5,11 @@ require_relative "../lib/liquid_il"
 
 # These tests validate individual optimizer passes and expect nearly all passes enabled.
 # Runtime compilation defaults skip many passes for latency, so force a full pass set here
-# (except pass 19, which depends on RegisterAllocator not wired in this branch).
+# (except register_allocation, which depends on RegisterAllocator not wired in this branch).
 module FullPassesForOptimizationTests
   def parse(source, **options)
     if options[:optimize] && !options.key?(:skip_passes)
-      options = options.merge(skip_passes: [19])
+      options = options.merge(skip_passes: [:register_allocation])
     end
     super(source, **options)
   end

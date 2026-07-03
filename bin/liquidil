@@ -19,7 +19,8 @@ def usage
 
     Options:
       -e, --env KEY=VALUE   Set environment variable (can be repeated)
-      -p, --passes SPEC     Enable specific passes (e.g., "*", "2", "*,-2")
+      -p, --passes SPEC     Enable specific passes by number or name
+                            (e.g., "*", "2", "*,-2", "*,-register_allocation")
       --print-il            Print IL instructions (default for parse/inspect)
       --print-ruby          Print generated Ruby code
       --no-optimize         Disable IL optimizations
@@ -76,7 +77,7 @@ end
 
 def configure_passes(passes_spec)
   return if passes_spec.nil?
-  LiquidIL::Passes.instance_variable_set(:@enabled, LiquidIL::Passes.parse(passes_spec).freeze)
+  LiquidIL::Passes.override!(passes_spec)
 end
 
 def parse_value(str)
@@ -172,6 +173,7 @@ def cmd_passes(_input, _env, options)
   puts "Currently enabled: #{LiquidIL::Passes.enabled.to_a.sort.join(", ")}"
   puts
   puts "Use LIQUID_PASSES env var or -p/--passes option to configure."
+  puts "Specs accept pass numbers or names (e.g. -p \"*,-register_allocation\")."
 end
 
 # Main
