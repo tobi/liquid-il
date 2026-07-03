@@ -22,6 +22,8 @@ module LiquidIL
       when Array
         array_inspect(obj, seen || {})
       else
+        # Call to_liquid first (drops may have stateful to_liquid like ToSDrop)
+        obj = obj.to_liquid if obj.respond_to?(:to_liquid) && !obj.is_a?(String)
         obj.to_s
       end
     end
