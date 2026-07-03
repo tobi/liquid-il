@@ -327,18 +327,22 @@ module LiquidIL
       parts.join(" ")
     end
 
-    def self.normalize_shopify_drop_urls!(value)
+    def self.normalize_shopify_drop_urls!(value, seen = {}.compare_by_identity)
+      return value if seen.key?(value)
+
       case value
       when Hash
+        seen[value] = true
         value.each do |key, child|
           if key.to_s == "url" && child.is_a?(Hash) && child.key?("to_str")
             value[key] = normalize_shopify_url(child["to_str"].to_s)
           else
-            normalize_shopify_drop_urls!(child)
+            normalize_shopify_drop_urls!(child, seen)
           end
         end
       when Array
-        value.each { |child| normalize_shopify_drop_urls!(child) }
+        seen[value] = true
+        value.each { |child| normalize_shopify_drop_urls!(child, seen) }
       end
       value
     end
@@ -348,7 +352,7 @@ module LiquidIL
       return if settings.empty?
 
       current = assigns["settings"]
-      assigns["settings"] = current.is_a?(Hash) ? settings.merge(current) : settings.dup
+      assigns["settings"] = current.is_a?(Hash) ? settings.merge(current) : (current || settings.dup)
     end
 
     def self.enrich_section!(assigns)

@@ -33,7 +33,7 @@ For LiquidIL, [liquid-spec](https://github.com/Shopify/liquid-spec) provided 4,4
 A thin layer that connects your test framework to your implementation:
 
 ```ruby
-# adapter.rb for liquid-spec
+# spec/liquid_il.rb for liquid-spec
 LiquidSpec.compile do |ctx, source, options|
   ctx[:template] = MyImpl.parse(source)
 end
@@ -145,7 +145,7 @@ Test runs should be fast. For LiquidIL:
 
 If tests are slow, provide filtering:
 ```bash
-bundle exec liquid-spec run adapter.rb -n "for_loop"
+bundle exec liquid-spec run spec/liquid_il.rb -n "for_loop"
 ```
 
 ### 5. Good Error Messages
@@ -275,7 +275,7 @@ After:
 ## Example Session Start
 
 ```
-> Run `bundle exec liquid-spec run adapter.rb` against the empty adapter.
+> Run `bundle exec liquid-spec run spec/liquid_il.rb` against the empty adapter.
 > For each failing test, implement the minimum code to make it pass.
 > Don't look at any existing Liquid implementations.
 > Make one commit per logical fix.

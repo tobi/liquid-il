@@ -62,7 +62,7 @@ LiquidSpec.compile do |ctx, source, compile_options|
     # liquid-spec supplies resource limits at render time. Compile the adapter
     # templates with instrumentation enabled so those dynamic limits can fire.
     resource_limits: compile_options[:resource_limits] || { render_score_limit: 1 << 60 },
-    error_mode: compile_options[:error_mode] || :strict
+    error_mode: compile_options[:error_mode] || :lax
   )
 
   ctx[:context] = context

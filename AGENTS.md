@@ -46,17 +46,17 @@ Templates are untrusted and are compiled into Ruby *source*. **Never interpolate
 
 ```bash
 # Run the liquid-spec test suite
-bundle exec liquid-spec run adapter.rb
+bundle exec liquid-spec run spec/liquid_il.rb
 
 # Run tests matching a pattern
-bundle exec liquid-spec run adapter.rb -n "for"
-bundle exec liquid-spec run adapter.rb -n "/test_.*filter/"
+bundle exec liquid-spec run spec/liquid_il.rb -n "for"
+bundle exec liquid-spec run spec/liquid_il.rb -n "/test_.*filter/"
 
 # Quick test a single template
-bundle exec liquid-spec eval adapter.rb -l "{{ 'hi' | upcase }}"
+bundle exec liquid-spec eval spec/liquid_il.rb -l "{{ 'hi' | upcase }}"
 
 # List available specs
-bundle exec liquid-spec run adapter.rb --list
+bundle exec liquid-spec run spec/liquid_il.rb --list
 
 # Cold-path benchmark (the optimization target's regression gate):
 # artifact decode -> ISeq load -> eval -> first render, medians per spec,
@@ -85,7 +85,7 @@ Guidelines:
 - Add a `_metadata.hint` or `doc` field explaining the root cause the spec guards against.
 - Test the **behavior**, not the implementation: assert rendered output or raised error.
 - If the fix addresses a category (e.g., nil handling in filters, drop truthiness), write specs for multiple representatives of that category, not just the one case that failed.
-- Run `bundle exec liquid-spec run adapter.rb` to verify both the new spec and no regressions.
+- Run `bundle exec liquid-spec run spec/liquid_il.rb` to verify both the new spec and no regressions.
 - For Ruby-level unit tests (not YAML specs), place them in `test/` following the existing `*_test.rb` naming convention.
 
 ## Architecture
