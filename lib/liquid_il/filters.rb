@@ -605,9 +605,10 @@ module LiquidIL
         options = args.last.is_a?(Hash) ? args.last : {}
         allow_false = options["allow_false"]
 
-        liquid_value = input.to_liquid_value
-        false_check = allow_false ? input.nil? : !liquid_truthy?(liquid_value)
-        false_check || (input.respond_to?(:empty?) && input.empty?) ? default_value : input
+        liquid_input = input.to_liquid
+        liquid_value = liquid_input.to_liquid_value
+        false_check = allow_false ? liquid_input.nil? : !liquid_truthy?(liquid_value)
+        false_check || (liquid_input.respond_to?(:empty?) && liquid_input.empty?) ? default_value : liquid_input
       end
 
       def json(input)

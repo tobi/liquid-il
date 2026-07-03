@@ -500,7 +500,7 @@ module LiquidIL
 
       fs = scope.file_system
       unless fs
-        message = "Could not find partial '#{name}'"
+        message = tag_type == "include" ? "Could not find asset #{name}" : "Could not find partial '#{name}'"
         if scope.render_errors
           location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
           output << "Liquid error (#{location}): #{message}"
@@ -512,7 +512,7 @@ module LiquidIL
       # Load source
       source = read_partial_source(fs, name, scope)
       unless source
-        message = "Could not find partial '#{name}'"
+        message = tag_type == "include" ? "Could not find asset #{name}" : "Could not find partial '#{name}'"
         if scope.render_errors
           location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
           output << "Liquid error (#{location}): #{message}"

@@ -136,7 +136,8 @@ module LiquidIL
 
       unless source
         @partial_names_in_progress.delete(name)
-        raise "Cannot load partial '#{name}'"
+        @partials[name] = { missing: true, name: name }
+        return
       end
 
       # Compile the partial to IL
@@ -1049,10 +1050,12 @@ module LiquidIL
                "#{prefix}_O << #{lit("Liquid error (line #{line_num}): Could not find partial '#{name}'")}\n"
       end
 
-      # Syntax error in partial — use dynamic execution to surface the error
-      if @partials[name]&.[](:syntax_error)
+      # Missing/syntax-error partials use dynamic execution to surface the
+      # error at render time, honoring render_errors/render! semantics.
+      if @partials[name]&.[](:missing) || @partials[name]&.[](:syntax_error)
         code = String.new
-        code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (syntax error)\n"
+        reason = @partials[name]&.[](:missing) ? "missing" : "syntax error"
+        code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (#{reason})\n"
         code << "#{prefix}__dyn_assigns__ = {}\n"
         code << "#{prefix}_H.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
         return code
