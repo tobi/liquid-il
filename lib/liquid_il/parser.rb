@@ -199,11 +199,23 @@ module LiquidIL
       content = current_template_content
       @builder.with_span(current_template_start_pos, current_template_end_pos)
 
+      stripped = content.strip
+
       # Handle empty variable `{{}}`
-      if content.strip.empty?
+      if stripped.empty?
         @builder.clear_span
         advance_template
         return true  # Blank output
+      end
+
+      # Lax Liquid tolerates leading/trailing dash characters inside variable
+      # markup (e.g. {{ - 'theme.css' - }}) as invalid expression noise that
+      # renders nothing. Strict modes reject it with the conventional message.
+      if stripped.start_with?("- ")
+        raise SyntaxError, "not a valid expression" if strict?
+        @builder.clear_span
+        advance_template
+        return true
       end
 
       expr_lexer = expr_lexer_for(content)

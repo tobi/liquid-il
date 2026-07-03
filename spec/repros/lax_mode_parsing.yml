@@ -82,3 +82,7 @@ specs:
 - name: lax_mode_doubled_quote_can_swallow_malformed_filter_segment
   template: "{{ 'hi there' | split:\"t\"\" | remove:\"i\" | first }}"
   expected: "hi "
+
+- name: lax_mode_leading_dash_expression_noise_renders_blank
+  template: "{{ - 'theme.css' - }}"
+  expected: ""
