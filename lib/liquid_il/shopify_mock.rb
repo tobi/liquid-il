@@ -262,7 +262,7 @@ module LiquidIL
       return assigns unless config
 
       section["type"] ||= config["type"]
-      section["settings"] = (config["settings"] || {}).merge(section["settings"] || {})
+      section["settings"] = normalize_theme_value((config["settings"] || {}).merge(section["settings"] || {}))
       section["blocks"] = build_blocks(config, section["blocks"])
       section["block_order"] ||= config["block_order"] if config["block_order"]
       assigns
@@ -290,7 +290,7 @@ module LiquidIL
       {
         "id" => id,
         "type" => config["type"] || id,
-        "settings" => (config["settings"] || {}).dup,
+        "settings" => normalize_theme_value((config["settings"] || {}).dup),
         "blocks" => build_blocks(config, []),
         "block_order" => config["block_order"],
         "shopify_attributes" => "",
@@ -310,9 +310,22 @@ module LiquidIL
         existing.merge(
           "id" => id,
           "type" => block_config["type"],
-          "settings" => (block_config["settings"] || {}).merge(existing["settings"] || {}),
+          "settings" => normalize_theme_value((block_config["settings"] || {}).merge(existing["settings"] || {})),
           "shopify_attributes" => existing["shopify_attributes"] || "",
         )
+      end
+    end
+
+    def self.normalize_theme_value(value)
+      case value
+      when Hash
+        value.transform_values { |v| normalize_theme_value(v) }
+      when Array
+        value.map { |v| normalize_theme_value(v) }
+      when String
+        value.match?(/\A\s*\{\{.*\}\}\s*\z/m) ? nil : value
+      else
+        value
       end
     end
 
@@ -340,7 +353,7 @@ module LiquidIL
       current = settings_data["current"]
       presets = settings_data["presets"] || {}
       preset = current.is_a?(String) ? presets[current] : current
-      (preset || {}).reject { |k, _| k == "sections" }
+      normalize_theme_value((preset || {}).reject { |k, _| k == "sections" })
     end
 
     def self.settings_sections
