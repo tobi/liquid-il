@@ -483,6 +483,10 @@ module LiquidIL
         scan_comparison(comp)
       elsif byte == 39 || byte == 34  # ' or "
         scan_string(byte)
+      elsif byte == 38  # & — not a valid Liquid operator
+        # In lax mode, treat lone & or && as end of expression (trailing junk)
+        # Liquid does not support && as an operator; it's parsed as 'and' keyword only
+        @current_token = EOF
       elsif byte >= 48 && byte <= 57 || byte == 45  # 0-9 or -
         scan_number
       else
@@ -528,6 +532,12 @@ module LiquidIL
           @scanner.pos += 1
           @current_token = DOT
         end
+      elsif punct == PIPE && @source.getbyte(@scanner.pos + 1) == 124  # || — not a valid Liquid operator
+        # In lax mode, treat || as end of expression (the first | starts a filter
+        # but the second | is junk). Just emit the first | as PIPE and let the
+        # parser handle the trailing junk.
+        @scanner.pos += 1
+        @current_token = PIPE
       else
         @scanner.pos += 1
         @current_token = punct

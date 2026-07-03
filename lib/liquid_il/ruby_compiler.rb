@@ -1702,6 +1702,7 @@ module LiquidIL
                 @pc += 1
                 break
               when IL::CONST_TRUE
+                or_operands << "true"
                 @pc += 1
               when IL::JUMP
                 jmp_target = build_inst[1]
