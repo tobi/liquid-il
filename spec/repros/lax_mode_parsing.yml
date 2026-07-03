@@ -46,3 +46,19 @@ specs:
 - name: lax_mode_valid_filter_still_works
   template: "{{ 'hello' | upcase }}"
   expected: "HELLO"
+
+# Root cause: lax mode tolerates malformed bare-bracket root lookups by using
+# the valid prefix. A missing close bracket should still perform the dynamic
+# root lookup once, while a nested malformed outer bracket should not apply the
+# root lookup twice.
+- name: lax_mode_unclosed_bare_bracket_dynamic_lookup
+  template: "{{['foo'}}"
+  environment:
+    foo: bar
+  expected: "bar"
+
+- name: lax_mode_nested_unclosed_outer_bracket_does_not_double_lookup
+  template: "{{[['foo']}}"
+  environment:
+    foo: bar
+  expected: "bar"

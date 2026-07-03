@@ -32,6 +32,7 @@ module LiquidIL
     # strict? — true for :strict and :strict2 (both reject malformed syntax)
     # strict2 additionally rejects bare bracket access like {{ ['x'] }}
     def strict? = @error_mode == :strict || @error_mode == :strict2
+    def strict2? = @error_mode == :strict2
 
     attr_reader :warnings
 
@@ -509,15 +510,30 @@ module LiquidIL
       when ExpressionLexer::IDENTIFIER
         parse_variable_lookup(lexer)
       when ExpressionLexer::LBRACKET
-        # strict2 mode: bare bracket access like {{ ['product'] }} is not allowed
-        if strict?
-          raise SyntaxError, "Bare bracket access is not allowed; use self[key] instead"
-        end
-        # Dynamic root lookup - {{ [key] }} looks up key, then looks up that value in context
+        # Dynamic root lookup - {{ [key] }} looks up key, then looks up that value in context.
+        # Lax Liquid tolerates a missing close bracket and uses the valid prefix;
+        # strict modes reject malformed brackets. strict2 additionally rejects
+        # complete bare root bracket access, while still allowing self[key] and obj[key].
         lexer.advance
+        start_len = @builder.instructions.length
         parse_expression(lexer)
-        lexer.expect(ExpressionLexer::RBRACKET)
-        @builder.find_var_dynamic
+        missing_close = false
+        if lexer.current == ExpressionLexer::RBRACKET
+          raise SyntaxError, "Bare bracket access is not allowed; use self[key] instead" if strict2?
+          lexer.advance
+        elsif strict?
+          if strict2? && lexer.current != ExpressionLexer::EOF
+            raise SyntaxError, "Bare bracket access is not allowed; use self[key] instead"
+          end
+          raise SyntaxError, "Expected close_square"
+        else
+          missing_close = true
+        end
+        # In lax mode, `{{ [['x'] }}` is tolerated by using the inner valid
+        # lookup prefix. Avoid applying a second root lookup for the unmatched
+        # outer bracket when the inner expression already emitted FIND_VAR_DYNAMIC.
+        skip_dynamic = missing_close && @builder.instructions.length > start_len && @builder.instructions.last&.[](0) == IL::FIND_VAR_DYNAMIC
+        @builder.find_var_dynamic unless skip_dynamic
         parse_property_chain(lexer)
       else
         raise SyntaxError, "Unexpected token #{lexer.current} in expression"
