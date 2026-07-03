@@ -12,26 +12,15 @@ module LiquidIL
       reset: "\e[0m"
     }.freeze
 
-    def initialize(instructions, color: true, source: nil, spans: nil)
+    def initialize(instructions, color: true)
       @instructions = instructions
       @color = color
-      @source = source
-      @spans = spans
       @label_names = build_label_names
     end
 
     def to_s
       lines = []
-      last_source_span = nil  # Track last non-nil span
       @instructions.each_with_index do |inst, idx|
-        # Emit source line when span changes to a new source location
-        current_span = @spans && @spans[idx]
-        if current_span && current_span != last_source_span
-          slice = source_slice(idx)
-          lines << "#{c(:comment)}         # #{slice}#{c(:reset)}" if slice
-          last_source_span = current_span
-        end
-
         lines << format_instruction(inst, idx)
       end
       lines.join("\n")
@@ -137,7 +126,7 @@ module LiquidIL
       when IL::NEW_RANGE
         format_simple("NEW_RANGE", [], idx, comment: "pop end, start → range")
       when IL::CALL_FILTER
-        format_simple("CALL_FILTER", [format_string(args[0]), args[1].to_s], idx, comment: "#{args[1]} args")
+        format_simple("CALL_FILTER", [format_string(args[0]), args[1].to_s], idx, comment: "#{args[1]} args, line #{args[2]}")
       when IL::FOR_INIT
         format_simple("FOR_INIT", format_for_init_args(args), idx)
       when IL::FOR_NEXT
@@ -297,17 +286,6 @@ module LiquidIL
     def ljust_visible(str, width)
       visible_len = str.gsub(/\e\[[0-9;]*m/, "").length
       str + " " * [width - visible_len, 0].max
-    end
-
-    # Get source slice for instruction, if available
-    def source_slice(idx)
-      return nil unless @source && @spans && @spans[idx]
-      start_pos, end_pos = @spans[idx]
-      slice = @source[start_pos...end_pos]
-      # Clean up for display: collapse whitespace, truncate if long
-      slice = slice.gsub(/\s+/, " ").strip
-      slice = slice[0, 40] + "..." if slice.length > 43
-      slice
     end
 
     def op_symbol(op)

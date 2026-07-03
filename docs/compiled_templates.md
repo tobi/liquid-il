@@ -30,8 +30,7 @@ template.write_iseq("greeting.iseq")
 
 restored = LiquidIL::Template.load_iseq(
   "greeting.iseq",
-  source: "Hello {{ name }}", # optional but recommended
-  spans: template.spans         # optional but recommended
+  source: "Hello {{ name }}" # optional
 )
 
 restored.render("name" => "World")
@@ -55,7 +54,6 @@ restored.render("name" => "World")
 
 `write_cache` persists:
 - `source`
-- `spans`
 - `iseq_binary`
 - `partial_constants`
 
@@ -72,7 +70,7 @@ bin = File.binread("greeting.iseq")
 proc_obj = RubyVM::InstructionSequence.load_from_binary(bin).eval
 
 scope = LiquidIL::Scope.new("name" => "World")
-out = proc_obj.call(scope, [[0, 15]], "Hello {{ name }}")
+out = proc_obj.call(scope)
 ```
 
 For most cases, prefer `Template.load_iseq`/`Template.load_cache`.

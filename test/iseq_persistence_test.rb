@@ -55,7 +55,7 @@ class IseqPersistenceTest < Minitest::Test
       assert_kind_of Proc, proc_obj
 
       scope = LiquidIL::Scope.new({ "name" => "Ruby" })
-      out = proc_obj.call(scope, template.spans, template.source)
+      out = proc_obj.call(scope)
       assert_equal "Hello Ruby", out
     end
   end

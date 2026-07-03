@@ -107,7 +107,7 @@ temp slots + `CASE_COMPARE`/`BOOL_OR` chains feeding `IF` markers.
 
 | Instruction | Format | Description |
 |-------------|--------|-------------|
-| `CALL_FILTER` | `[:CALL_FILTER, name, argc]` | Pop `argc` args, pop input, push result |
+| `CALL_FILTER` | `[:CALL_FILTER, name, argc, line]` | Pop `argc` args, pop input, push result. `line` = source line for error messages |
 
 ### Loops
 
@@ -154,10 +154,10 @@ temp slots + `CASE_COMPARE`/`BOOL_OR` chains feeding `IF` markers.
 
 | Instruction | Format | Description |
 |-------------|--------|-------------|
-| `RENDER_PARTIAL` | `[:RENDER_PARTIAL, name, args]` | Render partial (isolated scope) |
-| `INCLUDE_PARTIAL` | `[:INCLUDE_PARTIAL, name, args]` | Include partial (shared scope) |
-| `CONST_RENDER` | `[:CONST_RENDER, name, args]` | Compile-time render (lowered) |
-| `CONST_INCLUDE` | `[:CONST_INCLUDE, name, args]` | Compile-time include (lowered) |
+| `RENDER_PARTIAL` | `[:RENDER_PARTIAL, name, args, line]` | Render partial (isolated scope) |
+| `INCLUDE_PARTIAL` | `[:INCLUDE_PARTIAL, name, args, line]` | Include partial (shared scope) |
+| `CONST_RENDER` | `[:CONST_RENDER, name, args, line]` | Compile-time render (lowered) |
+| `CONST_INCLUDE` | `[:CONST_INCLUDE, name, args, line]` | Compile-time include (lowered) |
 
 ### Stack Operations
 
@@ -190,7 +190,7 @@ temp slots + `CASE_COMPARE`/`BOOL_OR` chains feeding `IF` markers.
 
 ```
 FIND_VAR "name"
-CALL_FILTER "upcase", 0
+CALL_FILTER "upcase", 0, 1
 WRITE_VALUE
 HALT
 ```

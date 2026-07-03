@@ -20,6 +20,15 @@ module LiquidIL
       @template_lexer = TemplateLexer.new(source)
       @builder = IL::Builder.new
       @current_token = nil
+      # Line tracking for error-message literals baked into line-carrying
+      # opcodes (CALL_FILTER, partial tags). Counted lazily against the
+      # ORIGINAL template source — {% liquid %} sub-parses swap @source but
+      # their token offsets are still resolved against this source, matching
+      # the historical span-based line computation exactly.
+      @line_source = source
+      @line_scan_pos = 0
+      @line = 1
+      @line_pos = 0
       @loop_stack = []
       @blank_raw_indices_stack = []
       @expr_lexer = ExpressionLexer.new
@@ -89,8 +98,25 @@ module LiquidIL
       @template_lexer.token_end
     end
 
+    # Line number (1-based) of the tag/variable token being parsed
+    # (@line_pos, recorded by parse_tag / parse_variable_output). Incremental
+    # newline scan — total cost is one pass over the source per compile.
+    # Positions can move backwards ({% liquid %} sub-lexers restart at 0);
+    # those recount from the start, preserving correctness.
+    def current_line
+      pos = @line_pos
+      if pos >= @line_scan_pos
+        # to_s: byteslice returns nil when a sub-lexer offset runs past the
+        # original source's end
+        @line += @line_source.byteslice(@line_scan_pos, pos - @line_scan_pos).to_s.count("\n")
+      else
+        @line = @line_source.byteslice(0, pos).to_s.count("\n") + 1
+      end
+      @line_scan_pos = pos
+      @line
+    end
+
     def parse_block_body(end_tags)
-      @builder.clear_span # Body content shouldn't inherit tag's span
       blank = true
       raw_indices = push_blank_raw_indices
       begin
@@ -199,13 +225,12 @@ module LiquidIL
 
     def parse_variable_output
       content = current_template_content
-      @builder.with_span(current_template_start_pos, current_template_end_pos)
+      @line_pos = current_template_start_pos
 
       stripped = content.strip
 
       # Handle empty variable `{{}}`
       if stripped.empty?
-        @builder.clear_span
         advance_template
         return true  # Blank output
       end
@@ -215,7 +240,6 @@ module LiquidIL
       # renders nothing. Strict modes reject it with the conventional message.
       if stripped.start_with?("- ")
         raise SyntaxError, "not a valid expression" if strict?
-        @builder.clear_span
         advance_template
         return true
       end
@@ -226,7 +250,6 @@ module LiquidIL
       parse_filters(expr_lexer)
       @builder.write_value
 
-      @builder.clear_span
       expect_eos(expr_lexer)
       advance_template
       false
@@ -234,11 +257,10 @@ module LiquidIL
 
     def parse_tag
       start_pos = current_template_start_pos
-      end_pos = current_template_end_pos
       tag_name = @template_lexer.tag_name
       tag_args = extract_tag_args
 
-      @builder.with_span(start_pos, end_pos)
+      @line_pos = start_pos
 
       case tag_name
       when 'if'
@@ -332,7 +354,7 @@ module LiquidIL
           advance_template
           true
         end
-      end.tap { @builder.clear_span }
+      end
     end
 
     def parse_registered_tag(tag_def, tag_args)
@@ -651,7 +673,7 @@ module LiquidIL
 
       # Apply filter aliases at compile time (lowering)
       filter_name = FILTER_ALIASES.fetch(filter_name, filter_name)
-      @builder.call_filter(filter_name, argc)
+      @builder.call_filter(filter_name, argc, current_line)
     end
 
     def parse_filter_args(lexer)
@@ -672,9 +694,7 @@ module LiquidIL
             
             # Use a temporary builder to capture instructions for keyword args
             kw_builder = IL::Builder.new
-            # Set the current span on the kw_builder so keyword arg instructions have it
-            kw_builder.with_span(*@builder.instance_variable_get(:@current_span)) if @builder.instance_variable_get(:@current_span)
-            
+
             original_builder = @builder
             @builder = kw_builder
             @builder.const_string(key)
@@ -1708,7 +1728,7 @@ module LiquidIL
       args['__for__'] = for_expr if for_expr
       args['__as__'] = as_alias if as_alias
 
-      @builder.const_render(partial_name, args)
+      @builder.const_render(partial_name, args, current_line)
       false
     end
 
@@ -1965,9 +1985,9 @@ module LiquidIL
       args['__invalid_name__'] = true if invalid_name
 
       if !dynamic_name && !invalid_name
-        @builder.const_include(partial_name, args)
+        @builder.const_include(partial_name, args, current_line)
       else
-        @builder.include_partial(partial_name, args)
+        @builder.include_partial(partial_name, args, current_line)
       end
       false
     end

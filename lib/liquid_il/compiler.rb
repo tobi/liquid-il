@@ -44,25 +44,24 @@ module LiquidIL
         warnings: @options[:warnings]
       )
       instructions = parser.parse
-      spans = parser.builder.spans
       @warnings = parser.warnings
 
       lower_const_partials(instructions)
 
       # Optional optimization passes
       if @options[:optimize]
-        optimize(instructions, spans, skip_passes: @options[:skip_passes])
+        optimize(instructions, skip_passes: @options[:skip_passes])
       end
 
       # Fuse link + strip_labels when strip_labels is enabled
       # This saves 3 passes over the instruction array (17-20µs for typical templates)
       if @options[:optimize] && Passes.enabled.include?(21)
-        link_and_strip(instructions, spans)
+        link_and_strip(instructions)
       else
         IL.link(instructions)
       end
 
-      { instructions: instructions, spans: spans }
+      { instructions: instructions }
     end
 
     private
@@ -70,7 +69,7 @@ module LiquidIL
     # Run enabled optimization passes
     # Pass enablement is determined at boot time via LIQUID_PASSES env var
     # See LiquidIL::Passes for configuration options
-    def optimize(instructions, spans, skip_passes: nil)
+    def optimize(instructions, skip_passes: nil)
       enabled = Passes.enabled
       enabled = enabled - skip_passes if skip_passes
 
@@ -78,11 +77,11 @@ module LiquidIL
       @cached_max_temp_index = nil
 
       # Phase 1: Inline partials (modifies instruction count significantly)
-      inline_simple_partials(instructions, spans) if enabled.include?(0)
+      inline_simple_partials(instructions) if enabled.include?(0)
 
       # Phase 2: Constant folding (order matters: ops before filters before writes)
-      fold_const_ops(instructions, spans) if enabled.include?(1)
-      fold_const_filters(instructions, spans) if enabled.include?(2)
+      fold_const_ops(instructions) if enabled.include?(1)
+      fold_const_filters(instructions) if enabled.include?(2)
 
       # Phase 3: Fused peephole pass — combines passes 3-9, 13, 20 in one scan
       # Each was a separate linear scan; now one pass handles:
@@ -95,41 +94,41 @@ module LiquidIL
       #   - Merge consecutive WRITE_RAW                                 [pass 9]
       #   - Remove empty WRITE_RAW                                      [pass 13]
       #   - Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR                    [pass 20]
-      fused_peephole(instructions, spans, enabled) if FUSED_PEEPHOLE_PASSES.intersect?(enabled)
+      fused_peephole(instructions, enabled) if FUSED_PEEPHOLE_PASSES.intersect?(enabled)
 
       # Phase 4: Structural passes (need global analysis, can't easily fuse)
-      remove_unreachable(instructions, spans) if enabled.include?(10)
+      remove_unreachable(instructions) if enabled.include?(10)
 
       # Phase 5: Post-cleanup fused peephole (re-merge after removals = old pass 11)
-      fused_peephole(instructions, spans, enabled) if enabled.include?(11)
+      fused_peephole(instructions, enabled) if enabled.include?(11)
 
       # Phase 6: Constant captures
-      fold_const_captures(instructions, spans) if enabled.include?(12)
+      fold_const_captures(instructions) if enabled.include?(12)
 
       # Phase 7: Constant propagation + re-fold
-      propagate_constants(instructions, spans) if enabled.include?(14)
+      propagate_constants(instructions) if enabled.include?(14)
       if enabled.include?(15)
-        fold_const_filters(instructions, spans)
-        fused_peephole(instructions, spans, enabled)
+        fold_const_filters(instructions)
+        fused_peephole(instructions, enabled)
       end
 
       # Phase 8: Loop & block-level optimizations
-      hoist_loop_invariants(instructions, spans) if enabled.include?(16)
-      cache_repeated_lookups(instructions, spans) if enabled.include?(17)
-      value_numbering(instructions, spans) if enabled.include?(18)
+      hoist_loop_invariants(instructions) if enabled.include?(16)
+      cache_repeated_lookups(instructions) if enabled.include?(17)
+      value_numbering(instructions) if enabled.include?(18)
 
       # Phase 9: Register allocation
       RegisterAllocator.optimize(instructions) if enabled.include?(19)
 
       # Phase 10: Final cleanup
-      remove_interrupt_checks(instructions, spans) if enabled.include?(22)
+      remove_interrupt_checks(instructions) if enabled.include?(22)
 
       instructions
     end
 
     # Fused peephole optimizer — one forward scan handles multiple transforms.
     # Avoids N separate array walks by combining all simple peephole patterns.
-    def fused_peephole(instructions, spans, enabled)
+    def fused_peephole(instructions, enabled)
       # Pre-compute pass flags to avoid Set#include? per instruction
       p3 = enabled.include?(3)
       p4 = enabled.include?(4)
@@ -149,14 +148,12 @@ module LiquidIL
         # Pass 7: Remove NOOPs
         if opcode == IL::NOOP && p7
           instructions.delete_at(i)
-          spans.delete_at(i)
           next
         end
 
         # Pass 13: Remove empty WRITE_RAW
         if opcode == IL::WRITE_RAW && inst[1].empty? && p13
           instructions.delete_at(i)
-          spans.delete_at(i)
           next
         end
 
@@ -170,9 +167,7 @@ module LiquidIL
             cv = const_value(inst)
             if cv
               instructions[i] = [IL::WRITE_RAW, Utils.output_string(cv[1])]
-              spans[i] = spans[i + 1]
               instructions.delete_at(i + 1)
-              spans.delete_at(i + 1)
               next  # re-check at i (might merge with prev WRITE_RAW)
             end
           end
@@ -180,9 +175,7 @@ module LiquidIL
           # Pass 5: Collapse FIND_VAR + LOOKUP_CONST_PATH
           if p5 && opcode == IL::FIND_VAR && next_opcode == IL::LOOKUP_CONST_PATH
             instructions[i] = [IL::FIND_VAR_PATH, inst[1], next_inst[1]]
-            spans[i] = spans[i + 1]
             instructions.delete_at(i + 1)
-            spans.delete_at(i + 1)
             next
           end
 
@@ -191,7 +184,6 @@ module LiquidIL
             if opcode == IL::COMPARE || opcode == IL::CASE_COMPARE || opcode == IL::CONTAINS ||
                opcode == IL::BOOL_NOT || opcode == IL::BOOL_AND || opcode == IL::BOOL_OR
               instructions.delete_at(i + 1)
-              spans.delete_at(i + 1)
               i += 1
               next
             end
@@ -200,7 +192,6 @@ module LiquidIL
           # Pass 8: Remove jump-to-next-label
           if p8 && opcode == IL::JUMP && next_opcode == IL::LABEL && inst[1] == next_inst[1]
             instructions.delete_at(i)
-            spans.delete_at(i)
             next
           end
 
@@ -208,16 +199,13 @@ module LiquidIL
           if p9 && opcode == IL::WRITE_RAW && next_opcode == IL::WRITE_RAW
             instructions[i] = [IL::WRITE_RAW, inst[1] + next_inst[1]]
             instructions.delete_at(i + 1)
-            spans.delete_at(i + 1)
             next  # keep merging if more follow
           end
 
           # Pass 20: Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR
           if p20 && opcode == IL::FIND_VAR && next_opcode == IL::WRITE_VALUE
             instructions[i] = [IL::WRITE_VAR, inst[1]]
-            spans[i] = spans[i + 1]
             instructions.delete_at(i + 1)
-            spans.delete_at(i + 1)
             i += 1
             next
           end
@@ -225,9 +213,7 @@ module LiquidIL
           # Pass 20: Fuse FIND_VAR_PATH + WRITE_VALUE → WRITE_VAR_PATH
           if p20 && opcode == IL::FIND_VAR_PATH && next_opcode == IL::WRITE_VALUE
             instructions[i] = [IL::WRITE_VAR_PATH, inst[1], inst[2]]
-            spans[i] = spans[i + 1]
             instructions.delete_at(i + 1)
-            spans.delete_at(i + 1)
             i += 1
             next
           end
@@ -244,7 +230,6 @@ module LiquidIL
             instructions[i] = [IL::LOOKUP_CONST_PATH, path]
             delete_count = j - i - 1
             instructions.slice!(i + 1, delete_count)
-            spans.slice!(i + 1, delete_count)
           end
         end
 
@@ -259,7 +244,7 @@ module LiquidIL
       IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK
     ].each_with_object({}) { |op, h| h[op] = true }.freeze
 
-    def fold_const_ops(instructions, spans)
+    def fold_const_ops(instructions)
       i = 0
       while i < instructions.length
         inst = instructions[i]
@@ -280,16 +265,12 @@ module LiquidIL
             when IL::IS_TRUTHY
               truthy = const_evaluator.truthy?(val1)
               instructions[i] = truthy ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
-              spans[i] = spans[i + 1]
               instructions.delete_at(i + 1)
-              spans.delete_at(i + 1)
               next
             when IL::BOOL_NOT
               truthy = const_evaluator.truthy?(val1)
               instructions[i] = truthy ? [IL::CONST_FALSE] : [IL::CONST_TRUE]
-              spans[i] = spans[i + 1]
               instructions.delete_at(i + 1)
-              spans.delete_at(i + 1)
               next
             when IL::IF
               # Static branch elimination: the marker structure makes branch
@@ -303,25 +284,19 @@ module LiquidIL
                   if else_idx
                     count = end_idx - else_idx + 1
                     instructions.slice!(else_idx, count)
-                    spans.slice!(else_idx, count)
                   else
                     instructions.delete_at(end_idx)
-                    spans.delete_at(end_idx)
                   end
                   instructions.slice!(i, 2)
-                  spans.slice!(i, 2)
                 else
                   # Keep else-branch (if any): drop END_IF, then CONST..ELSE (or everything)
                   if else_idx
                     instructions.delete_at(end_idx)
-                    spans.delete_at(end_idx)
                     count = else_idx - i + 1
                     instructions.slice!(i, count)
-                    spans.slice!(i, count)
                   else
                     count = end_idx - i + 1
                     instructions.slice!(i, count)
-                    spans.slice!(i, count)
                   end
                 end
                 next
@@ -340,33 +315,24 @@ module LiquidIL
                 result = safe_compare(val1, val2, inst3[1])
                 if result != nil
                   instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
-                  spans[i] = spans[i + 2]
                   instructions.delete_at(i + 2)
-                  spans.delete_at(i + 2)
                   instructions.delete_at(i + 1)
-                  spans.delete_at(i + 1)
                   next
                 end
               when IL::CASE_COMPARE
                 result = safe_case_compare(val1, val2)
                 if result != nil
                   instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
-                  spans[i] = spans[i + 2]
                   instructions.delete_at(i + 2)
-                  spans.delete_at(i + 2)
                   instructions.delete_at(i + 1)
-                  spans.delete_at(i + 1)
                   next
                 end
               when IL::CONTAINS
                 result = safe_contains(val1, val2)
                 if result != nil
                   instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
-                  spans[i] = spans[i + 2]
                   instructions.delete_at(i + 2)
-                  spans.delete_at(i + 2)
                   instructions.delete_at(i + 1)
-                  spans.delete_at(i + 1)
                   next
                 end
               when IL::BOOL_AND, IL::BOOL_OR
@@ -374,11 +340,8 @@ module LiquidIL
                 r = const_evaluator.truthy?(val2)
                 result = inst3[0] == IL::BOOL_AND ? l && r : l || r
                 instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
-                spans[i] = spans[i + 2]
                 instructions.delete_at(i + 2)
-                spans.delete_at(i + 2)
                 instructions.delete_at(i + 1)
-                spans.delete_at(i + 1)
                 next
               end
             end
@@ -412,22 +375,20 @@ module LiquidIL
       [nil, nil]
     end
 
-    def fold_const_writes(instructions, spans)
+    def fold_const_writes(instructions)
       i = 0
       while i < instructions.length - 1
         inst = instructions[i]
         if (const_val = const_value(inst)) && instructions[i + 1][0] == IL::WRITE_VALUE
           instructions[i] = [IL::WRITE_RAW, Utils.output_string(const_val[1])]
-          spans[i] = spans[i + 1]
           instructions.delete_at(i + 1)
-          spans.delete_at(i + 1)
         else
           i += 1
         end
       end
     end
 
-    def fold_const_filters(instructions, spans)
+    def fold_const_filters(instructions)
       i = 0
       while i < instructions.length
         inst = instructions[i]
@@ -446,10 +407,8 @@ module LiquidIL
                 if const_inst
                   first = start_idx + 1
                   instructions[first] = const_inst
-                  spans[first] = spans[i]
                   delete_count = i - first
                   instructions.slice!(first + 1, delete_count)
-                  spans.slice!(first + 1, delete_count)
                   i = first + 1
                   next
                 end
@@ -461,19 +420,18 @@ module LiquidIL
       end
     end
 
-    def remove_noops(instructions, spans)
+    def remove_noops(instructions)
       i = 0
       while i < instructions.length
         if instructions[i][0] == IL::NOOP
           instructions.delete_at(i)
-          spans.delete_at(i)
         else
           i += 1
         end
       end
     end
 
-    def remove_redundant_is_truthy(instructions, spans)
+    def remove_redundant_is_truthy(instructions)
       i = 1
       while i < instructions.length
         if instructions[i][0] == IL::IS_TRUTHY
@@ -481,7 +439,6 @@ module LiquidIL
           if prev == IL::COMPARE || prev == IL::CASE_COMPARE || prev == IL::CONTAINS ||
              prev == IL::BOOL_NOT || prev == IL::BOOL_AND || prev == IL::BOOL_OR
             instructions.delete_at(i)
-            spans.delete_at(i)
             next
           end
         end
@@ -489,16 +446,14 @@ module LiquidIL
       end
     end
 
-    def collapse_find_var_paths(instructions, spans)
+    def collapse_find_var_paths(instructions)
       i = 0
       while i < instructions.length - 1
         inst = instructions[i]
         next_inst = instructions[i + 1]
         if inst[0] == IL::FIND_VAR && next_inst[0] == IL::LOOKUP_CONST_PATH
           instructions[i] = [IL::FIND_VAR_PATH, inst[1], next_inst[1]]
-          spans[i] = spans[i + 1]
           instructions.delete_at(i + 1)
-          spans.delete_at(i + 1)
         else
           i += 1
         end
@@ -535,7 +490,7 @@ module LiquidIL
       [values, idx]
     end
 
-    def collapse_const_paths(instructions, spans)
+    def collapse_const_paths(instructions)
       i = 0
       while i < instructions.length - 1
         inst = instructions[i]
@@ -551,7 +506,6 @@ module LiquidIL
             instructions[i] = [IL::LOOKUP_CONST_PATH, path]
             delete_count = j - i - 1
             instructions.slice!(i + 1, delete_count)
-            spans.slice!(i + 1, delete_count)
           else
             i += 1
           end
@@ -561,35 +515,33 @@ module LiquidIL
       end
     end
 
-    def remove_jump_to_next_label(instructions, spans)
+    def remove_jump_to_next_label(instructions)
       i = 0
       while i < instructions.length - 1
         inst = instructions[i]
         next_inst = instructions[i + 1]
         if inst[0] == IL::JUMP && next_inst[0] == IL::LABEL && inst[1] == next_inst[1]
           instructions.delete_at(i)
-          spans.delete_at(i)
         else
           i += 1
         end
       end
     end
 
-    def merge_raw_writes(instructions, spans)
+    def merge_raw_writes(instructions)
       i = 0
       while i < instructions.length - 1
         if instructions[i][0] == IL::WRITE_RAW && instructions[i + 1][0] == IL::WRITE_RAW
           # Merge the two writes
           instructions[i] = [IL::WRITE_RAW, instructions[i][1] + instructions[i + 1][1]]
           instructions.delete_at(i + 1)
-          spans.delete_at(i + 1)
         else
           i += 1
         end
       end
     end
 
-    def fold_const_captures(instructions, spans)
+    def fold_const_captures(instructions)
       i = 0
       while i < instructions.length
         if instructions[i][0] == IL::PUSH_CAPTURE
@@ -599,10 +551,8 @@ module LiquidIL
             if assign_idx < instructions.length && capture_assignment?(instructions[assign_idx][0])
               const_inst = const_instruction_for(const_value) || [IL::CONST_STRING, const_value]
               instructions[i] = const_inst
-              spans[i] = spans[i] || spans[assign_idx]
               delete_count = assign_idx - i - 1
               instructions.slice!(i + 1, delete_count)
-              spans.slice!(i + 1, delete_count)
               next
             end
           end
@@ -643,12 +593,11 @@ module LiquidIL
       nil
     end
 
-    def remove_empty_raw_writes(instructions, spans)
+    def remove_empty_raw_writes(instructions)
       i = 0
       while i < instructions.length
         if instructions[i][0] == IL::WRITE_RAW && instructions[i][1].empty?
           instructions.delete_at(i)
-          spans.delete_at(i)
         else
           i += 1
         end
@@ -657,7 +606,7 @@ module LiquidIL
 
     # Loop invariant code motion: hoist invariant variable lookups outside loops
     # Looks for FIND_VAR/FIND_VAR_PATH inside loops that don't depend on loop variables
-    def hoist_loop_invariants(instructions, spans)
+    def hoist_loop_invariants(instructions)
       # Find all loop ranges (FOR_INIT to FOR_END)
       loops = find_loop_ranges(instructions)
       return if loops.empty?
@@ -667,7 +616,7 @@ module LiquidIL
 
       # Process loops from innermost to outermost (reverse order by start index)
       loops.sort_by { |l| -l[:start] }.each do |loop_info|
-        hoist_invariants_for_loop(instructions, spans, loop_info)
+        hoist_invariants_for_loop(instructions, loop_info)
       end
     end
 
@@ -713,7 +662,7 @@ module LiquidIL
       loops
     end
 
-    def hoist_invariants_for_loop(instructions, spans, loop_info)
+    def hoist_invariants_for_loop(instructions, loop_info)
       start_idx = loop_info[:start]
       end_idx = loop_info[:end]
       loop_var = loop_info[:loop_var]
@@ -753,8 +702,8 @@ module LiquidIL
             hoisted[var_name] = temp_idx
 
             # Add hoisted instruction before loop
-            insertions << [[IL::FIND_VAR, var_name], spans[i]]
-            insertions << [[IL::STORE_TEMP, temp_idx], spans[i]]
+            insertions << [IL::FIND_VAR, var_name]
+            insertions << [IL::STORE_TEMP, temp_idx]
 
             # Replace original with LOAD_TEMP
             instructions[i] = [IL::LOAD_TEMP, temp_idx]
@@ -767,9 +716,8 @@ module LiquidIL
       # Insert hoisted instructions before the loop (before FOR_INIT)
       return if insertions.empty?
 
-      insertions.reverse.each do |inst, span|
+      insertions.reverse.each do |inst|
         instructions.insert(start_idx, inst)
-        spans.insert(start_idx, span)
         # Adjust end_idx since we inserted before it
         loop_info[:end] += 1
       end
@@ -777,8 +725,8 @@ module LiquidIL
 
     # Constant propagation: replace FIND_VAR with known constant values
     # Only propagates in straight-line code (invalidates at control flow)
-    def propagate_constants(instructions, spans)
-      # Map of variable name -> [const_instruction, span]
+    def propagate_constants(instructions)
+      # Map of variable name -> const_instruction
       known_constants = {}
 
       i = 0
@@ -791,7 +739,7 @@ module LiquidIL
           # Check if next instruction is ASSIGN
           if i + 1 < instructions.length && instructions[i + 1][0] == IL::ASSIGN
             var_name = instructions[i + 1][1]
-            known_constants[var_name] = [inst.dup, spans[i]]
+            known_constants[var_name] = inst.dup
           end
 
         when IL::ASSIGN, IL::ASSIGN_LOCAL
@@ -806,10 +754,8 @@ module LiquidIL
         when IL::FIND_VAR
           # Replace with known constant if available
           var_name = inst[1]
-          if (const_info = known_constants[var_name])
-            const_inst, const_span = const_info
+          if (const_inst = known_constants[var_name])
             instructions[i] = const_inst.dup
-            # Keep original span for error reporting
           end
 
         when IL::LABEL, IL::JUMP, IL::JUMP_IF_INTERRUPT,
@@ -829,7 +775,7 @@ module LiquidIL
       end
     end
 
-    def remove_unreachable(instructions, spans)
+    def remove_unreachable(instructions)
       # Remove instructions after unconditional jumps until we hit a label
       i = 0
       while i < instructions.length - 1
@@ -838,7 +784,6 @@ module LiquidIL
           j = i + 1
           while j < instructions.length && instructions[j][0] != IL::LABEL
             instructions.delete_at(j)
-            spans.delete_at(j)
           end
         end
         i += 1
@@ -847,7 +792,7 @@ module LiquidIL
 
     # Fuse FIND_VAR + WRITE_VALUE into WRITE_VAR (and FIND_VAR_PATH + WRITE_VALUE into WRITE_VAR_PATH)
     # This is a VM optimization that eliminates stack operations for simple variable output
-    def fuse_write_var(instructions, spans)
+    def fuse_write_var(instructions)
       i = 0
       while i < instructions.length - 1
         inst = instructions[i]
@@ -858,16 +803,12 @@ module LiquidIL
           when IL::FIND_VAR
             # Fuse FIND_VAR + WRITE_VALUE -> WRITE_VAR
             instructions[i] = [IL::WRITE_VAR, inst[1]]
-            spans[i] = spans[i + 1] || spans[i]
             instructions.delete_at(i + 1)
-            spans.delete_at(i + 1)
             next
           when IL::FIND_VAR_PATH
             # Fuse FIND_VAR_PATH + WRITE_VALUE -> WRITE_VAR_PATH
             instructions[i] = [IL::WRITE_VAR_PATH, inst[1], inst[2]]
-            spans[i] = spans[i + 1] || spans[i]
             instructions.delete_at(i + 1)
-            spans.delete_at(i + 1)
             next
           end
         end
@@ -879,7 +820,7 @@ module LiquidIL
     # Strip LABEL instructions after linking and adjust jump targets
     # Labels are only needed during linking - after that they're just no-ops
     # This must run AFTER IL.link since it adjusts absolute instruction indices
-    def strip_labels(instructions, spans)
+    def strip_labels(instructions)
       # Build a map of old index -> new index (accounting for removed labels)
       label_indices = []
       instructions.each_with_index do |inst, idx|
@@ -918,13 +859,12 @@ module LiquidIL
       # Remove label instructions (in reverse order to maintain indices)
       label_indices.reverse.each do |idx|
         instructions.delete_at(idx)
-        spans.delete_at(idx)
       end
     end
 
     # Fused link + strip_labels: combines IL.link and strip_labels into 2 passes
     # instead of 5+ passes, saving 17-20µs for typical templates
-    def link_and_strip(instructions, spans)
+    def link_and_strip(instructions)
       # Pass 1: collect label positions (label_id -> index)
       label_positions = {}
       len = instructions.length
@@ -963,7 +903,6 @@ module LiquidIL
 
       # Pass 2: build new instructions array, resolving jumps and stripping labels
       new_instructions = []
-      new_spans = []
       i = 0
       while i < len
         inst = instructions[i]
@@ -986,17 +925,15 @@ module LiquidIL
         end
 
         new_instructions << inst
-        new_spans << spans[i] if spans
         i += 1
       end
 
       instructions.replace(new_instructions)
-      spans.replace(new_spans) if spans
     end
 
     # Remove interrupt handling when template never pushes interrupts.
     # This eliminates JUMP_IF_INTERRUPT/POP_INTERRUPT overhead in loops.
-    def remove_interrupt_checks(instructions, spans)
+    def remove_interrupt_checks(instructions)
       return if interrupt_possible_in_instructions?(instructions)
 
       i = 0
@@ -1004,7 +941,6 @@ module LiquidIL
         case instructions[i][0]
         when IL::JUMP_IF_INTERRUPT, IL::POP_INTERRUPT
           instructions.delete_at(i)
-          spans.delete_at(i)
         else
           i += 1
         end
@@ -1033,7 +969,7 @@ module LiquidIL
 
     # Cache repeated base object lookups in straight-line code
     # Detects multiple FIND_VAR for same variable and caches first lookup
-    def cache_repeated_lookups(instructions, spans)
+    def cache_repeated_lookups(instructions)
       # Find max temp index already in use
       temp_counter = find_max_temp_index(instructions) + 1
 
@@ -1069,19 +1005,17 @@ module LiquidIL
 
           # Insert DUP + STORE_TEMP immediately after first FIND_VAR
           # These must stay together, so we store them as a pair
-          insertions << [first_idx, temp_idx, spans[first_idx]]
+          insertions << [first_idx, temp_idx]
         end
 
         # Sort by index descending so we can insert without invalidating indices
-        insertions.sort_by! { |idx, _, _| -idx }
+        insertions.sort_by! { |idx, _| -idx }
 
         # Apply insertions
-        insertions.each do |first_idx, temp_idx, span|
+        insertions.each do |first_idx, temp_idx|
           # Insert DUP and STORE_TEMP right after FIND_VAR
           instructions.insert(first_idx + 1, [IL::DUP])
-          spans.insert(first_idx + 1, span)
           instructions.insert(first_idx + 2, [IL::STORE_TEMP, temp_idx])
-          spans.insert(first_idx + 2, span)
         end
 
         # Now replace subsequent FIND_VAR with LOAD_TEMP
@@ -1145,17 +1079,17 @@ module LiquidIL
     # Local value numbering: eliminate redundant computations within basic blocks
     # Assigns value numbers to expressions and reuses cached results when the same
     # computation is performed again.
-    def value_numbering(instructions, spans)
+    def value_numbering(instructions)
       temp_counter = find_max_temp_index(instructions) + 1
       blocks = find_straight_line_blocks(instructions)
 
       blocks.each do |block_start, block_end|
         # value_number_block returns updated temp_counter - no need to rescan
-        temp_counter = value_number_block(instructions, spans, block_start, block_end, temp_counter)
+        temp_counter = value_number_block(instructions, block_start, block_end, temp_counter)
       end
     end
 
-    def value_number_block(instructions, spans, block_start, block_end, temp_counter)
+    def value_number_block(instructions, block_start, block_end, temp_counter)
       # Map from value expression -> { temp_index:, first_idx: }
       # Value expressions are canonical representations of computations
       value_table = {}
@@ -1211,7 +1145,7 @@ module LiquidIL
             if appears_again
               # Cache this value
               value_table[expr_key] = { temp_index: temp_counter, first_idx: i }
-              insertions << [i, temp_counter, spans[i]]
+              insertions << [i, temp_counter]
               temp_counter += 1
             end
           end
@@ -1230,12 +1164,10 @@ module LiquidIL
 
       # Apply insertions (DUP + STORE_TEMP after first occurrence)
       # Process in reverse order to maintain indices
-      insertions.sort_by! { |idx, _, _| -idx }
-      insertions.each do |after_idx, temp_idx, span|
+      insertions.sort_by! { |idx, _| -idx }
+      insertions.each do |after_idx, temp_idx|
         instructions.insert(after_idx + 1, [IL::DUP])
-        spans.insert(after_idx + 1, span)
         instructions.insert(after_idx + 2, [IL::STORE_TEMP, temp_idx])
-        spans.insert(after_idx + 2, span)
       end
 
       # Recalculate block boundaries after insertions
@@ -1290,7 +1222,7 @@ module LiquidIL
     #
     # For RENDER_PARTIAL: wraps with PUSH_SCOPE/POP_SCOPE (isolated scope)
     # For INCLUDE_PARTIAL: no scope wrapper (shares caller's scope, interrupts propagate naturally)
-    def inline_simple_partials(instructions, spans)
+    def inline_simple_partials(instructions)
       i = 0
       while i < instructions.length
         inst = instructions[i]
@@ -1303,25 +1235,20 @@ module LiquidIL
           # Only inline if we have pre-compiled template and no complex modifiers
           if compiled && can_inline_partial?(args)
             partial_instructions = compiled[:instructions]
-            partial_spans = compiled[:spans]
 
             # Build replacement instruction sequence
             replacement = []
-            replacement_spans = []
 
-            # Get partial name and source for context tracking
+            # Get partial name for context tracking
             partial_name = inst[1]
-            partial_source = compiled[:source]
 
             # For render: push isolated scope
             if opcode == IL::RENDER_PARTIAL
               replacement << [IL::PUSH_SCOPE]
-              replacement_spans << spans[i]
             end
 
             # Set context to partial for error reporting
-            replacement << [IL::SET_CONTEXT, partial_name, partial_source]
-            replacement_spans << spans[i]
+            replacement << [IL::SET_CONTEXT, partial_name]
 
             # Add argument assignments (constant args only)
             args.each do |key, value|
@@ -1334,32 +1261,26 @@ module LiquidIL
               replacement << [IL::CONST_NIL] if value.nil?
               next unless replacement.last # skip non-constant args
               replacement << [IL::ASSIGN_LOCAL, key]
-              replacement_spans << spans[i]
-              replacement_spans << spans[i]
             end
 
-            # Add partial instructions (skip final HALT)
-            partial_instructions.each_with_index do |partial_inst, j|
+            # Add partial instructions (skip final HALT); each carries its own
+            # baked partial-relative line numbers for error reporting
+            partial_instructions.each do |partial_inst|
               next if partial_inst[0] == IL::HALT
               replacement << partial_inst.dup
-              replacement_spans << (partial_spans[j] || spans[i])
             end
 
             # Restore context to nil (main template)
-            replacement << [IL::SET_CONTEXT, nil, nil]
-            replacement_spans << spans[i]
+            replacement << [IL::SET_CONTEXT, nil]
 
             # For render: pop scope
             if opcode == IL::RENDER_PARTIAL
               replacement << [IL::POP_SCOPE]
-              replacement_spans << spans[i]
             end
 
             # Replace the RENDER_PARTIAL/INCLUDE_PARTIAL with inlined sequence
             instructions.slice!(i, 1)
-            spans.slice!(i, 1)
             instructions.insert(i, *replacement)
-            spans.insert(i, *replacement_spans)
 
             # Don't increment i - process the newly inserted instructions
             next
@@ -1431,7 +1352,7 @@ module LiquidIL
         compiled = compile_partial_template(name, @partial_loader)
         args["__compiled_template__"] = compiled if compiled
       end
-      [target_opcode, name, args]
+      [target_opcode, name, args, inst[3]]
     end
 
     def compile_partial_template(name, loader)
@@ -1460,8 +1381,7 @@ module LiquidIL
       result = child_compiler.compile
       compiled = {
         source: source,
-        instructions: result[:instructions],
-        spans: result[:spans]
+        instructions: result[:instructions]
       }
       @inline_cache[name] = compiled
       compiled

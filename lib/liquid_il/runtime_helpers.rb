@@ -561,9 +561,9 @@ module LiquidIL
         # Execute the compiled proc directly with the child scope
         pc = compiled.instance_variable_get(:@partial_constants)
         result = if pc
-          compiled.instance_variable_get(:@compiled_proc).call(child_scope, compiled.spans, compiled.source, pc)
+          compiled.instance_variable_get(:@compiled_proc).call(child_scope, pc)
         else
-          compiled.instance_variable_get(:@compiled_proc).call(child_scope, compiled.spans, compiled.source)
+          compiled.instance_variable_get(:@compiled_proc).call(child_scope)
         end
         output << result
       rescue LiquidIL::RuntimeError => e

@@ -34,9 +34,9 @@ module LiquidIL
   #     type 1: raw ISeq binary  (always present)
   #     type 2: Marshal'd partial_constants (only when non-empty)
   #
-  # Deliberately NOT included: template source and spans. Error locations are
+  # Deliberately NOT included: template source. Error locations are
   # compile-time literals baked into the emitted code, so error output is
-  # byte-identical without them, and the caller already owns the source
+  # byte-identical without it, and the caller already owns the source
   # (filesystem/DB) if a recompile is ever needed.
   #
   # Legacy Marshal-hash payloads (pre-v1 cache_data dumps) are detected by

@@ -7,7 +7,7 @@ module LiquidIL
   #   blob = memcache.get(key)
   #   LiquidIL.load_artifact(blob).render(assigns)
   #
-  # Unlike Template, this carries no source/spans/context. Rendering builds
+  # Unlike Template, this carries no source/context. Rendering builds
   # the Scope directly (no context/register merging).
   class CompiledArtifact
     attr_reader :byte_size, :digest, :partial_constants
@@ -29,9 +29,9 @@ module LiquidIL
       scope.custom_filters = global unless global.empty?
 
       if @partial_constants
-        @proc.call(scope, EMPTY_ARRAY, "", @partial_constants)
+        @proc.call(scope, @partial_constants)
       else
-        @proc.call(scope, EMPTY_ARRAY, "")
+        @proc.call(scope)
       end
     rescue LiquidIL::ResourceLimitError => e
       raise unless render_errors

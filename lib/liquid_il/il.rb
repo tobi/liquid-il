@@ -69,7 +69,7 @@ module LiquidIL
     NEW_RANGE = :NEW_RANGE           # [:NEW_RANGE] - pops end, start
 
     # Filter opcodes
-    CALL_FILTER = :CALL_FILTER       # [:CALL_FILTER, name, argc]
+    CALL_FILTER = :CALL_FILTER       # [:CALL_FILTER, name, argc, line]
 
     # Loop and interrupt opcodes
     FOR_INIT = :FOR_INIT             # [:FOR_INIT, var_name, loop_name, has_limit, has_offset, offset_continue, reversed]
@@ -88,11 +88,11 @@ module LiquidIL
     CYCLE_STEP = :CYCLE_STEP         # [:CYCLE_STEP, identity, values]
     CYCLE_STEP_VAR = :CYCLE_STEP_VAR # [:CYCLE_STEP_VAR, var_name, values] - group from variable
 
-    # Partial opcodes
-    CONST_RENDER = :CONST_RENDER     # [:CONST_RENDER, name, args_map] - lowered by compiler
-    CONST_INCLUDE = :CONST_INCLUDE   # [:CONST_INCLUDE, name, args_map] - lowered by compiler
-    RENDER_PARTIAL = :RENDER_PARTIAL # [:RENDER_PARTIAL, name, args_map]
-    INCLUDE_PARTIAL = :INCLUDE_PARTIAL  # [:INCLUDE_PARTIAL, name, args_map]
+    # Partial opcodes (line = source line of the tag, for error messages)
+    CONST_RENDER = :CONST_RENDER     # [:CONST_RENDER, name, args_map, line] - lowered by compiler
+    CONST_INCLUDE = :CONST_INCLUDE   # [:CONST_INCLUDE, name, args_map, line] - lowered by compiler
+    RENDER_PARTIAL = :RENDER_PARTIAL # [:RENDER_PARTIAL, name, args_map, line]
+    INCLUDE_PARTIAL = :INCLUDE_PARTIAL  # [:INCLUDE_PARTIAL, name, args_map, line]
 
     # Tablerow opcodes
     TABLEROW_INIT = :TABLEROW_INIT   # [:TABLEROW_INIT, var_name, loop_name, has_limit, has_offset, cols]
@@ -110,7 +110,7 @@ module LiquidIL
     IFCHANGED_CHECK = :IFCHANGED_CHECK  # [:IFCHANGED_CHECK, tag_id] - pops captured, outputs if changed
 
     # Context tracking for error reporting in inlined partials
-    SET_CONTEXT = :SET_CONTEXT       # [:SET_CONTEXT, file_name, source] - sets current file and source
+    SET_CONTEXT = :SET_CONTEXT       # [:SET_CONTEXT, file_name] - sets current file
 
     # No-op (for comments, etc.)
     NOOP = :NOOP                     # [:NOOP]
@@ -150,13 +150,9 @@ module LiquidIL
 
     # Instruction builder - creates instructions with minimal allocation
     class Builder
-      attr_reader :spans
-
       def initialize
         @instructions = []
-        @spans = []  # Parallel array: [start_pos, end_pos] or nil
         @label_counter = 0
-        @current_span = nil
       end
 
       def instructions
@@ -167,46 +163,35 @@ module LiquidIL
         @label_counter += 1
       end
 
-      # Set span for subsequent emits until cleared
-      def with_span(start_pos, end_pos)
-        @current_span = [start_pos, end_pos]
-        self
-      end
-
-      def clear_span
-        @current_span = nil
-        self
-      end
-
       def emit(opcode, *args)
         @instructions << (args.empty? ? [opcode] : [opcode, *args])
-        @spans << @current_span
         self
       end
 
       # Specialized emitters for common arities (avoid *args splat overhead)
       def emit1(opcode, a)
         @instructions << [opcode, a]
-        @spans << @current_span
         self
       end
 
       def emit2(opcode, a, b)
         @instructions << [opcode, a, b]
-        @spans << @current_span
+        self
+      end
+
+      def emit3(opcode, a, b, c)
+        @instructions << [opcode, a, b, c]
         self
       end
 
       def emit_label(id)
         @instructions << [LABEL, id]
-        @spans << nil  # Labels don't have source spans
         self
       end
 
-      # Merge instructions and spans from another builder
+      # Merge instructions from another builder
       def emit_from(other)
         @instructions.concat(other.instructions)
-        @spans.concat(other.spans)
         self
       end
 
@@ -216,19 +201,19 @@ module LiquidIL
       end
 
       def write_value
-        @instructions << I_WRITE_VALUE; @spans << @current_span; self
+        @instructions << I_WRITE_VALUE; self
       end
 
       def const_nil
-        @instructions << I_CONST_NIL; @spans << @current_span; self
+        @instructions << I_CONST_NIL; self
       end
 
       def const_true
-        @instructions << I_CONST_TRUE; @spans << @current_span; self
+        @instructions << I_CONST_TRUE; self
       end
 
       def const_false
-        @instructions << I_CONST_FALSE; @spans << @current_span; self
+        @instructions << I_CONST_FALSE; self
       end
 
       def const_int(val)
@@ -248,11 +233,11 @@ module LiquidIL
       end
 
       def const_empty
-        @instructions << I_CONST_EMPTY; @spans << @current_span; self
+        @instructions << I_CONST_EMPTY; self
       end
 
       def const_blank
-        @instructions << I_CONST_BLANK; @spans << @current_span; self
+        @instructions << I_CONST_BLANK; self
       end
 
       def find_var(name)
@@ -264,15 +249,15 @@ module LiquidIL
       end
 
       def find_var_dynamic
-        @instructions << I_FIND_VAR_DYNAMIC; @spans << @current_span; self
+        @instructions << I_FIND_VAR_DYNAMIC; self
       end
 
       def find_self
-        @instructions << I_FIND_SELF; @spans << @current_span; self
+        @instructions << I_FIND_SELF; self
       end
 
       def lookup_key
-        @instructions << I_LOOKUP_KEY; @spans << @current_span; self
+        @instructions << I_LOOKUP_KEY; self
       end
 
       def lookup_const_key(name)
@@ -281,7 +266,6 @@ module LiquidIL
         if last && last[0] == FIND_VAR
           # FIND_VAR + LOOKUP_CONST_KEY → FIND_VAR_PATH
           @instructions.pop
-          @spans.pop
           emit2(FIND_VAR_PATH, last[1], [name])
         elsif last && last[0] == FIND_VAR_PATH
           # Extend existing FIND_VAR_PATH
@@ -300,11 +284,11 @@ module LiquidIL
       end
 
       def push_capture
-        @instructions << I_PUSH_CAPTURE; @spans << @current_span; self
+        @instructions << I_PUSH_CAPTURE; self
       end
 
       def pop_capture
-        @instructions << I_POP_CAPTURE; @spans << @current_span; self
+        @instructions << I_POP_CAPTURE; self
       end
 
       def label(id)
@@ -324,7 +308,7 @@ module LiquidIL
       end
 
       def halt
-        @instructions << I_HALT; @spans << @current_span; self
+        @instructions << I_HALT; self
       end
 
       def compare(op)
@@ -332,27 +316,27 @@ module LiquidIL
       end
 
       def case_compare
-        @instructions << I_CASE_COMPARE; @spans << @current_span; self
+        @instructions << I_CASE_COMPARE; self
       end
 
       def contains
-        @instructions << I_CONTAINS; @spans << @current_span; self
+        @instructions << I_CONTAINS; self
       end
 
       def bool_not
-        @instructions << I_BOOL_NOT; @spans << @current_span; self
+        @instructions << I_BOOL_NOT; self
       end
 
       def is_truthy
-        @instructions << I_IS_TRUTHY; @spans << @current_span; self
+        @instructions << I_IS_TRUTHY; self
       end
 
       def bool_and
-        @instructions << I_BOOL_AND; @spans << @current_span; self
+        @instructions << I_BOOL_AND; self
       end
 
       def bool_or
-        @instructions << I_BOOL_OR; @spans << @current_span; self
+        @instructions << I_BOOL_OR; self
       end
 
       def if_start(negate = false)
@@ -360,19 +344,19 @@ module LiquidIL
       end
 
       def else_start
-        @instructions << I_ELSE; @spans << @current_span; self
+        @instructions << I_ELSE; self
       end
 
       def end_if
-        @instructions << I_END_IF; @spans << @current_span; self
+        @instructions << I_END_IF; self
       end
 
       def push_scope
-        @instructions << I_PUSH_SCOPE; @spans << @current_span; self
+        @instructions << I_PUSH_SCOPE; self
       end
 
       def pop_scope
-        @instructions << I_POP_SCOPE; @spans << @current_span; self
+        @instructions << I_POP_SCOPE; self
       end
 
       def assign(name)
@@ -384,11 +368,11 @@ module LiquidIL
       end
 
       def new_range
-        @instructions << I_NEW_RANGE; @spans << @current_span; self
+        @instructions << I_NEW_RANGE; self
       end
 
-      def call_filter(name, argc)
-        emit2(CALL_FILTER, name, argc)
+      def call_filter(name, argc, line = 1)
+        emit3(CALL_FILTER, name, argc, line)
       end
 
       def for_init(var_name, loop_name, has_limit = false, has_offset = false, offset_continue = false, reversed = false, recovery_label = nil)
@@ -400,15 +384,15 @@ module LiquidIL
       end
 
       def for_end
-        @instructions << I_FOR_END; @spans << @current_span; self
+        @instructions << I_FOR_END; self
       end
 
       def push_forloop
-        @instructions << I_PUSH_FORLOOP; @spans << @current_span; self
+        @instructions << I_PUSH_FORLOOP; self
       end
 
       def pop_forloop
-        @instructions << I_POP_FORLOOP; @spans << @current_span; self
+        @instructions << I_POP_FORLOOP; self
       end
 
       def push_interrupt(type)
@@ -416,7 +400,7 @@ module LiquidIL
       end
 
       def pop_interrupt
-        @instructions << I_POP_INTERRUPT; @spans << @current_span; self
+        @instructions << I_POP_INTERRUPT; self
       end
 
       def increment(name)
@@ -435,20 +419,20 @@ module LiquidIL
         emit2(CYCLE_STEP_VAR, var_name, values)
       end
 
-      def render_partial(name, args)
-        emit2(RENDER_PARTIAL, name, args)
+      def render_partial(name, args, line = 1)
+        emit3(RENDER_PARTIAL, name, args, line)
       end
 
-      def include_partial(name, args)
-        emit2(INCLUDE_PARTIAL, name, args)
+      def include_partial(name, args, line = 1)
+        emit3(INCLUDE_PARTIAL, name, args, line)
       end
 
-      def const_render(name, args)
-        emit2(CONST_RENDER, name, args)
+      def const_render(name, args, line = 1)
+        emit3(CONST_RENDER, name, args, line)
       end
 
-      def const_include(name, args)
-        emit2(CONST_INCLUDE, name, args)
+      def const_include(name, args, line = 1)
+        emit3(CONST_INCLUDE, name, args, line)
       end
 
       def tablerow_init(var_name, loop_name, has_limit, has_offset, cols)
@@ -460,7 +444,7 @@ module LiquidIL
       end
 
       def tablerow_end
-        @instructions << I_TABLEROW_END; @spans << @current_span; self
+        @instructions << I_TABLEROW_END; self
       end
 
       def ifchanged_check(tag_id)
@@ -468,11 +452,11 @@ module LiquidIL
       end
 
       def dup
-        @instructions << I_DUP; @spans << @current_span; self
+        @instructions << I_DUP; self
       end
 
       def pop
-        @instructions << I_POP; @spans << @current_span; self
+        @instructions << I_POP; self
       end
 
       def build_hash(count)
@@ -488,7 +472,7 @@ module LiquidIL
       end
 
       def noop
-        @instructions << I_NOOP; @spans << @current_span; self
+        @instructions << I_NOOP; self
       end
     end
 

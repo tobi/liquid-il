@@ -200,13 +200,12 @@ module LiquidIL
   #   template.write_ruby("my_template.rb")  # writes standalone file
   #
   class Template
-    attr_reader :source, :instructions, :spans, :compiled_source, :errors, :warnings,
+    attr_reader :source, :instructions, :compiled_source, :errors, :warnings,
                 :partial_constants
 
-    def initialize(source, instructions, spans, context, compiled_result, iseq_binary: nil)
+    def initialize(source, instructions, context, compiled_result, iseq_binary: nil)
       @source = source
       @instructions = instructions
-      @spans = spans
       @context = context
       @compiled_proc = compiled_result.proc
       @compiled_source = compiled_result.source
@@ -234,7 +233,6 @@ module LiquidIL
     def cache_data
       {
         source: @source,
-        spans: @spans,
         iseq_binary: iseq_binary,
         partial_constants: @partial_constants,
       }
@@ -246,7 +244,9 @@ module LiquidIL
     #   data = template.cache_data
     #   restored = LiquidIL::Template.from_cache(**data)
     #
-    def self.from_cache(source:, spans:, iseq_binary:, partial_constants: nil)
+    # spans: is accepted and ignored so legacy Marshal cache_data blobs
+    # (which include a :spans key) still splat cleanly.
+    def self.from_cache(source:, iseq_binary:, partial_constants: nil, spans: nil)
       compiled_proc = RubyVM::InstructionSequence.load_from_binary(iseq_binary).eval
       result = RubyCompiler::CompilationResult.new(
         proc: compiled_proc,
@@ -254,14 +254,14 @@ module LiquidIL
         can_compile: true,
         partial_constants: partial_constants,
       )
-      new(source, [], spans, nil, result, iseq_binary: iseq_binary)
+      new(source, [], nil, result, iseq_binary: iseq_binary)
     end
 
     # Reconstruct a Template from a raw ISeq binary (the Artifact load path —
-    # no source/spans needed: error locations are compile-time literals baked
+    # no source needed: error locations are compile-time literals baked
     # into the emitted code).
     def self.from_iseq_binary(iseq_binary, partial_constants: nil)
-      from_cache(source: "", spans: EMPTY_ARRAY, iseq_binary: iseq_binary,
+      from_cache(source: "", iseq_binary: iseq_binary,
                  partial_constants: partial_constants)
     end
 
@@ -318,9 +318,9 @@ module LiquidIL
       scope.resource_limits = limits || ctx&.resource_limits if limits || ctx&.resource_limits
 
       if @partial_constants
-        @compiled_proc[scope, @spans, @source, @partial_constants]
+        @compiled_proc[scope, @partial_constants]
       else
-        @compiled_proc[scope, @spans, @source]
+        @compiled_proc[scope]
       end
     rescue LiquidIL::ResourceLimitError => e
       raise unless render_errors
@@ -370,7 +370,6 @@ module LiquidIL
     #
     #   template.write_iseq("template.iseq")
     #
-    # Note: raw ISeq binaries need source/spans to restore rich error locations.
     # For full metadata roundtrip, use #write_cache / .load_cache.
     def write_iseq(filename)
       File.binwrite(filename, iseq_binary)
@@ -387,11 +386,11 @@ module LiquidIL
 
     # Pretty-print IL instructions (for debugging).
     def dump_il(io = $stdout, color: true)
-      PrettyPrinter.new(@instructions, color: color, source: @source, spans: @spans).print(io)
+      PrettyPrinter.new(@instructions, color: color).print(io)
     end
 
     def il_to_s(color: true)
-      PrettyPrinter.new(@instructions, color: color, source: @source, spans: @spans).to_s
+      PrettyPrinter.new(@instructions, color: color).to_s
     end
 
     class << self
@@ -409,11 +408,10 @@ module LiquidIL
       #   t = LiquidIL::Template.load_iseq("template.iseq", source: "Hello {{ name }}")
       #   t.render("name" => "World")
       #
-      # When source/spans are omitted, runtime errors fall back to generic line info.
-      def load_iseq(filename, source: "", spans: [], partial_constants: nil)
+      # spans: is accepted and ignored (legacy callers).
+      def load_iseq(filename, source: "", spans: nil, partial_constants: nil)
         from_cache(
           source: source,
-          spans: spans,
           iseq_binary: File.binread(filename),
           partial_constants: partial_constants,
         )
@@ -447,21 +445,15 @@ module LiquidIL
 
         module #{module_name}
 
-          SPANS = #{@spans.inspect}.freeze
-          SOURCE = #{@source.inspect}.freeze
           PARTIAL_CONSTANTS = #{@partial_constants.inspect}.freeze
 
           def self.render(assigns = {}, render_errors: true)
             __scope__ = LiquidIL::Scope.new(assigns)
             __scope__.render_errors = render_errors
-            __spans__ = SPANS
-            __template_source__ = SOURCE
             __partial_constants__ = PARTIAL_CONSTANTS
 
             # Match compiler-generated local names used in proc source.
             _S = __scope__
-            _sp = __spans__
-            _ts = __template_source__
             _pc = __partial_constants__
 
         #{indent_body(proc_body, 4)}

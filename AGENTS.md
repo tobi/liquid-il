@@ -36,7 +36,7 @@ Emitted code runs under **Ruby 4+ with a JIT always enabled** (YJIT now, ZJIT la
 - **Minimize branching** in emitted code — prefer a branchless helper call over inline conditionals; the JIT deoptimizes on cold/polymorphic branches.
 - **Avoid allocations** in emitted code (reuse buffers, use free-array tricks like `[a,b].max`, don't allocate transient hashes/arrays per iteration).
 - **Push hot patterns into the runtime** so the JIT compiles them once and shares them across all templates, rather than re-emitting (and re-JITting) them per template.
-- **Never embed the template source or spans in the artifact** — error line numbers and filenames are compile-time literals baked into the emitted code, so the artifact needs neither. (Verified: stripping them leaves error output byte-identical.)
+- **Never embed the template source in the artifact** — error line numbers and filenames are compile-time literals baked into the emitted code (line numbers ride as a trailing operand on CALL_FILTER and partial opcodes), so the artifact doesn't need it. (Verified: stripping it leaves error output byte-identical.)
 
 ## Security invariant (emitted code runs untrusted input)
 

@@ -59,7 +59,6 @@ class CacheDataTest < Minitest::Test
     data = t.cache_data
     assert_kind_of Hash, data
     assert_includes data.keys, :source
-    assert_includes data.keys, :spans
     assert_includes data.keys, :iseq_binary
     assert_includes data.keys, :partial_constants
   end
@@ -68,11 +67,6 @@ class CacheDataTest < Minitest::Test
     src = "Hello {{ name }}"
     t = LiquidIL.parse(src)
     assert_equal src, t.cache_data[:source]
-  end
-
-  def test_cache_data_spans_is_array
-    t = LiquidIL.parse("Hello {{ name }}")
-    assert_kind_of Array, t.cache_data[:spans]
   end
 
   def test_cache_data_iseq_binary_matches

@@ -32,10 +32,8 @@ module LiquidIL
     # Cached indent strings to avoid repeated "  " * n allocations
     INDENT = Array.new(20) { |i| ("  " * i).freeze }.freeze
 
-    def initialize(instructions, spans: nil, template_source: nil, context: nil, partials: nil, partial_names_in_progress: nil)
+    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil)
       @instructions = instructions
-      @spans = spans || []
-      @template_source = template_source
       @context = context
       @loop_depth = 0 # Track nested loop depth for parentloop support
       # Compile-time current file (nil for the main template, the partial
@@ -63,22 +61,13 @@ module LiquidIL
       @lambda_called = Set.new
       # Track which partials are fully inlined (no lambda call sites)
       @inlined_partials = Set.new
-      # Pre-built partial spans/source objects — injected via binding at eval time
+      # Pre-built partial constant objects — injected via binding at eval time
       @partial_constants = {}
     end
 
     # Check if template uses break/continue
     def detect_uses_interrupts
       @instructions.any? { |inst| inst[0] == IL::PUSH_INTERRUPT }
-    end
-
-    # Calculate line number from PC using spans
-    def line_for_pc(pc)
-      return 1 unless @spans && @template_source
-      span = @spans[pc]
-      return 1 unless span
-      pos = span[0]
-      @template_source[0, pos].count("\n") + 1
     end
 
     def compile
@@ -155,13 +144,10 @@ module LiquidIL
         return
       end
       instructions = result[:instructions]
-      spans = result[:spans]
 
       # Recursively compile to Ruby (sharing partials cache + frozen arrays)
       ruby_compiler = RubyCompiler.new(
         instructions,
-        spans: spans,
-        template_source: source,
         context: @context,
         partials: @partials,
         partial_names_in_progress: @partial_names_in_progress
@@ -206,7 +192,6 @@ module LiquidIL
       @partials[name] = {
         source: source,
         instructions: instructions,
-        spans: spans,
         compiled_body: partial_body,
         uses_cycles: partial_uses_cycles,
         uses_captures: partial_uses_captures || partial_uses_ifchanged,
@@ -373,9 +358,9 @@ module LiquidIL
       has_pc = !@partial_constants.empty?
       code << "# frozen_string_literal: true\n"
       if has_pc
-        code << "proc do |_S, _sp, _ts, _pc|\n"
+        code << "proc do |_S, _pc|\n"
       else
-        code << "proc do |_S, _sp, _ts|\n"
+        code << "proc do |_S|\n"
       end
       code << "  _H = LiquidIL::RuntimeHelpers\n"
       code << "  _U = LiquidIL::Utils\n" if body_code.include?("_U.") || partial_code.include?("_U.")
@@ -488,7 +473,7 @@ module LiquidIL
         # All prologue/rescue/ensure bookkeeping lives in the (already-jitted)
         # runtime helper _H.ip — zero artifact bytes per lambda for it.
         # Error locations inside the body are compile-time literals, so the
-        # lambda carries no spans/source/current-file state.
+        # lambda carries no source/current-file state.
         code << "  #{lambda_name} = ->(assigns, _O, __parent_scope__, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
         code << "    _H.ip(#{name.inspect}, __parent_scope__, isolated, caller_line, _O) {\n"
         code << "      __partial_scope__ = isolated ? __parent_scope__.isolated_with(assigns) : __parent_scope__\n"
@@ -587,7 +572,7 @@ module LiquidIL
           code << result
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
           isolated = inst[0] == IL::RENDER_PARTIAL
-          code << generate_partial_call(inst, @pc, 1, isolated: isolated)
+          code << generate_partial_call(inst, 1, isolated: isolated)
         when IL::ASSIGN_LOCAL
           @pc += 1
           code << "  _S.assign_local(#{inst[1].inspect}, _S.lookup(#{inst[2].inspect}))\n"
@@ -933,10 +918,10 @@ module LiquidIL
         end
 
       when IL::RENDER_PARTIAL
-        generate_partial_call(inst, @pc, indent, isolated: true)
+        generate_partial_call(inst, indent, isolated: true)
 
       when IL::INCLUDE_PARTIAL
-        generate_partial_call(inst, @pc, indent, isolated: false)
+        generate_partial_call(inst, indent, isolated: false)
 
       when :SHOPIFY_SECTION_RENDER
         @pc += 1
@@ -951,10 +936,11 @@ module LiquidIL
         parts = coll_path.split(".")
         lookup = "_S.lookup(#{parts[0].inspect})"
         parts[1..].each { |p| lookup = "_H.l(#{lookup}, #{p.inspect})" }
+        # _pgc, not _pc: _pc is the proc's partial-constants parameter
         code = String.new
-        code << "#{prefix}_pc = #{lookup}\n"
-        code << "#{prefix}_pc = _pc.respond_to?(:to_a) ? _pc.to_a : Array(_pc) unless _pc.is_a?(Array)\n"
-        code << "#{prefix}_pg, _pi2 = _H.build_paginate(_pc, #{page_size}, (_S.lookup('current_page') || 1).to_i)\n"
+        code << "#{prefix}_pgc = #{lookup}\n"
+        code << "#{prefix}_pgc = _pgc.respond_to?(:to_a) ? _pgc.to_a : Array(_pgc) unless _pgc.is_a?(Array)\n"
+        code << "#{prefix}_pg, _pi2 = _H.build_paginate(_pgc, #{page_size}, (_S.lookup('current_page') || 1).to_i)\n"
         code << "#{prefix}_S.assign('paginate', _pg)\n"
         code << "#{prefix}_S.assign(#{parts.last.inspect}, _pi2)\n" if parts.length == 1
         code
@@ -1027,7 +1013,7 @@ module LiquidIL
     end
 
     # Generate a partial call (render or include)
-    def generate_partial_call(inst, pc, indent, isolated:)
+    def generate_partial_call(inst, indent, isolated:)
       @pc += 1
       prefix = INDENT[indent]
       name = inst[1]
@@ -1035,7 +1021,7 @@ module LiquidIL
       @partial_call_cycle_suffix ||= @uses_cycles ? ", parent_cycle_state: _cs" : ""
       args = inst[2] || {}
       tag_type = isolated ? "render" : "include"
-      line_num = line_for_pc(pc)
+      line_num = inst[3] || 1
 
       # Handle invalid/dynamic partial names — emit inline error
       if args["__invalid_name__"]
@@ -1043,7 +1029,7 @@ module LiquidIL
                "#{prefix}_O << #{lit("Liquid error (line #{line_num}): Argument error in tag '#{tag_type}' - Illegal template name")}\n"
       end
       if args["__dynamic_name__"]
-        return generate_dynamic_partial(inst, pc, indent, isolated: isolated)
+        return generate_dynamic_partial(inst, indent, isolated: isolated)
       end
       if !@context&.file_system
         return "#{prefix}# #{tag_type} '#{comment_safe(name)}' (no file system)\n" \
@@ -1271,11 +1257,11 @@ module LiquidIL
     end
 
     # Generate code for dynamic partial (name from variable)
-    def generate_dynamic_partial(inst, pc, indent, isolated:)
+    def generate_dynamic_partial(inst, indent, isolated:)
       prefix = INDENT[indent]
       args = inst[2] || {}
       tag_type = isolated ? "render" : "include"
-      line_num = line_for_pc(pc)
+      line_num = inst[3] || 1
 
       # The partial name comes from a runtime expression/variable.
       dyn_var = args["__dynamic_name__"] || inst[1]
@@ -1594,11 +1580,10 @@ module LiquidIL
           stack << "{" + pairs.each_slice(2).map { |k, v| "#{k} => #{v}" }.join(", ") + "}"
           @pc += 1
         when IL::CALL_FILTER
-          filter_pc = @pc
           argc = inst[2] || 0
           args = argc > 0 ? stack.pop(argc) : []
           input_ruby = stack.pop || "nil"
-          stack << emit_filter_call(inst[1], input_ruby, args, filter_pc)
+          stack << emit_filter_call(inst[1], input_ruby, args, inst[3] || 1)
           @pc += 1
         when IL::WRITE_VALUE
           @pc += 1
@@ -2562,7 +2547,7 @@ module LiquidIL
     # Integer-literal argument (safe for inline .round(n) etc.)
     INT_LITERAL_RE = /\A-?\d+\z/
 
-    def emit_filter_call(filter_name, input_ruby, args, filter_pc)
+    def emit_filter_call(filter_name, input_ruby, args, line)
       # Arithmetic filters are not identity operations for Liquid values: even
       # plus:0/times:1 coerce strings to numbers (e.g. "6-3" | plus:0 => 6).
       # Do not skip them based only on literal arguments.
@@ -2589,7 +2574,6 @@ module LiquidIL
         end
       end
 
-      line = line_for_pc(filter_pc)
       if Filters.valid_filter_methods[filter_name]
         emit_filter_dispatch("cff", filter_name, input_ruby, args, line)
       else
@@ -2826,12 +2810,9 @@ module LiquidIL
         compiler = Compiler.new(source, **opts)
         result = compiler.compile
         instructions = result[:instructions]
-        spans = result[:spans]
 
         ruby_compiler = RubyCompiler.new(
           instructions,
-          spans: spans,
-          template_source: source,
           context: context
         )
         if options[:template_name]
@@ -2840,7 +2821,7 @@ module LiquidIL
         end
         compiled_result = ruby_compiler.compile
 
-        template = Template.new(source, instructions, spans, context, compiled_result)
+        template = Template.new(source, instructions, context, compiled_result)
         template.instance_variable_get(:@warnings).concat(warnings)
         template
       end
