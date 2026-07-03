@@ -147,7 +147,9 @@ module LiquidIL
         return
       end
 
-      # Compile the partial to IL
+      # Compile the partial to IL. No error_mode: partials intentionally
+      # parse :lax even under a :strict2 context (matches the liquid gem's
+      # include behavior).
       begin
         compiler = LiquidIL::Compiler.new(source, optimize: true, skip_passes: PARTIAL_SKIP_PASSES)
         result = compiler.compile

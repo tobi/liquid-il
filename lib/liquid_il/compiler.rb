@@ -29,6 +29,9 @@ module LiquidIL
 
     def compile
       parser = Parser.new(@source,
+        # :lax when unspecified — internal callers (statically-compiled
+        # partials) parse lax, matching the liquid gem; Compiler::Ruby.compile
+        # supplies :strict2 for the main template.
         error_mode: @options[:error_mode] || :lax,
         warnings: @options[:warnings]
       )

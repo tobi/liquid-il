@@ -15,7 +15,10 @@ module LiquidIL
     NESTING_OPEN_TAGS = Set.new(%w[if unless case for tablerow capture comment]).freeze
     NESTING_CLOSE_TAGS = Set.new(%w[endif endunless endcase endfor endtablerow endcapture endcomment]).freeze
 
-    def initialize(source, error_mode: :strict2, warnings: nil)
+    # error_mode is required: the default lives in Compiler#compile (:lax),
+    # and the public entry point (Compiler::Ruby.compile) forces :strict2
+    # for the main template.
+    def initialize(source, error_mode:, warnings: nil)
       @source = source
       @template_lexer = TemplateLexer.new(source)
       @builder = IL::Builder.new
