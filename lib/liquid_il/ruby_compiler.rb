@@ -1430,6 +1430,11 @@ module LiquidIL
       stack = []
       seen_is_truthy = false
 
+      if (liquid_bool = try_build_liquid_boolean_condition)
+        @pc = liquid_bool[1]
+        return [liquid_bool[0], :none]
+      end
+
       while @pc < @instructions.length
         inst = @instructions[@pc]
 
@@ -1799,6 +1804,80 @@ module LiquidIL
       end
 
       [stack.last, :none]
+    end
+
+    # Reconstruct Liquid's right-recursive boolean condition IL into a Ruby
+    # expression. Liquid gives `and`/`or` equal precedence and parses them
+    # right-to-left, so `a or b and c` means `a or (b and c)`. The generic
+    # stack inliner is intentionally simple and can flatten constant-only
+    # chains left-to-right; this helper follows the actual jump targets emitted
+    # by the parser and is used only for condition expressions ending in
+    # IS_TRUTHY + JUMP_IF_*.
+    def try_build_liquid_boolean_condition
+      truthy_pc = @pc
+      while truthy_pc < @instructions.length
+        op = @instructions[truthy_pc]&.[](0)
+        break if op == IL::IS_TRUTHY
+        return nil if op == IL::WRITE_RAW || op == IL::WRITE_VALUE || op == IL::ASSIGN || op == IL::ASSIGN_LOCAL || op == IL::HALT
+        truthy_pc += 1
+      end
+      return nil unless @instructions[truthy_pc]&.[](0) == IL::IS_TRUTHY
+      branch = @instructions[truthy_pc + 1]&.[](0)
+      return nil unless branch == IL::JUMP_IF_FALSE || branch == IL::JUMP_IF_TRUE
+
+      expr, = build_liquid_boolean_expr_at(@pc, truthy_pc)
+      expr && [expr, truthy_pc + 1]
+    end
+
+    def build_liquid_boolean_expr_at(pos, finish_pc)
+      value, next_pos = build_liquid_boolean_value_at(pos, finish_pc)
+      return nil unless value
+      return [inline_truthy(value), next_pos] if next_pos >= finish_pc
+
+      inst = @instructions[next_pos]
+      case inst&.[](0)
+      when IL::JUMP_IF_TRUE
+        target = inst[1]
+        return nil unless target <= finish_pc && @instructions[target]&.[](0) == IL::CONST_TRUE
+        right, = build_liquid_boolean_expr_at(next_pos + 1, target)
+        return nil unless right
+        ["((#{inline_truthy(value)}) || (#{right}))", finish_pc]
+      when IL::JUMP_IF_FALSE
+        target = inst[1]
+        return nil unless target <= finish_pc && @instructions[target]&.[](0) == IL::CONST_FALSE
+        right, = build_liquid_boolean_expr_at(next_pos + 1, target)
+        return nil unless right
+        ["((#{inline_truthy(value)}) && (#{right}))", finish_pc]
+      when IL::JUMP
+        return [inline_truthy(value), inst[1]] if inst[1] >= finish_pc
+        nil
+      else
+        nil
+      end
+    end
+
+    def build_liquid_boolean_value_at(pos, finish_pc)
+      return nil if pos >= finish_pc
+      inst = @instructions[pos]
+      case inst&.[](0)
+      when IL::CONST_INT then [inst[1].inspect, pos + 1]
+      when IL::CONST_FLOAT then [inst[1].inspect, pos + 1]
+      when IL::CONST_STRING then [inst[1].inspect, pos + 1]
+      when IL::CONST_TRUE then ["true", pos + 1]
+      when IL::CONST_FALSE then ["false", pos + 1]
+      when IL::CONST_NIL then ["nil", pos + 1]
+      when IL::CONST_EMPTY then ["LiquidIL::EmptyLiteral.instance", pos + 1]
+      when IL::CONST_BLANK then ["LiquidIL::BlankLiteral.instance", pos + 1]
+      when IL::FIND_VAR
+        ruby = @loop_var_aliases[inst[1]] || "_S.lookup(#{inst[1].inspect})"
+        [ruby, pos + 1]
+      when IL::FIND_SELF
+        ["_S.lookup_self", pos + 1]
+      when IL::FIND_VAR_PATH
+        [generate_var_path_expr(inst[1], inst[2]), pos + 1]
+      else
+        nil
+      end
     end
 
     # Generate variable path access (a.b.c)

@@ -64,3 +64,11 @@ specs:
       d: true
     val: false
   expected: ""
+
+- name: constant_or_rhs_can_be_nested_and
+  template: "{% if true or true and false %}YES{% else %}NO{% endif %}"
+  expected: "YES"
+
+- name: constant_and_rhs_can_be_nested_or
+  template: "{% if false and true or true %}YES{% else %}NO{% endif %}"
+  expected: "NO"

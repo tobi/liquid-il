@@ -453,6 +453,17 @@ module LiquidIL
       end
     end
 
+    def self.partial_display_name(name, scope)
+      registers = scope.user_registers
+      factory = registers && (registers["template_factory"] || registers[:template_factory])
+      return name unless factory && factory.respond_to?(:for)
+
+      template = factory.for(name)
+      template.respond_to?(:name) && template.name ? template.name : name
+    rescue StandardError
+      name
+    end
+
     # Partial-lambda wrapper: all per-invocation bookkeeping (current-file
     # tracking, render-depth limit, render_errors recovery) for statically
     # compiled partial lambdas. Hoisted out of the emitted code — this JITs
@@ -460,10 +471,11 @@ module LiquidIL
     # The block runs the partial body and appends to `output`.
     def self.invoke_partial(name, scope, isolated, caller_line, output)
       prev_file = scope.current_file
-      scope.current_file = name
+      partial_file = partial_display_name(name, scope)
+      scope.current_file = partial_file
       scope.push_render_depth
       if scope.render_depth_exceeded?(strict: !isolated)
-        raise LiquidIL::RuntimeError.new("Nesting too deep", file: name, line: caller_line)
+        raise LiquidIL::RuntimeError.new("Nesting too deep", file: partial_file, line: caller_line)
       end
       yield
     rescue LiquidIL::ResourceLimitError
@@ -475,10 +487,10 @@ module LiquidIL
       output << "Liquid error (#{location}): #{e.message}"
     rescue LiquidIL::FilterRuntimeError => e
       raise unless scope.render_errors
-      output << "Liquid error (#{name} line 1): " << e.message.to_s
+      output << "Liquid error (#{partial_file} line 1): " << e.message.to_s
     rescue StandardError => e
       raise unless scope.render_errors
-      output << "Liquid error (#{name} line 1): " << LiquidIL.clean_error_message(e.message).to_s
+      output << "Liquid error (#{partial_file} line 1): " << LiquidIL.clean_error_message(e.message).to_s
     ensure
       scope.current_file = prev_file
       scope.pop_render_depth
@@ -523,12 +535,13 @@ module LiquidIL
 
       # Compile and execute
       prev_file = scope.current_file
-      scope.current_file = name
+      partial_file = partial_display_name(name, scope)
+      scope.current_file = partial_file
       scope.push_render_depth
       if scope.render_depth_exceeded?(strict: isolated)
         scope.current_file = prev_file
         scope.pop_render_depth
-        raise LiquidIL::RuntimeError.new("Nesting too deep", file: name, line: 1, partial_output: output.dup)
+        raise LiquidIL::RuntimeError.new("Nesting too deep", file: partial_file, line: 1, partial_output: output.dup)
       end
 
       begin
@@ -553,10 +566,10 @@ module LiquidIL
         output << "Liquid error (#{location}): #{e.message}"
       rescue LiquidIL::SyntaxError => e
         raise unless scope.render_errors
-        output << "Liquid syntax error (#{name} line #{e.line}): #{e.message}"
+        output << "Liquid syntax error (#{partial_file} line #{e.line}): #{e.message}"
       rescue => e
         raise unless scope.render_errors
-        output << "Liquid error (#{name} line 1): #{LiquidIL.clean_error_message(e.message)}"
+        output << "Liquid error (#{partial_file} line 1): #{LiquidIL.clean_error_message(e.message)}"
       ensure
         scope.current_file = prev_file
         scope.pop_render_depth

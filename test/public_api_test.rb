@@ -56,7 +56,7 @@ class ContextCreationTest < Minitest::Test
     assert_equal false, ctx.strict_variables
     assert_equal false, ctx.strict_filters
     assert_nil ctx.resource_limits
-    assert_equal :lax, ctx.error_mode
+    assert_equal :strict2, ctx.error_mode
     assert_equal({}, ctx.custom_filters)
   end
 
@@ -667,9 +667,9 @@ end
 # ════════════════════════════════════════════════════════════
 
 class ErrorModeTest < Minitest::Test
-  def test_default_is_lax
+  def test_default_is_strict2
     ctx = LiquidIL::Context.new
-    assert_equal :lax, ctx.error_mode
+    assert_equal :strict2, ctx.error_mode
   end
 
   def test_lax_ignores_unknown_tags

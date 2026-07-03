@@ -95,7 +95,7 @@ class DynamicPartialsRuntimeTest < Minitest::Test
     ctx = LiquidIL::Context.new(file_system: fs)
 
     out = ctx.render("{% include tpl %}", "tpl" => "missing")
-    assert_includes out, "Liquid error (line 1): Could not find partial 'missing'"
+    assert_includes out, "Liquid error (line 1): Could not find asset missing"
   end
 
   def test_dynamic_include_illegal_name_reports_argument_error
