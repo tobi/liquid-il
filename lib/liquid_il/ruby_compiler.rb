@@ -2863,13 +2863,9 @@ module LiquidIL
     INT_LITERAL_RE = /\A-?\d+\z/
 
     def emit_filter_call(filter_name, input_ruby, args, filter_pc)
-      # Identity optimizations: skip filters that are no-ops
-      if (filter_name == "plus" && args.length == 1 && args[0] == "0") ||
-         (filter_name == "minus" && args.length == 1 && args[0] == "0") ||
-         (filter_name == "times" && args.length == 1 && args[0] == "1") ||
-         (filter_name == "divided_by" && args.length == 1 && args[0] == "1")
-        return input_ruby
-      end
+      # Arithmetic filters are not identity operations for Liquid values: even
+      # plus:0/times:1 coerce strings to numbers (e.g. "6-3" | plus:0 => 6).
+      # Do not skip them based only on literal arguments.
 
       # If an earlier filter in this chain went through a dispatcher, its
       # result may be an ErrorMarker. Keep the rest of the chain in
