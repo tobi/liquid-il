@@ -60,6 +60,19 @@ module LiquidIL
       SelfDrop.new(self)
     end
 
+    # Lookup for the explicit FIND_SELF IL op: normal locals/environments named
+    # "self" shadow the synthetic SelfDrop, but a miss falls back to SelfDrop
+    # without making every normal lookup branch on this special name.
+    def lookup_self
+      if @locals.key?("self")
+        return @locals["self"]
+      end
+      if @static_environments&.key?("self")
+        return @static_environments["self"]
+      end
+      self_drop
+    end
+
     # Render depth - needed for nested render calls
     def push_render_depth = @depth += 1
     def pop_render_depth; @depth -= 1 if @depth > 0; end
@@ -286,6 +299,38 @@ module LiquidIL
     # Return a SelfDrop wrapping this scope for the `self` keyword
     def self_drop
       SelfDrop.new(self)
+    end
+
+    # Lookup for the explicit FIND_SELF IL op: assigned vars, counters, parent
+    # scopes, and static environments named "self" shadow the synthetic SelfDrop.
+    # A miss falls back to SelfDrop without putting a special-name branch in
+    # every normal lookup.
+    def lookup_self
+      key = "self"
+      top = @top_scope
+      v = top[key]
+      if !v.nil? || top.key?(key)
+        return v unless @has_counters
+        return v if (@assigned_vars && @assigned_vars[key]) || !@counters.key?(key)
+      end
+      if @has_counters && @assigned_vars && @assigned_vars[key]
+        if @scopes
+          @scopes.each do |scope|
+            return scope[key] if scope.key?(key)
+          end
+        else
+          return top[key] if top.key?(key)
+        end
+      end
+      return @counters[key] if @has_counters && @counters.key?(key)
+      if @scopes
+        @scopes.each_with_index do |scope, i|
+          next if i == 0
+          return scope[key] if scope.key?(key)
+        end
+      end
+      return @static_environments[key] if @static_environments&.key?(key)
+      self_drop
     end
 
     def lookup(key)

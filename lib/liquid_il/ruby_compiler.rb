@@ -1225,7 +1225,8 @@ module LiquidIL
           assign_keys = arg_expressions.keys.select do |k|
             # Check original body patterns (before _S -> __partial_scope__ substitution)
             info[:compiled_body].include?("_S.lookup(#{k.inspect})") ||
-              info[:compiled_body].include?("__partial_scope__.lookup(#{k.inspect})")
+              info[:compiled_body].include?("__partial_scope__.lookup(#{k.inspect})") ||
+              (k == "self" && info[:compiled_body].include?("lookup_self"))
           end
           arg_expressions.each do |k, expr|
             next unless assign_keys.include?(k)
@@ -1378,7 +1379,11 @@ module LiquidIL
       return "nil" unless root_match
 
       root = root_match[0]
-      result = @loop_var_aliases[root] || "_S.lookup(#{root.inspect})"
+      result = if root == "self"
+        "_S.lookup_self"
+      else
+        @loop_var_aliases[root] || "_S.lookup(#{root.inspect})"
+      end
       i = root.length
 
       while i < expr_str.length
@@ -1472,7 +1477,7 @@ module LiquidIL
           end
           @pc += 1
         when IL::FIND_SELF
-          stack << "_S.self_drop"
+          stack << "_S.lookup_self"
           @pc += 1
         when IL::FIND_VAR_PATH
           stack << generate_var_path_expr(inst[1], inst[2])
@@ -1659,7 +1664,7 @@ module LiquidIL
                     break unless part
                   end
                   stack << part
-                when IL::FIND_SELF then stack << "_S.self_drop"; @pc += 1
+                when IL::FIND_SELF then stack << "_S.lookup_self"; @pc += 1
                 when IL::LOAD_TEMP then stack << "__temp_#{build_inst[1]}__"; @pc += 1
                 when IL::LOOKUP_CONST_KEY
                   obj_ruby = stack.pop || "nil"
@@ -1750,7 +1755,7 @@ module LiquidIL
                 or_operands << or_ruby if or_ruby
                 break unless or_ruby
               when IL::FIND_SELF
-                or_operands << "_S.self_drop"
+                or_operands << "_S.lookup_self"
                 @pc += 1
                 break
               when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_FALSE, IL::CONST_NIL
