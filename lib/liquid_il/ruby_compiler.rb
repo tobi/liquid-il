@@ -2935,11 +2935,14 @@ module LiquidIL
       # Boolean expressions: comparisons, logical operators — already produce boolean result
       is_simple = expr_ruby =~ /\A[a-zA-Z_][a-zA-Z0-9_.]*\z/ || expr_ruby =~ /\A__\w+__\z/ || expr_ruby =~ /\A_[a-z]\d+__\["[^"]+"\]\z/
       is_boolean = expr_ruby.include?("&&") || expr_ruby.include?("||") || expr_ruby =~ /\)[><]=?\s*\d+\s*\)\z/ || expr_ruby =~ /\)[><]=?\s*\)\z/
-      if is_simple || is_boolean
+      if is_boolean
         "(#{expr_ruby})"
+      elsif is_simple
+        # Unwrap drops via to_liquid_value (BooleanDrop with false should be falsy)
+        "((_t = #{expr_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t)"
       else
         # Complex expression - use _t temp to avoid double evaluation
-        "((_t = #{expr_ruby}); _t)"
+        "((_t = #{expr_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t)"
       end
     end
 
