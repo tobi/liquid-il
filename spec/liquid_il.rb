@@ -24,7 +24,13 @@ LiquidSpec.configure do |config|
   # Run all default suites, excluding Shopify runtime extensions that require
   # Shopify theme objects, filters, include quirks, or production error formats
   # outside core LiquidIL.
-  config.missing_features = [:shopify_tags, :shopify_objects, :shopify_filters, :shopify_includes, :shopify_error_handling]
+  config.missing_features = [
+    :shopify_tags,
+    :shopify_objects,
+    :shopify_filters,
+    :shopify_includes,
+    :shopify_error_handling,
+  ]
 end
 
 # Fallback for templates that can't be compiled (dynamic partials, recursion, etc.)
