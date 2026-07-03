@@ -139,6 +139,20 @@ module LiquidIL
         return nil if next_inst.nil?
 
         case next_inst[0]
+        when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE,
+             IL::CONST_NIL, IL::CONST_EMPTY, IL::CONST_BLANK
+          # Variable compared to a constant: var OP const (e.g., items == blank)
+          const_ruby = literal_ruby(next_inst)
+          @pc += 1
+          compare_inst = @instructions[@pc]
+          if compare_inst&.[](0) == IL::COMPARE
+            cmp_op = compare_inst[1]
+            @pc += 1
+            # Skip JUMP to end of or-block
+            @pc = @instructions[@pc][1] if @instructions[@pc]&.[](0) == IL::JUMP
+            return "_H.cmp(#{var_ruby}, #{const_ruby}, #{cmp_op.inspect}, _O, _F)"
+          end
+          return nil
         when IL::JUMP_IF_TRUE
           jit_target = next_inst[1]
           jit_actual = jit_target
