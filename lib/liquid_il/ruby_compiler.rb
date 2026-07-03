@@ -1153,6 +1153,9 @@ module LiquidIL
         code << "#{prefix}if __for_coll__.is_a?(Array)\n"
         code << "#{prefix}  __for_coll__.each_with_index do |_i_, _x_|\n"
         code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
+        unless isolated
+          code << "#{prefix}    _S.assign(#{item_var.inspect}, _i_)\n"
+        end
         if isolated
           code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = _x_ }\n"
         end
@@ -1184,6 +1187,9 @@ module LiquidIL
         code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
         code << "#{prefix}else\n"
         code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __for_coll__\n"
+        unless isolated
+          code << "#{prefix}  _S.assign(#{item_var.inspect}, __for_coll__)\n"
+        end
         code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
         code << "#{prefix}end\n"
       elsif with_expr
@@ -1196,13 +1202,16 @@ module LiquidIL
           code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
         else
           # For include, __with_val__ was already looked up BEFORE keyword args modified scope
+          # Assign the with-value to the current scope so the partial can see it
           code << "#{prefix}if __with_val__.is_a?(Array)\n"
           code << "#{prefix}  __with_val__.each do |_i_|\n"
           code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
+          code << "#{prefix}    _S.assign(#{item_var.inspect}, _i_)\n"
           code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
           code << "#{prefix}  end\n"
           code << "#{prefix}else\n"
           code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __with_val__\n"
+          code << "#{prefix}  _S.assign(#{item_var.inspect}, __with_val__)\n"
           code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
           code << "#{prefix}end\n"
         end

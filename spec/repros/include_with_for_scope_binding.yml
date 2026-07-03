@@ -1,0 +1,51 @@
+---
+_metadata:
+  hint: Include with/for must assign the value to the current scope for non-isolated includes — the partial shares the parent scope and looks up variables there, not in __partial_args__
+  doc: implementers/partials.md
+  render_errors: true
+specs:
+# Root cause: for non-isolated includes ({% include %}), the partial body
+# looks up variables via __partial_scope__.lookup(name) which is the parent
+# scope. But with/for values were only put in __partial_args__ hash, not
+# assigned to the scope. So {{ product.title }} inside the partial couldn't
+# find the 'product' variable.
+- name: include_with_binds_variable_to_scope
+  template: "{% include 'product' with products[0] %}"
+  environment:
+    products:
+      - title: Draft 151cm
+      - title: Element 155cm
+  filesystem:
+    product: "Product: {{ product.title }} "
+  expected: "Product: Draft 151cm "
+
+- name: include_with_as_alias_binds_variable_to_scope
+  template: "{% include 'product_alias' with products[0] as product %}"
+  environment:
+    products:
+      - title: Draft 151cm
+      - title: Element 155cm
+  filesystem:
+    product_alias: "Product: {{ product.title }} "
+  expected: "Product: Draft 151cm "
+
+- name: include_for_iterates_and_binds_each_item
+  template: "{% include 'product' for products %}"
+  environment:
+    products:
+      - title: Draft 151cm
+      - title: Element 155cm
+  filesystem:
+    product: "Product: {{ product.title }} "
+  expected: "Product: Draft 151cm Product: Element 155cm "
+
+- name: include_for_with_nested_partial
+  template: "{% include 'nested_product_template' for products %}"
+  environment:
+    products:
+      - title: Draft 151cm
+      - title: Element 155cm
+  filesystem:
+    nested_product_template: "Product: {{ product.title }} {% include 'details' %}"
+    details: "details "
+  expected: "Product: Draft 151cm details Product: Element 155cm details "
