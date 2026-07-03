@@ -217,8 +217,8 @@ namespace :liquid_vm do
       "matrix",
       "--adapters=liquid_ruby",
       "--adapter=#{File.expand_path(ADAPTER)}",
-      "--adapter=#{LiquidVmRake.adapter(:vm)}",
-      "--adapter=#{LiquidVmRake.adapter(:ssa)}",
+      "--adapter=#{File.expand_path(ADAPTER_VM)}",
+      "--adapter=#{File.expand_path(ADAPTER_VM_SSA)}",
       "--no-max-failures",
       LiquidVmRake.extra_args
     )
@@ -231,8 +231,8 @@ namespace :liquid_vm do
       "bench",
       "--adapters=liquid_ruby",
       "--adapter=#{File.expand_path(ADAPTER)}",
-      "--adapter=#{LiquidVmRake.adapter(:vm)}",
-      "--adapter=#{LiquidVmRake.adapter(:ssa)}",
+      "--adapter=#{File.expand_path(ADAPTER_VM)}",
+      "--adapter=#{File.expand_path(ADAPTER_VM_SSA)}",
       LiquidVmRake.extra_args
     )
   end

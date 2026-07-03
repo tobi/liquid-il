@@ -22,6 +22,8 @@ if File.file?(adapter_path)
   ENV["LIQUID_VM_PATH"] ||= repo_path
   ENV["LIQUID_VM_SSA_ADAPTER"] ||= adapter_path
   load adapter_path
+  require_relative "support/liquid_vm_artifact_protocol"
+  LiquidVmArtifactProtocol.install!(backend: :ssa)
 else
   LiquidSpec.setup do |_ctx|
     LiquidSpec.skip!(<<~MSG.chomp)
