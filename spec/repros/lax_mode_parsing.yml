@@ -70,3 +70,15 @@ specs:
 - name: lax_mode_digit_starting_variable_name_lookup
   template: "{% assign 123foo = 'bar' %}{{ 123foo }}"
   expected: "bar"
+
+- name: lax_mode_filter_name_junk_before_colon_is_ignored
+  template: "{{ 'hi there' | split$$$:' ' | first }}"
+  expected: "hi"
+
+- name: lax_mode_doubled_quote_after_filter_arg_keeps_next_filter
+  template: "{{ 'hi there' | split:\"t\"\" | reverse | first }}"
+  expected: "here"
+
+- name: lax_mode_doubled_quote_can_swallow_malformed_filter_segment
+  template: "{{ 'hi there' | split:\"t\"\" | remove:\"i\" | first }}"
+  expected: "hi "

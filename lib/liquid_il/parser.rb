@@ -51,6 +51,7 @@ module LiquidIL
     end
 
     def expr_lexer_for(source)
+      @expr_lexer.error_mode = @error_mode
       @expr_lexer.reset_source(source)
       @expr_lexer.advance
       @expr_lexer
