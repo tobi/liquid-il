@@ -1903,18 +1903,12 @@ module LiquidIL
         # Parse full expression (e.g., item.template, products[0].name)
         partial_name = parse_include_expression(lexer)
         dynamic_name = true
-      elsif lexer.current == :NIL
-        # {% include nil %} - invalid template name
-        partial_name = nil
-        dynamic_name = false
-        invalid_name = true
-        lexer.advance
-      elsif lexer.current == :NUMBER
-        # {% include 123 %} - invalid template name
-        partial_name = lexer.value
-        dynamic_name = false
-        invalid_name = true
-        lexer.advance
+      elsif lexer.current == :NIL || lexer.current == :NUMBER
+        # {% include nil %} / {% include 123 %} - invalid template name.
+        # Always rendered inline (regardless of render_errors), so emit the
+        # error text at parse time. (render rejects these with a SyntaxError.)
+        @builder.write_raw("Liquid error (line #{current_line}): Argument error in tag 'include' - Illegal template name")
+        return false
       else
         return # Invalid syntax
       end
@@ -1982,12 +1976,11 @@ module LiquidIL
       args['__for__'] = for_expr if for_expr
       args['__as__'] = as_alias if as_alias
       args['__dynamic_name__'] = partial_name if dynamic_name
-      args['__invalid_name__'] = true if invalid_name
 
-      if !dynamic_name && !invalid_name
-        @builder.const_include(partial_name, args, current_line)
-      else
+      if dynamic_name
         @builder.include_partial(partial_name, args, current_line)
+      else
+        @builder.const_include(partial_name, args, current_line)
       end
       false
     end

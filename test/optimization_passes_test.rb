@@ -20,7 +20,6 @@ LiquidIL::Context.prepend(FullPassesForOptimizationTests)
 # Comprehensive tests for each IL optimization pass
 #
 # The optimizer runs passes in this order:
-#  0. inline_simple_partials
 #  1. fold_const_ops
 #  2. fold_const_filters
 #  3. fold_const_writes
@@ -43,7 +42,10 @@ LiquidIL::Context.prepend(FullPassesForOptimizationTests)
 # 20. fuse_write_var
 # 22. remove_interrupt_checks
 
-class Pass0InlineSimplePartialsTest < Minitest::Test
+# Partial inlining is owned by the Ruby backend (formerly IL pass 0): the IL
+# keeps RENDER_PARTIAL/INCLUDE_PARTIAL and the backend inlines small
+# single-site bodies into the generated Ruby (see generate_partial_call).
+class BackendPartialInliningTest < Minitest::Test
   class MemoryFS
     def initialize(templates)
       @templates = templates
@@ -54,74 +56,55 @@ class Pass0InlineSimplePartialsTest < Minitest::Test
     end
   end
 
-  def test_render_literal_fully_inlined
-    # render creates isolated scope - partial is fully inlined with PUSH_SCOPE/POP_SCOPE
+  def test_render_literal_inlined_into_generated_ruby
     fs = MemoryFS.new("part" => "hello")
     ctx = LiquidIL::Context.new(file_system: fs)
-    opt = LiquidIL::Optimizer.optimize(ctx)
-    template = opt.parse("{% render 'part' %}")
+    template = ctx.parse("{% render 'part' %}")
 
-    # Simple renders are fully inlined - no RENDER_PARTIAL instruction
-    assert_nil template.instructions.find { |i| i[0] == LiquidIL::IL::RENDER_PARTIAL }
+    # IL keeps the partial call; the backend inlines the body (no lambda call)
+    refute_nil template.instructions.find { |i| i[0] == LiquidIL::IL::RENDER_PARTIAL }
+    refute_includes template.compiled_source, "__partial_part__.call"
+    assert_includes template.compiled_source, "hello"
     assert_equal "hello", template.render
   end
 
-  def test_render_inlining_uses_scope_wrapper
-    # Inlined renders use PUSH_SCOPE/POP_SCOPE for scope management
-    fs = MemoryFS.new("part" => "hello")
-    ctx = LiquidIL::Context.new(file_system: fs)
-    opt = LiquidIL::Optimizer.optimize(ctx)
-    template = opt.parse("{% render 'part' %}")
-
-    opcodes = template.instructions.map(&:first)
-    assert_includes opcodes, LiquidIL::IL::PUSH_SCOPE
-    assert_includes opcodes, LiquidIL::IL::POP_SCOPE
-    assert_equal "hello", template.render
-  end
-
-  def test_include_literal_fully_inlined
-    # include shares caller's scope - should be fully inlined without scope isolation
+  def test_include_literal_shares_caller_scope
     fs = MemoryFS.new("part" => "x={{ x }}")
     ctx = LiquidIL::Context.new(file_system: fs)
-    opt = LiquidIL::Optimizer.optimize(ctx)
-    template = opt.parse("{% assign x = 'outer' %}{% include 'part' %}")
+    template = ctx.parse("{% assign x = 'outer' %}{% include 'part' %}")
 
-    # INCLUDE_PARTIAL should NOT be present (fully inlined)
-    assert_nil template.instructions.find { |i| i[0] == LiquidIL::IL::INCLUDE_PARTIAL }
-    # Outer x should be visible
     assert_equal "x=outer", template.render
   end
 
-  def test_include_with_args_inlined
+  def test_include_with_args
     fs = MemoryFS.new("greet" => "Hello {{ name }}")
     ctx = LiquidIL::Context.new(file_system: fs)
-    opt = LiquidIL::Optimizer.optimize(ctx)
-    template = opt.parse("{% include 'greet', name: 'World' %}")
+    template = ctx.parse("{% include 'greet', name: 'World' %}")
 
-    assert_nil template.instructions.find { |i| i[0] == LiquidIL::IL::INCLUDE_PARTIAL }
     assert_equal "Hello World", template.render
   end
 
   def test_dynamic_include_resolved_at_runtime
-    # Dynamic partial names are resolved at runtime
     fs = MemoryFS.new("dynamic" => "content")
     ctx = LiquidIL::Context.new(file_system: fs)
-    opt = LiquidIL::Optimizer.optimize(ctx)
-    template = opt.parse("{% assign tpl = 'dynamic' %}{% include tpl %}")
+    template = ctx.parse("{% assign tpl = 'dynamic' %}{% include tpl %}")
     assert_equal "content", template.render
   end
 
-  def test_render_with_for_clause_not_fully_inlined
-    # render with for clause keeps RENDER_PARTIAL instruction
+  def test_render_with_for_clause
     fs = MemoryFS.new("item" => "[{{ item }}]")
     ctx = LiquidIL::Context.new(file_system: fs)
-    opt = LiquidIL::Optimizer.optimize(ctx)
-    template = opt.parse("{% render 'item' for items %}")
+    template = ctx.parse("{% render 'item' for items %}")
 
-    render_inst = template.instructions.find { |i| i[0] == LiquidIL::IL::RENDER_PARTIAL }
-    refute_nil render_inst
-    refute_nil render_inst[2]["__compiled_template__"]
+    refute_nil template.instructions.find { |i| i[0] == LiquidIL::IL::RENDER_PARTIAL }
     assert_equal "[a][b][c]", template.render("items" => %w[a b c])
+  end
+
+  def test_break_propagates_through_include
+    fs = MemoryFS.new("brk" => "x{% break %}y")
+    ctx = LiquidIL::Context.new(file_system: fs)
+    template = ctx.parse("{% for i in (1..3) %}{{ i }}{% include 'brk' %}{% endfor %}")
+    assert_equal "1x", template.render
   end
 end
 
@@ -765,13 +748,16 @@ class Pass22RemoveInterruptChecksTest < Minitest::Test
     assert_equal "", template.render
   end
 
-  def test_include_without_break_removes_interrupt_checks
+  def test_include_keeps_interrupt_checks
+    # Included partials share the caller's scope, so a break/continue inside
+    # them propagates out. Without cross-file IL analysis the pass must be
+    # conservative: any include keeps the interrupt checks.
     fs = MemoryFS.new("part" => "x")
     ctx = LiquidIL::Context.new(file_system: fs)
     template = ctx.parse("{% for i in (1..3) %}{% include 'part' %}{% endfor %}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    refute_includes opcodes, LiquidIL::IL::JUMP_IF_INTERRUPT
-    refute_includes opcodes, LiquidIL::IL::POP_INTERRUPT
+    assert_includes opcodes, LiquidIL::IL::JUMP_IF_INTERRUPT
+    assert_includes opcodes, LiquidIL::IL::POP_INTERRUPT
     assert_equal "xxx", template.render
   end
 

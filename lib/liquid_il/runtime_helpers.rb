@@ -613,7 +613,7 @@ module LiquidIL
       template.instructions&.each do |inst|
         next unless inst[0] == LiquidIL::IL::RENDER_PARTIAL || inst[0] == LiquidIL::IL::INCLUDE_PARTIAL
         args = inst[2] || {}
-        next if args["__dynamic_name__"] || args["__invalid_name__"]
+        next if args["__dynamic_name__"]
         dep_source = read_partial_source(fs, inst[1], scope)
         deps[inst[1]] = dep_source.hash if dep_source
       end

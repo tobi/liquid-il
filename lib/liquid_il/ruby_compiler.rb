@@ -37,10 +37,9 @@ module LiquidIL
       @context = context
       @loop_depth = 0 # Track nested loop depth for parentloop support
       # Compile-time current file (nil for the main template, the partial
-      # name inside partial compilations, updated by SET_CONTEXT). Baked into
+      # name inside partial compilations — see compile_partial). Baked into
       # emitted error-location literals — no runtime tracking in the code.
       @current_file_lit = nil
-      @root_file_lit = nil
       # Loop-local naming offset. 0 for the main template; partials get a
       # unique base (compile_partial) so their loop locals (__i0__, _fl0__,
       # :loop_break_0, ...) never collide with a call site's when inlined.
@@ -135,7 +134,7 @@ module LiquidIL
 
       # Compile the partial to IL
       begin
-        compiler = LiquidIL::Compiler.new(source, optimize: true, skip_passes: [0, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22])
+        compiler = LiquidIL::Compiler.new(source, optimize: true, skip_passes: [6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22])
         result = compiler.compile
       rescue LiquidIL::SyntaxError => e
         @partial_names_in_progress.delete(name)
@@ -218,7 +217,7 @@ module LiquidIL
       instructions.each do |i|
         next unless i[0] == IL::RENDER_PARTIAL || i[0] == IL::INCLUDE_PARTIAL
         args = i[2] || {}
-        next if args["__dynamic_name__"] || args["__invalid_name__"]
+        next if args["__dynamic_name__"]
         dep = i[1]
         info = @partials[dep]
         next unless info
@@ -272,7 +271,7 @@ module LiquidIL
           args = inst[2] || {}
           # Dynamic/invalid names and missing file system are handled at codegen
           # (they emit inline error messages). Only block on structural issues.
-          if !args["__dynamic_name__"] && !args["__invalid_name__"] && @context&.file_system
+          if !args["__dynamic_name__"] && @context&.file_system
             has_include = true if inst[0] == IL::INCLUDE_PARTIAL
           end
         when IL::FOR_INIT, IL::TABLEROW_INIT
@@ -284,41 +283,6 @@ module LiquidIL
       # to scope, and the caller checks after each include call.
 
       blockers
-    end
-
-    # Check if a partial uses interrupts (break/continue)
-    def partial_uses_interrupts?(name, visited = Set.new)
-      return false if visited.include?(name)
-      visited.add(name)
-
-      fs = @context&.file_system
-      return false unless fs
-
-      source = RuntimeHelpers.read_partial_source(fs, name, @context)
-
-      return false unless source
-
-      begin
-        result = Compiler.new(source, file_system: fs).compile
-        instructions = result[:instructions]
-
-        # Direct interrupt in this partial
-        return true if instructions.any? { |inst| inst[0] == IL::PUSH_INTERRUPT }
-
-        # Transitively check included partials
-        instructions.each do |inst|
-          if inst[0] == IL::INCLUDE_PARTIAL
-            child_name = inst[1]
-            args = inst[2] || {}
-            next if args["__dynamic_name__"] || args["__invalid_name__"]
-            return true if partial_uses_interrupts?(child_name, visited)
-          end
-        end
-
-        false
-      rescue
-        false
-      end
     end
 
     # Generate Ruby code from IL
@@ -333,7 +297,7 @@ module LiquidIL
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
           name = i[1]
           args = i[2] || {}
-          next if args["__dynamic_name__"] || args["__invalid_name__"]
+          next if args["__dynamic_name__"]
           next unless @context&.file_system
           next if @partials[name] && @partials[name][:compiled_body]
           compile_partial(name)
@@ -397,7 +361,7 @@ module LiquidIL
           name = inst[1]
           args = inst[2] || {}
           # Skip dynamic/invalid/no-fs partials (handled at codegen)
-          next if args["__dynamic_name__"] || args["__invalid_name__"]
+          next if args["__dynamic_name__"]
           next unless @context&.file_system
           next if @partials[name]
           # compile_partial will raise if mutual recursion detected
@@ -418,7 +382,7 @@ module LiquidIL
           instructions&.each do |inst|
             next unless inst[0] == IL::RENDER_PARTIAL || inst[0] == IL::INCLUDE_PARTIAL
             args = inst[2] || {}
-            next if args["__dynamic_name__"] || args["__invalid_name__"]
+            next if args["__dynamic_name__"]
             counts[inst[1]] += 1
           end
         end
@@ -664,13 +628,6 @@ module LiquidIL
 
       when IL::NOOP
         @pc += 1
-        ""
-
-      when IL::SET_CONTEXT
-        # Current file is compile-time state: later emissions bake it into
-        # error-location literals. No runtime assignment needed.
-        @pc += 1
-        @current_file_lit = inst[1] || @root_file_lit
         ""
 
       when IL::WRITE_RAW
@@ -1023,11 +980,6 @@ module LiquidIL
       tag_type = isolated ? "render" : "include"
       line_num = inst[3] || 1
 
-      # Handle invalid/dynamic partial names — emit inline error
-      if args["__invalid_name__"]
-        return "#{prefix}# #{tag_type} with invalid name\n" \
-               "#{prefix}_O << #{lit("Liquid error (line #{line_num}): Argument error in tag '#{tag_type}' - Illegal template name")}\n"
-      end
       if args["__dynamic_name__"]
         return generate_dynamic_partial(inst, indent, isolated: isolated)
       end
@@ -2792,8 +2744,8 @@ module LiquidIL
       #   The Ruby compiler generates native Ruby control flow (if/for/while),
       #   so most IL optimizations (constant folding, instruction merging) don't
       #   provide benefit and only add compile overhead.
-      # Skipped: [0..20, 22] - all passes except strip_labels.
-      RUBY_SKIP_PASSES = ((0..22).to_a - [21]).freeze
+      # Skipped: [1..20, 22] - all passes except strip_labels.
+      RUBY_SKIP_PASSES = ((1..22).to_a - [21]).freeze
       RUBY_DEFAULTS = { optimize: true, skip_passes: RUBY_SKIP_PASSES }.freeze
 
       def self.compile(source, context: nil, **options)
@@ -2816,7 +2768,6 @@ module LiquidIL
           context: context
         )
         if options[:template_name]
-          ruby_compiler.instance_variable_set(:@root_file_lit, options[:template_name])
           ruby_compiler.instance_variable_set(:@current_file_lit, options[:template_name])
         end
         compiled_result = ruby_compiler.compile

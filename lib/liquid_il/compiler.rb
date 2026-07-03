@@ -21,21 +21,6 @@ module LiquidIL
     def initialize(source, **options)
       @source = source
       @options = options
-      @partial_loader = @options[:partial_loader]
-      file_system_loader = @options[:file_system]
-      if !@partial_loader && file_system_loader && file_system_loader.respond_to?(:read)
-        @partial_loader = file_system_loader
-      end
-
-      @inline_enabled = @options.key?(:inline_partials) ? @options[:inline_partials] : true
-
-      if inline_partials_enabled?
-        @inline_partial_stack = Array(@options[:inline_partial_stack])
-        @inline_cache = (@options[:inline_partial_cache] ||= {})
-      else
-        @inline_partial_stack = []
-        @inline_cache = {}
-      end
     end
 
     def compile
@@ -75,9 +60,6 @@ module LiquidIL
 
       # Lazy-initialized max temp index, cached across passes
       @cached_max_temp_index = nil
-
-      # Phase 1: Inline partials (modifies instruction count significantly)
-      inline_simple_partials(instructions) if enabled.include?(0)
 
       # Phase 2: Constant folding (order matters: ops before filters before writes)
       fold_const_ops(instructions) if enabled.include?(1)
@@ -947,24 +929,12 @@ module LiquidIL
       end
     end
 
-    def interrupt_possible_in_instructions?(instructions, visited = {})
-      key = instructions.object_id
-      return false if visited[key]
-      visited[key] = true
-
-      instructions.each do |inst|
-        case inst[0]
-        when IL::PUSH_INTERRUPT
-          return true
-        when IL::INCLUDE_PARTIAL
-          args = inst[2] || {}
-          compiled = args["__compiled_template__"]
-          return true unless compiled
-          return true if interrupt_possible_in_instructions?(compiled[:instructions], visited)
-        end
+    def interrupt_possible_in_instructions?(instructions)
+      instructions.any? do |inst|
+        # Included partials share the caller's scope, so break/continue inside
+        # them propagates out — assume interrupts are possible.
+        inst[0] == IL::PUSH_INTERRUPT || inst[0] == IL::INCLUDE_PARTIAL
       end
-
-      false
     end
 
     # Cache repeated base object lookups in straight-line code
@@ -1214,105 +1184,6 @@ module LiquidIL
       temp_counter  # Return updated temp_counter for next block
     end
 
-    # Inline simple partials: Replace RENDER_PARTIAL/INCLUDE_PARTIAL with inlined instructions
-    # Only inlines partials with:
-    # - Statically known name (has __compiled_template__)
-    # - No with/for modifiers
-    # - Simple constant arguments only
-    #
-    # For RENDER_PARTIAL: wraps with PUSH_SCOPE/POP_SCOPE (isolated scope)
-    # For INCLUDE_PARTIAL: no scope wrapper (shares caller's scope, interrupts propagate naturally)
-    def inline_simple_partials(instructions)
-      i = 0
-      while i < instructions.length
-        inst = instructions[i]
-        opcode = inst[0]
-
-        if opcode == IL::RENDER_PARTIAL || opcode == IL::INCLUDE_PARTIAL
-          args = inst[2]
-          compiled = args["__compiled_template__"]
-
-          # Only inline if we have pre-compiled template and no complex modifiers
-          if compiled && can_inline_partial?(args)
-            partial_instructions = compiled[:instructions]
-
-            # Build replacement instruction sequence
-            replacement = []
-
-            # Get partial name for context tracking
-            partial_name = inst[1]
-
-            # For render: push isolated scope
-            if opcode == IL::RENDER_PARTIAL
-              replacement << [IL::PUSH_SCOPE]
-            end
-
-            # Set context to partial for error reporting
-            replacement << [IL::SET_CONTEXT, partial_name]
-
-            # Add argument assignments (constant args only)
-            args.each do |key, value|
-              next if key.start_with?("__")
-              replacement << [IL::CONST_STRING, value.to_s] if value.is_a?(String)
-              replacement << [IL::CONST_INT, value] if value.is_a?(Integer)
-              replacement << [IL::CONST_FLOAT, value] if value.is_a?(Float)
-              replacement << [IL::CONST_TRUE] if value == true
-              replacement << [IL::CONST_FALSE] if value == false
-              replacement << [IL::CONST_NIL] if value.nil?
-              next unless replacement.last # skip non-constant args
-              replacement << [IL::ASSIGN_LOCAL, key]
-            end
-
-            # Add partial instructions (skip final HALT); each carries its own
-            # baked partial-relative line numbers for error reporting
-            partial_instructions.each do |partial_inst|
-              next if partial_inst[0] == IL::HALT
-              replacement << partial_inst.dup
-            end
-
-            # Restore context to nil (main template)
-            replacement << [IL::SET_CONTEXT, nil]
-
-            # For render: pop scope
-            if opcode == IL::RENDER_PARTIAL
-              replacement << [IL::POP_SCOPE]
-            end
-
-            # Replace the RENDER_PARTIAL/INCLUDE_PARTIAL with inlined sequence
-            instructions.slice!(i, 1)
-            instructions.insert(i, *replacement)
-
-            # Don't increment i - process the newly inserted instructions
-            next
-          end
-        end
-
-        i += 1
-      end
-    end
-
-    def can_inline_partial?(args)
-      # Don't inline if there are complex modifiers
-      return false if args["__with__"]
-      return false if args["__for__"]
-      return false if args["__dynamic_name__"]
-      return false if args["__invalid_name__"]
-
-      # Only inline if all arguments are simple constants
-      args.each do |key, value|
-        next if key.start_with?("__")
-        # Allow simple constant types only
-        case value
-        when String, Integer, Float, TrueClass, FalseClass, NilClass
-          # OK
-        else
-          return false # Complex argument (hash, variable lookup, etc.)
-        end
-      end
-
-      true
-    end
-
     # Generate a canonical key for a value-producing instruction
     # Returns nil for instructions that shouldn't be cached
     #
@@ -1329,62 +1200,18 @@ module LiquidIL
       nil
     end
 
-    def inline_partials_enabled?
-      !!(@inline_enabled && @partial_loader)
-    end
-
+    # Statically-named partial calls parse as CONST_RENDER/CONST_INCLUDE;
+    # lower them to the runtime opcodes. Partial inlining itself is owned by
+    # the Ruby backend (RubyCompiler#generate_partial_call).
     def lower_const_partials(instructions)
-      instructions.each_with_index do |inst, idx|
-        opcode = inst[0]
-        case opcode
+      instructions.each do |inst|
+        case inst[0]
         when IL::CONST_RENDER
-          instructions[idx] = lower_const_partial(inst, IL::RENDER_PARTIAL)
+          inst[0] = IL::RENDER_PARTIAL
         when IL::CONST_INCLUDE
-          instructions[idx] = lower_const_partial(inst, IL::INCLUDE_PARTIAL)
+          inst[0] = IL::INCLUDE_PARTIAL
         end
       end
-    end
-
-    def lower_const_partial(inst, target_opcode)
-      name = inst[1]
-      args = inst[2].dup
-      if inline_partials_enabled? && @partial_loader
-        compiled = compile_partial_template(name, @partial_loader)
-        args["__compiled_template__"] = compiled if compiled
-      end
-      [target_opcode, name, args, inst[3]]
-    end
-
-    def compile_partial_template(name, loader)
-      if (cached = @inline_cache[name])
-        return cached
-      end
-
-      # Prevent infinite recursion
-      return nil if @inline_partial_stack.include?(name)
-
-      source = begin
-                 loader.read(name)
-               rescue StandardError
-                 nil
-               end
-      return nil unless source
-
-      child_stack = @inline_partial_stack + [name]
-      child_options = @options.merge(
-        inline_partial_stack: child_stack,
-        inline_partial_cache: @inline_cache,
-        file_system: loader,
-        partial_loader: loader
-      )
-      child_compiler = Compiler.new(source, **child_options)
-      result = child_compiler.compile
-      compiled = {
-        source: source,
-        instructions: result[:instructions]
-      }
-      @inline_cache[name] = compiled
-      compiled
     end
 
     SAFE_FOLD_FILTERS = {

@@ -12,14 +12,16 @@ module LiquidIL
   #   - (not set) - Enable all passes (default for production)
   #   - "*"       - Enable all passes
   #   - ""        - Disable all passes (baseline for testing)
-  #   - "0,1,2"   - Enable only passes 0, 1, and 2
+  #   - "1,2,3"   - Enable only passes 1, 2, and 3
   #   - "*,-2"    - Enable all passes except pass 2
   #   - "*,-2,-3" - Enable all passes except passes 2 and 3
   #   - "1,2,-1"  - Enable pass 2 only (1 added then removed)
   #
   # ## Available Passes
   #
-  #   0: inline_simple_partials     - Inline render/include with literal names
+  # (Pass 0, inline_simple_partials, is retired — partial inlining is owned by
+  # the Ruby backend. Numbering of the remaining passes is unchanged.)
+  #
   #   1: fold_const_ops             - Fold constant IS_TRUTHY, BOOL_NOT, COMPARE
   #   2: fold_const_filters         - Fold constant filter calls (upcase, plus, etc.)
   #   3: fold_const_writes          - Fold CONST + WRITE_VALUE -> WRITE_RAW
@@ -73,7 +75,6 @@ module LiquidIL
     # Names for each pass (for debugging/logging)
     # Add new passes here - ALL_PASSES is derived from this
     PASS_NAMES = {
-      0 => "inline_simple_partials",
       1 => "fold_const_ops",
       2 => "fold_const_filters",
       3 => "fold_const_writes",

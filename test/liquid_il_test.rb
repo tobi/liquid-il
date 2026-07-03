@@ -212,22 +212,21 @@ class PartialInliningTest < Minitest::Test
     template = opt.parse("{% render 'snippet', target: target %}")
 
     assert_equal "Hi World", template.render("target" => "World")
-    # Partial may be loaded more than once during compile + inline lowering.
     assert_operator fs.reads["snippet"], :>=, 1
 
-    # Rendering again without a file system should still work because compiled template is embedded
+    # Rendering again without a file system still works: the backend baked
+    # the partial body into the compiled template.
     opt.file_system = nil
     assert_equal "Hi Friend", template.render("target" => "Friend")
   end
 
-  def test_render_with_with_clause_still_inlined
+  def test_render_with_with_clause
     fs = MemoryFS.new("snippet" => "Name: {{ snippet }}")
     ctx = LiquidIL::Context.new(file_system: fs)
     opt = LiquidIL::Optimizer.optimize(ctx)
     template = opt.parse("{% render 'snippet' with helper %}")
     inst = template.instructions.find { |i| i[0] == LiquidIL::IL::RENDER_PARTIAL }
     refute_nil inst
-    refute_nil inst[2]["__compiled_template__"]
     assert_equal "Name: helper!", template.render("helper" => "helper!")
   end
 
@@ -237,10 +236,9 @@ class PartialInliningTest < Minitest::Test
     opt = LiquidIL::Optimizer.optimize(ctx)
     template = opt.parse("{% include 'shared' %}")
 
-    # Current lowering keeps INCLUDE_PARTIAL with embedded compiled template payload.
+    # IL keeps INCLUDE_PARTIAL; the Ruby backend owns inlining.
     inst = template.instructions.find { |i| i[0] == LiquidIL::IL::INCLUDE_PARTIAL }
     refute_nil inst
-    refute_nil inst[2]["__compiled_template__"]
     assert_equal "Shared: hi", template.render("greeting" => "hi")
   end
 

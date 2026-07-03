@@ -172,7 +172,7 @@ class CodeInjectionTest < Minitest::Test
   # The tag_type (include/render) is interpolated into the error message.
 
   def test_rce_via_invalid_partial_name_include
-    # Try to trigger __invalid_name__ path
+    # Try to trigger the illegal-template-name path (emitted at parse time)
     # Invalid names might include names with certain characters
     # We need to figure out what makes a name invalid
 
