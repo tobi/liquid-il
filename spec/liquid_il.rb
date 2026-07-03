@@ -70,7 +70,12 @@ LiquidSpec.render do |ctx, assigns, render_options|
   # Registers passthrough: artifact-loaded templates have no compile context,
   # so dynamic partials resolve through the render-time file_system register.
   registers = render_options[:registers]
-  ctx[:template].render(assigns, render_errors: render_errors, registers: registers)
+  # Mirror the reference adapter: the spec environment is passed as
+  # static_environments (visible inside isolated {% render %} partials),
+  # with an empty mutable scope — see Liquid::Context.build in
+  # examples/liquid_ruby.rb.
+  ctx[:template].render({}, render_errors: render_errors, registers: registers,
+    static_environments: assigns)
 end
 
 # Compiled-artifact protocol: the production path this implementation is

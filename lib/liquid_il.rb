@@ -275,6 +275,7 @@ module LiquidIL
     #
     def render(assigns = {}, render_errors: true, registers: nil,
                strict_variables: nil, strict_filters: nil,
+               static_environments: nil,
                **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       ctx = @context
@@ -285,7 +286,10 @@ module LiquidIL
       else
         regs = base_regs ? base_regs.dup : EMPTY_HASH
       end
-      scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false)
+      # static_environments are visible inside isolated {% render %} partials
+      # (assigns are not) — mirrors reference Liquid's Context.build
+      scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false,
+        static_environments: static_environments)
       # file_system: context wins; registers allow artifact-loaded templates
       # (no context) to resolve dynamic partials at render time.
       scope.file_system = ctx&.file_system || regs["file_system"] || regs[:file_system]

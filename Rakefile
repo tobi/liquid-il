@@ -53,27 +53,23 @@ task :matrix do
   system "bash -c 'bundle exec liquid-spec matrix #{adapters} --no-max-failures 2> >(grep -v \"missing extensions\" >&2)'"
 end
 
-desc "Benchmark all adapters (liquid_ruby, liquid_il, and liquid_vm if available)"
+# Benchmarks run through liquid-spec's harness (GC-disciplined timing, real
+# percentiles, allocs). The adapter implements the compiled-artifact protocol
+# (LiquidSpec.dump_artifact / load_artifact), so every bench also reports the
+# artifact stage: payload bytes, cold load, load+first-render, steady-state
+# load — with a dump → load → render roundtrip check per spec.
+desc "Benchmark vs reference liquid (liquid-spec suite, warm + artifact load, comparison)"
 task :bench do
-  adapters = [ADAPTER_RUBY, ADAPTER, ADAPTER_VM].select { |a| File.exist?(a) }
-  puts "Benchmarking: #{adapters.map { |a| File.basename(a, '.rb') }.join(', ')}"
-  puts
-
-  results = {}
-  adapters.each do |adapter|
-    name = File.basename(adapter, ".rb")
-    puts "=" * 60
-    puts name
-    puts "=" * 60
-    output = `RUBY_YJIT_ENABLE=1 bundle exec liquid-spec run #{adapter} -s benchmarks --bench 2>&1`
-    puts output.gsub(/\e\[[0-9;]*m/, "").lines.grep(/Tests:|Parse:|Render:|Allocs:|jit/).join
-    results[name] = output
-    puts
-  end
+  system("RUBY_YJIT_ENABLE=1 bundle exec liquid-spec bench #{ADAPTER}") || exit(1)
 end
 
-desc "Cold-path benchmark: artifact decode → ISeq load → eval → first render"
 namespace :bench do
+  desc "Benchmark the local partial-heavy suite (specs/partials) vs reference liquid"
+  task :partials do
+    system("RUBY_YJIT_ENABLE=1 bundle exec liquid-spec bench #{ADAPTER} -s partials") || exit(1)
+  end
+
+  desc "Cold-path stage breakdown: envelope decode / ISeq load / eval / first render (validated vs reference gem)"
   task :cold do
     system("RUBY_YJIT_ENABLE=1 bundle exec ruby bench/cold_bench.rb") || exit(1)
   end

@@ -2,8 +2,7 @@
 
 source "https://rubygems.org"
 
-# Local checkout with the compiled-artifact bench protocol
-# (branch artifact-bench-protocol — switch back to git: once merged upstream)
+# TEMP: local checkout until the local-suites commit (edfd3d6) is pushed upstream
 gem "liquid-spec", path: "#{Dir.home}/src/github.com/Shopify/liquid-spec"
 gem "liquid", git: "https://github.com/Shopify/liquid"
 gem "base64"

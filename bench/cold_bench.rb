@@ -48,7 +48,7 @@ def median(samples)
 end
 
 def load_specs(only_names)
-  yml = YAML.safe_load(File.read(File.expand_path("../benchmarks/partials.yml", __dir__)), aliases: true)
+  yml = YAML.safe_load(File.read(File.expand_path("../specs/partials/partials.yml", __dir__)), aliases: true)
   specs = yml["specs"].select { |s| s["name"]&.start_with?("bench_") }
   specs = specs.select { |s| only_names.include?(s["name"]) } unless only_names.empty?
   specs

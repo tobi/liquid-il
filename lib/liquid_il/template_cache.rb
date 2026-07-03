@@ -19,10 +19,10 @@ module LiquidIL
       @digest = digest
     end
 
-    def render(assigns = {}, registers: nil, render_errors: true, **extra_assigns)
+    def render(assigns = {}, registers: nil, render_errors: true, static_environments: nil, **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       regs = registers || EMPTY_HASH
-      scope = Scope.new(assigns, registers: regs)
+      scope = Scope.new(assigns, registers: regs, static_environments: static_environments)
       scope.file_system = regs["file_system"] || regs[:file_system]
       scope.render_errors = render_errors
       global = Filters.global_registry
