@@ -72,7 +72,8 @@ module LiquidIL
     CALL_FILTER = :CALL_FILTER       # [:CALL_FILTER, name, argc, line]
 
     # Loop and interrupt opcodes
-    FOR_INIT = :FOR_INIT             # [:FOR_INIT, var_name, loop_name, has_limit, has_offset, offset_continue, reversed]
+    FOR_INIT = :FOR_INIT             # [:FOR_INIT, var_name, loop_name, has_limit, has_offset, offset_continue, reversed, recovery_label]
+                                     #   recovery_label: label past the for block, reserved for error recovery (not read by codegen)
     FOR_NEXT = :FOR_NEXT             # [:FOR_NEXT, label_continue, label_break]
     FOR_END = :FOR_END               # [:FOR_END]
     PUSH_FORLOOP = :PUSH_FORLOOP     # [:PUSH_FORLOOP]
@@ -96,6 +97,7 @@ module LiquidIL
 
     # Tablerow opcodes
     TABLEROW_INIT = :TABLEROW_INIT   # [:TABLEROW_INIT, var_name, loop_name, has_limit, has_offset, cols]
+                                     #   cols: nil (no cols attr) | Integer (literal) | :dynamic (value on stack) | :explicit_nil (cols:nil given)
     TABLEROW_NEXT = :TABLEROW_NEXT   # [:TABLEROW_NEXT, label_continue, label_break]
     TABLEROW_END = :TABLEROW_END     # [:TABLEROW_END]
 
