@@ -1,0 +1,32 @@
+---
+_metadata:
+  hint: include argument __var__ lowering must distinguish literal keys from dynamic bracket expressions; parser must preserve dots inside brackets
+  doc: implementers/partials.md
+  render_errors: true
+specs:
+# Root cause: include/render keyword args are stored as __var__ strings and
+# lowered later by generate_var_lookup. `data[key].values` must use the value
+# of `key`, not the literal string "key"; `data[config.key].values` must preserve
+# the dot in the bracket expression instead of serializing it as DOT.
+- name: include_arg_simple_dynamic_bracket_then_dot
+  template: "{% include 'snippet', items: data[key].values %}"
+  environment:
+    data:
+      my_menu:
+        values: [x, y]
+    key: my_menu
+  filesystem:
+    snippet: "{% for item in items %}[{{ item }}]{% endfor %}"
+  expected: "[x][y]"
+
+- name: include_arg_nested_dynamic_bracket_then_dot
+  template: "{% include 'snippet', items: data[config.key].values %}"
+  environment:
+    data:
+      my_menu:
+        values: [a, b, c]
+    config:
+      key: my_menu
+  filesystem:
+    snippet: "{% for item in items %}[{{ item }}]{% endfor %}"
+  expected: "[a][b][c]"

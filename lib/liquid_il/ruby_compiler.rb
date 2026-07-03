@@ -1369,46 +1369,46 @@ module LiquidIL
         return "LiquidIL::RangeValue.new(#{Regexp.last_match(1)}, #{Regexp.last_match(2)})"
       end
 
-      # Parse variable path
-      parts = expr_str.scan(/(\w+)|\[(\d+)\]|\[['"](\w+)['"]\]/)
-      return "nil" if parts.empty?
+      # Parse variable paths with both static and dynamic bracket lookups:
+      #   product.title       -> static key "title"
+      #   data['my_key']      -> static key "my_key"
+      #   data[key]           -> dynamic lookup using key's value
+      #   data[config.key]    -> dynamic lookup using a nested expression
+      root_match = expr_str.match(/\A[a-zA-Z_]\w*/)
+      return "nil" unless root_match
 
-      if parts.size == 1
-        first_var = parts[0][0]
-        # Use loop variable alias if available (avoids _S.lookup method call)
-        if @loop_var_aliases[first_var]
-          @loop_var_aliases[first_var]
-        else
-          "_S.lookup(#{first_var.inspect})"
-        end
-      else
-        first_var = parts[0][0]
-        rest_keys = parts[1..].map do |match|
-          key = match[0] || match[1] || match[2]
-          key.to_s =~ /^\d+$/ ? key.to_i : key.inspect
-        end
-        raw_rest_keys = parts[1..].map { |m| (m[0] || m[1] || m[2]).to_s }
-        # Use loop variable alias if available
-        result = if @loop_var_aliases[first_var]
-          @loop_var_aliases[first_var]
-        else
-          "_S.lookup(#{first_var.inspect})"
-        end
-        if @loop_var_aliases[first_var]
-          # Loop variable is always a Hash — inline lookup for speed
-          # Skip symbol fallback since loop variables always use string keys
-          if rest_keys.size == 1
-            key = rest_keys[0]
-            result = key.is_a?(String) ? "#{result}[#{key}]" : "#{result}[#{key}]"
+      root = root_match[0]
+      result = @loop_var_aliases[root] || "_S.lookup(#{root.inspect})"
+      i = root.length
+
+      while i < expr_str.length
+        case expr_str.getbyte(i)
+        when 46 # .
+          i += 1
+          key_match = expr_str[i..]&.match(/\A[a-zA-Z_]\w*/)
+          break unless key_match
+          key = key_match[0]
+          result = "_H.lookup(#{result}, #{key.inspect})"
+          i += key.length
+        when 91 # [
+          close = expr_str.index("]", i + 1)
+          break unless close
+          inner = expr_str[(i + 1)...close].strip
+          key_ruby = if inner =~ /\A-?\d+\z/
+            inner.to_i.inspect
+          elsif (m = inner.match(/\A'(.*)'\z/)) || (m = inner.match(/\A"(.*)"\z/))
+            m[1].inspect
           else
-            result = "_H.lh(#{result}, #{rest_keys[0]})"
-            rest_keys[1..].each { |k| result = "_H.lookup(#{result}, #{k})" }
+            generate_var_lookup(inner)
           end
+          result = "_H.lookup(#{result}, #{key_ruby})"
+          i = close + 1
         else
-          rest_keys.each { |k| result = "_H.lookup(#{result}, #{k})" }
+          break
         end
-        result
       end
+
+      result
     end
 
     # Build a Ruby expression directly from IL instructions.
