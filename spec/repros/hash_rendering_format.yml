@@ -1,0 +1,51 @@
+---
+_metadata:
+  hint: Hash/array rendering must use legacy Ruby inspect format (no spaces around =>, symbol keys as :key=>"val")
+  doc: implementers/rendering.md
+  render_errors: true
+specs:
+# Root cause: Ruby 4.0 changed Hash#inspect format ({foo: "bar"} with symbol shorthand
+# and spaces around =>). Liquid-spec expects legacy format ({:foo=>"bar"}).
+# Inline string filters (upcase, downcase, etc.) were calling Ruby's native .to_s
+# instead of Utils.to_s which uses hash_inspect for the legacy format.
+- name: hash_rendering_symbol_key_downcase
+  template: "{{ a0 | downcase }}"
+  environment:
+    a0:
+      foo: bar
+  expected: "{:foo=>\"bar\"}"
+
+- name: hash_rendering_string_key_downcase
+  template: "{{ a0 | downcase }}"
+  environment:
+    a0:
+      foo: bar
+  expected: "{\"foo\"=>\"bar\"}"
+
+- name: hash_rendering_integer_key_downcase
+  template: "{{ a0 | downcase }}"
+  environment:
+    a0:
+      1: bar
+  expected: "{1=>\"bar\"}"
+
+- name: hash_rendering_symbol_key_upcase
+  template: "{{ a0 | upcase }}"
+  environment:
+    a0:
+      foo: bar
+  expected: "{:FOO=>\"BAR\"}"
+
+- name: hash_rendering_direct_output
+  template: "{{ a0 }}"
+  environment:
+    a0:
+      foo: bar
+  expected: "{:foo=>\"bar\"}"
+
+- name: hash_rendering_string_key_strip
+  template: "{{ a0 | strip }}"
+  environment:
+    a0:
+      foo: bar
+  expected: "{\"foo\"=>\"bar\"}"

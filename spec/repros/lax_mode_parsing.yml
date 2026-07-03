@@ -1,0 +1,48 @@
+---
+_metadata:
+  hint: Lax-mode parser permissiveness — Liquid renders the valid prefix of a malformed expression and ignores trailing junk
+  doc: implementers/parser.md
+  render_errors: true
+specs:
+# Root cause: lexer raised SyntaxError on lone '!', '=', '-' at end of expression.
+# In lax mode these are incomplete operators, not valid tokens — treat as EOF.
+- name: lax_mode_lone_bang_after_value
+  template: "{{ false ! }}"
+  expected: "false"
+
+- name: lax_mode_lone_equals_after_value
+  template: "{{ false = }}"
+  expected: "false"
+
+- name: lax_mode_lone_minus_after_value
+  template: "{{ false - }}"
+  expected: "false"
+
+# Root cause: comparison operator with no right operand (e.g., 'false >') raised
+# during parse_primary_expression. In lax mode, ignore the incomplete comparison.
+- name: lax_mode_incomplete_gt_comparison
+  template: "{{ false > }}"
+  expected: "false"
+
+- name: lax_mode_incomplete_lt_comparison
+  template: "{{ false < }}"
+  expected: "false"
+
+# Root cause: trailing identifier after a valid expression raised in expect_eos.
+# In lax mode, ignore trailing junk after the expression is fully parsed.
+- name: lax_mode_trailing_identifier
+  template: "{{ false a }}"
+  expected: "false"
+
+- name: lax_mode_trailing_integer
+  template: "{{ false 1 }}"
+  expected: "false"
+
+# Valid expressions should still work normally (not just the lax path)
+- name: lax_mode_valid_comparison_still_works
+  template: "{{ 1 < 2 }}"
+  expected: "true"
+
+- name: lax_mode_valid_filter_still_works
+  template: "{{ 'hello' | upcase }}"
+  expected: "HELLO"
