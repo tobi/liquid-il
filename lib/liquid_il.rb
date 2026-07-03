@@ -40,9 +40,13 @@ module LiquidIL
     attr_accessor :position, :source
 
     def initialize(message, position: nil, source: nil)
-      super(message)
       @position = position
       @source = source
+      if position && source && !message.to_s.match?(/\bline \d+\b/i)
+        super("Liquid syntax error (line #{line}): #{message}")
+      else
+        super(message)
+      end
     end
 
     def line
@@ -277,6 +281,7 @@ module LiquidIL
     def render(assigns = {}, render_errors: true, registers: nil,
                strict_variables: nil, strict_filters: nil,
                static_environments: nil,
+               resource_limits: nil,
                **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       ctx = @context
@@ -307,8 +312,10 @@ module LiquidIL
         global = LiquidIL::Filters.global_registry
         scope.custom_filters = global unless global.empty?
       end
-      # Resource limits from context
-      scope.resource_limits = ctx&.resource_limits if ctx&.resource_limits
+      # Resource limits from render options override context defaults. Duplicate
+      # render-time hashes so cumulative counters are shared only within this render.
+      limits = resource_limits.is_a?(Hash) ? resource_limits.dup : resource_limits
+      scope.resource_limits = limits || ctx&.resource_limits if limits || ctx&.resource_limits
 
       if @partial_constants
         @compiled_proc[scope, @spans, @source, @partial_constants]
@@ -317,7 +324,7 @@ module LiquidIL
       end
     rescue LiquidIL::ResourceLimitError => e
       raise unless render_errors
-      (e.partial_output || "") + "Liquid error: #{e.message}"
+      (e.partial_output || "") + "Liquid error: #{LiquidIL.clean_error_message(e.message)}"
     rescue LiquidIL::RuntimeError => e
       raise unless render_errors
       output = e.partial_output || ""

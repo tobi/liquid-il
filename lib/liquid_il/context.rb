@@ -104,7 +104,7 @@ module LiquidIL
       limit = @resource_limits[:output_limit] || @resource_limits["output_limit"]
       return unless limit
       if output.bytesize > limit
-        error = LiquidIL::ResourceLimitError.new("Memory limits exceeded")
+        error = LiquidIL::ResourceLimitError.new("Liquid error: Memory limits exceeded")
         error.partial_output = output
         raise error
       end
@@ -113,10 +113,18 @@ module LiquidIL
     def increment_render_score!(count = 1)
       return unless @resource_limits
       limit = @resource_limits[:render_score_limit] || @resource_limits["render_score_limit"]
-      return unless limit
+      cumulative_limit = @resource_limits[:cumulative_render_score_limit] || @resource_limits["cumulative_render_score_limit"]
+      return unless limit || cumulative_limit
       @render_score = (@render_score || 0) + count
-      if @render_score > limit
-        raise LiquidIL::ResourceLimitError, "Rendering limits exceeded"
+      if limit && @render_score > limit
+        raise LiquidIL::ResourceLimitError, "Liquid error: Rendering limits exceeded"
+      end
+      if cumulative_limit
+        cumulative = (@resource_limits[:__liquid_il_cumulative_render_score] || 0) + count
+        @resource_limits[:__liquid_il_cumulative_render_score] = cumulative
+        if cumulative > cumulative_limit
+          raise LiquidIL::ResourceLimitError, "Liquid error: Rendering limits exceeded"
+        end
       end
     end
 
@@ -543,7 +551,7 @@ module LiquidIL
       limit = @resource_limits[:output_limit] || @resource_limits["output_limit"]
       return unless limit
       if output.bytesize > limit
-        error = LiquidIL::ResourceLimitError.new("Memory limits exceeded")
+        error = LiquidIL::ResourceLimitError.new("Liquid error: Memory limits exceeded")
         error.partial_output = output
         raise error
       end
@@ -552,10 +560,18 @@ module LiquidIL
     def increment_render_score!(count = 1)
       return unless @resource_limits
       limit = @resource_limits[:render_score_limit] || @resource_limits["render_score_limit"]
-      return unless limit
+      cumulative_limit = @resource_limits[:cumulative_render_score_limit] || @resource_limits["cumulative_render_score_limit"]
+      return unless limit || cumulative_limit
       @render_score += count
-      if @render_score > limit
-        raise LiquidIL::ResourceLimitError, "Rendering limits exceeded"
+      if limit && @render_score > limit
+        raise LiquidIL::ResourceLimitError, "Liquid error: Rendering limits exceeded"
+      end
+      if cumulative_limit
+        cumulative = (@resource_limits[:__liquid_il_cumulative_render_score] || 0) + count
+        @resource_limits[:__liquid_il_cumulative_render_score] = cumulative
+        if cumulative > cumulative_limit
+          raise LiquidIL::ResourceLimitError, "Liquid error: Rendering limits exceeded"
+        end
       end
     end
 

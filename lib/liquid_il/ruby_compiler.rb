@@ -42,6 +42,7 @@ module LiquidIL
       # name inside partial compilations, updated by SET_CONTEXT). Baked into
       # emitted error-location literals — no runtime tracking in the code.
       @current_file_lit = nil
+      @root_file_lit = nil
       # Loop-local naming offset. 0 for the main template; partials get a
       # unique base (compile_partial) so their loop locals (__i0__, _fl0__,
       # :loop_break_0, ...) never collide with a call site's when inlined.
@@ -109,7 +110,10 @@ module LiquidIL
       fs = @context&.file_system
       partial_source = RuntimeHelpers.read_partial_source(fs, name, @context)
       if partial_source
-        source_key = partial_source.hash
+        # Partial bodies bake the partial name into emitted error-location
+        # literals, so cache identity must include the logical name as well as
+        # source bytes.
+        source_key = [name, partial_source].hash
         if (cached = @@partial_cache[source_key]) && partial_cache_deps_valid?(cached, fs)
           @partials[name] = cached
           # The cached body references frozen-array constants and nested
@@ -167,7 +171,7 @@ module LiquidIL
       # Unique loop-naming base per partial source (process-wide, stable for
       # @@partial_cache hits) — prevents loop-local collisions when this
       # body is inlined inside a caller's loop.
-      base = (@@partial_loop_bases[source.hash] ||= @@partial_loop_bases.size * 100 + 100)
+      base = (@@partial_loop_bases[[name, source].hash] ||= @@partial_loop_bases.size * 100 + 100)
       ruby_compiler.instance_variable_set(:@loop_name_base, base)
       ruby_compiler.instance_variable_set(:@current_file_lit, name)
       child_lambda_called = Set.new
@@ -686,7 +690,7 @@ module LiquidIL
         # Current file is compile-time state: later emissions bake it into
         # error-location literals. No runtime assignment needed.
         @pc += 1
-        @current_file_lit = inst[1]
+        @current_file_lit = inst[1] || @root_file_lit
         ""
 
       when IL::WRITE_RAW
@@ -1047,7 +1051,7 @@ module LiquidIL
       end
       if !@context&.file_system
         return "#{prefix}# #{tag_type} '#{comment_safe(name)}' (no file system)\n" \
-               "#{prefix}_O << #{lit("Liquid error (line #{line_num}): Could not find partial '#{name}'")}\n"
+               "#{prefix}_O << #{lit("Liquid error (line #{line_num}): This liquid context does not allow includes.")}\n"
       end
 
       # Missing/syntax-error partials use dynamic execution to surface the
@@ -1520,10 +1524,8 @@ module LiquidIL
           case cmd
           when "size", "length"
             stack << "((__o__ = #{obj_ruby}).respond_to?(:length) ? __o__.length : nil)"
-          when "first"
-            stack << "((__o__ = #{obj_ruby}).respond_to?(:first) ? __o__.first : nil)"
-          when "last"
-            stack << "((__o__ = #{obj_ruby}).respond_to?(:last) ? __o__.last : nil)"
+          when "first", "last"
+            stack << "_H.lookup(#{obj_ruby}, #{cmd.inspect})"
           else
             stack << "_H.lookup(#{obj_ruby}, #{cmd.inspect})"
           end
@@ -1542,8 +1544,7 @@ module LiquidIL
                left_ruby.include?(").round(") || left_ruby.include?(").ceil") || left_ruby.include?(").floor")
               stack << "(#{left_ruby} || 0) #{ruby_op} #{right_ruby}"
             else
-              # Unwrap drops via to_liquid_value before numeric comparison
-              stack << "((_t = #{left_ruby}); _t = _t.to_liquid_value; _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
+              stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, #{@current_file_lit.inspect})"
             end
           else
             stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, #{@current_file_lit.inspect})"
@@ -1556,7 +1557,7 @@ module LiquidIL
           @pc += 1
         when IL::BOOL_NOT
           operand_ruby = stack.pop || "false"
-          stack << "((_t = #{operand_ruby}); _t.nil? || _t == false)"
+          stack << "((_t = #{operand_ruby}); _t.nil? || _t == false || _t == \"\")"
           @pc += 1
         when IL::IS_TRUTHY
           seen_is_truthy = true
@@ -1718,7 +1719,7 @@ module LiquidIL
                   end
                 when IL::BOOL_NOT
                   operand_ruby = stack.pop || "false"
-                  stack << "((_t = #{operand_ruby}); _t.nil? || _t == false)"
+                  stack << "((_t = #{operand_ruby}); _t.nil? || _t == false || _t == \"\")"
                   @pc += 1
                 when IL::IS_TRUTHY
                   seen_is_truthy = true
@@ -2936,7 +2937,7 @@ module LiquidIL
       append prepend capitalize downcase upcase t strip lstrip rstrip
       strip_html strip_newlines squish newline_to_br
       replace_first replace_last remove remove_first remove_last split
-      escape escape_once url_encode base64_encode base64_url_safe_encode
+      escape_once url_encode base64_encode base64_url_safe_encode
       plus minus times abs ceil floor round at_least at_most
       size first last join reverse date json default
     ].each_with_object({}) { |n, h| h[n] = true }.freeze
@@ -3009,7 +3010,7 @@ module LiquidIL
     # Patterns known to always return String — safe to skip output_append type dispatch
     STRING_RETURN_SUFFIXES = /\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|to_s\.upcase|to_s\.downcase|to_s\.capitalize|to_s\.strip|to_s\.lstrip|to_s\.rstrip|to_s\.reverse|gsub|sub|tr|squeeze|delete|chomp|chop|encode|freeze)\)?\z/
     # Direct filter calls that always return String — safe to skip output_append type dispatch
-    STRING_FILTER_CALL = /\A_F\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|append|prepend|concat|join|handleize|escape|xml_escape|url_encode|url_decode|newline_to_br|truncate|truncatewords|base64_encode|base64_url_safe_encode|json)\(/
+    STRING_FILTER_CALL = /\A_F\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|append|prepend|concat|join|handleize|escape_once|xml_escape|url_encode|url_decode|newline_to_br|truncate|truncatewords|base64_encode|base64_url_safe_encode|json)\(/
     STRING_RETURN_PATTERNS = /\A(?:\+?""|_U\.to_s\(|CGI\.escapeHTML\(|\("[^"]*"\s*\+\s*)/
     # Filters that always return Float/Integer — safe to use .to_s (no BigDecimal issue)
     SAFE_NUMERIC_FILTERS = /\A_F\.(?:round|ceil|floor)\(|\.(?:round|ceil|floor)\(.*\)\z/    # Filters that can be inlined: Utils.to_s(input).method(input) => input.to_s.method
@@ -3044,8 +3045,9 @@ module LiquidIL
       direct = cache_pattern || expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)
       # For Float/Integer-returning filters, inline .to_s to avoid oa method call overhead
       numeric_safe = !direct && expr_ruby.match?(SAFE_NUMERIC_FILTERS)
-      # Simple loop variable hash lookups and simple loop vars: use .to_s instead of oa
-      simple_loop = !direct && !numeric_safe && (expr_ruby.match?(SIMPLE_LOOP_LOOKUP) || expr_ruby.match?(SIMPLE_LOOP_VAR))
+      # Simple loop variable hash lookups use .to_s instead of oa; bare loop
+      # vars can be Hash iteration [key, value] pairs and need Liquid output.
+      simple_loop = !direct && !numeric_safe && expr_ruby.match?(SIMPLE_LOOP_LOOKUP)
       if guard_interrupt
         if direct
           output_expr = cache_pattern || expr_ruby
@@ -3215,6 +3217,10 @@ module LiquidIL
           template_source: source,
           context: context
         )
+        if options[:template_name]
+          ruby_compiler.instance_variable_set(:@root_file_lit, options[:template_name])
+          ruby_compiler.instance_variable_set(:@current_file_lit, options[:template_name])
+        end
         compiled_result = ruby_compiler.compile
 
         template = Template.new(source, instructions, spans, context, compiled_result)

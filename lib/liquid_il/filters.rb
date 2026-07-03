@@ -76,6 +76,7 @@ module LiquidIL
           own_methods.each do |m|
             set[m.to_s] = true
           end
+          set["args_to_s"] = true
           set.freeze
         end
       end
@@ -135,6 +136,8 @@ module LiquidIL
         end
         res
       end
+      public :args_to_s
+      private
 
       def asset_url(input)
         Utils.to_s(input)
@@ -270,9 +273,12 @@ module LiquidIL
       def truncate(input, length = 50, ellipsis = "...")
         str = Utils.to_s(input)
         length = to_integer(length)
+        ellipsis_safe = ellipsis.respond_to?(:html_safe?) && ellipsis.html_safe?
         ellipsis = Utils.to_s(ellipsis)
+        ellipsis_width = ellipsis.length
+        ellipsis = CGI.escapeHTML(ellipsis) if input.respond_to?(:html_safe?) && input.html_safe? && !ellipsis_safe
         return str if str.length <= length
-        str[0, [length - ellipsis.length, 0].max] + ellipsis
+        str[0, [length - ellipsis_width, 0].max] + ellipsis
       end
 
       def truncatewords(input, words = 15, ellipsis = "...")
@@ -320,6 +326,7 @@ module LiquidIL
       end
 
       def escape(input)
+        return nil if input.nil?
         CGI.escapeHTML(Utils.to_s(input))
       end
 

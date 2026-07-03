@@ -248,6 +248,34 @@ module LiquidIL
       end
 
       content_start = pos
+
+      # Liquid Ruby accepts compact comment delimiters like `{%comment}` and
+      # `{%endcomment}` (without the `%` before `}`). Keep this quirk narrow so
+      # general tag parsing still requires normal `%}` terminators.
+      if type == TAG
+        if src.byteslice(content_start, 8) == "comment}"
+          @scanner.pos = content_start + 8
+          @token_type = type
+          @token_start = start_pos
+          @token_end = @scanner.pos
+          @content_start = content_start
+          @content_end = content_start + 7
+          @trim_right = false
+          @trim_next = false
+          return type
+        elsif src.byteslice(content_start, 11) == "endcomment}"
+          @scanner.pos = content_start + 11
+          @token_type = type
+          @token_start = start_pos
+          @token_end = @scanner.pos
+          @content_start = content_start
+          @content_end = content_start + 10
+          @trim_right = false
+          @trim_next = false
+          return type
+        end
+      end
+
       @scanner.pos = pos
 
       # Find matching end delimiter
@@ -719,12 +747,19 @@ module LiquidIL
       # First char: a-z, A-Z, _
       byte = src.getbyte(start)
       unless byte && (byte >= 65 && byte <= 90 || byte >= 97 && byte <= 122 || byte == 95)
+        if @error_mode == :lax
+          @scanner.pos = @source.bytesize
+          @current_value = nil
+          @current_token = EOF
+          return
+        end
         raise SyntaxError, "Unexpected character '#{byte&.chr}' at position #{start}"
       end
 
       pos = start + 1
 
       # Rest: a-z, A-Z, 0-9, _, -
+      scan_pos = nil
       while (byte = src.getbyte(pos))
         if byte >= 65 && byte <= 90 || byte >= 97 && byte <= 122 ||
            byte >= 48 && byte <= 57 || byte == 95 || byte == 45
@@ -733,11 +768,12 @@ module LiquidIL
           pos += 1
           break
         else
+          scan_pos = @source.bytesize if byte > 127
           break
         end
       end
 
-      @scanner.pos = pos
+      @scanner.pos = scan_pos || pos
       len = pos - start
       first_byte = src.getbyte(start)
 
