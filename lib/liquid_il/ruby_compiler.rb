@@ -677,6 +677,10 @@ module LiquidIL
         @pc += 1
         nil
 
+      when IL::NOOP
+        @pc += 1
+        ""
+
       when IL::SET_CONTEXT
         # Current file is compile-time state: later emissions bake it into
         # error-location literals. No runtime assignment needed.
