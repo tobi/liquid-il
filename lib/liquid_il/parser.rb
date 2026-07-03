@@ -438,37 +438,32 @@ module LiquidIL
       parse_primary_expression(lexer)
 
       loop do
-        case lexer.current
-        when ExpressionLexer::EQ
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:eq)
-        when ExpressionLexer::NE
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:ne)
-        when ExpressionLexer::LT
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:lt)
-        when ExpressionLexer::LE
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:le)
-        when ExpressionLexer::GT
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:gt)
-        when ExpressionLexer::GE
-          lexer.advance
-          parse_primary_expression(lexer)
-          @builder.compare(:ge)
-        when ExpressionLexer::CONTAINS
-          lexer.advance
-          parse_primary_expression(lexer)
+        op_token = lexer.current
+        op_name = nil
+        case op_token
+        when ExpressionLexer::EQ then op_name = :eq
+        when ExpressionLexer::NE then op_name = :ne
+        when ExpressionLexer::LT then op_name = :lt
+        when ExpressionLexer::LE then op_name = :le
+        when ExpressionLexer::GT then op_name = :gt
+        when ExpressionLexer::GE then op_name = :ge
+        when ExpressionLexer::CONTAINS then op_name = :contains
+        else break
+        end
+
+        lexer.advance
+        # Lax mode: if no right operand (EOF or PIPE), ignore the comparison op
+        if lexer.eos? || lexer.current == ExpressionLexer::PIPE
+          if @error_mode == :strict
+            raise SyntaxError, "Expected expression after comparison operator"
+          end
+          break
+        end
+        parse_primary_expression(lexer)
+        if op_name == :contains
           @builder.contains
         else
-          break
+          @builder.compare(op_name)
         end
       end
     end
@@ -2451,7 +2446,10 @@ module LiquidIL
     def expect_eos(lexer)
       return if lexer.eos?
 
-      raise SyntaxError, "Unexpected token #{lexer.current} after expression"
+      if @error_mode == :strict
+        raise SyntaxError, "Unexpected token #{lexer.current} after expression"
+      end
+      # Lax/warn mode: ignore trailing junk after a valid expression
     end
   end
 end

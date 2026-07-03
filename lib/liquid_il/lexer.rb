@@ -558,7 +558,9 @@ module LiquidIL
           @scanner.pos += 1
           @current_token = FAT_ARROW
         else
-          raise SyntaxError, "Expected '==' at position #{@scanner.pos - 1}"
+          # Lax mode: lone '=' is not a valid operator, treat as end of expression
+          @scanner.pos -= 1
+          @current_token = EOF
         end
       when :NE_START
         @scanner.pos += 1
@@ -566,7 +568,9 @@ module LiquidIL
           @scanner.pos += 1
           @current_token = NE
         else
-          raise SyntaxError, "Expected '!=' at position #{@scanner.pos - 1}"
+          # Lax mode: lone '!' is not a valid operator, treat as end of expression
+          @scanner.pos -= 1  # back up past the '!'
+          @current_token = EOF
         end
       when :LT_START
         @scanner.pos += 1
@@ -617,9 +621,10 @@ module LiquidIL
       # Check if this is actually a number (not just a minus sign)
       byte = @source.getbyte(@scanner.pos)
       unless byte && byte >= 48 && byte <= 57
-        # Not a number, back up and try identifier
+        # Not a number — lone '-' is not valid; treat as end of expression
         @scanner.pos = start
-        return scan_identifier_or_keyword
+        @current_token = EOF
+        return EOF
       end
 
       # Consume digits
