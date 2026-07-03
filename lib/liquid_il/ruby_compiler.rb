@@ -3058,9 +3058,12 @@ module LiquidIL
 
       def self.compile(source, context: nil, **options)
         opts = options.empty? ? RUBY_DEFAULTS : RUBY_DEFAULTS.merge(options)
-        # Pass error_mode from context to compiler
+        # Pass error_mode from context to compiler (default is :strict2)
         if context&.error_mode && context.error_mode != :lax
           opts = opts.merge(error_mode: context.error_mode)
+        elsif !context
+          # No context: use strict2 default
+          opts = opts.merge(error_mode: :strict2)
         end
         warnings = []
         opts = opts.merge(warnings: warnings)

@@ -15,7 +15,7 @@ module LiquidIL
     NESTING_OPEN_TAGS = Set.new(%w[if unless case for tablerow capture comment]).freeze
     NESTING_CLOSE_TAGS = Set.new(%w[endif endunless endcase endfor endtablerow endcapture endcomment]).freeze
 
-    def initialize(source, error_mode: :lax, warnings: nil)
+    def initialize(source, error_mode: :strict2, warnings: nil)
       @source = source
       @template_lexer = TemplateLexer.new(source)
       @builder = IL::Builder.new
@@ -25,9 +25,13 @@ module LiquidIL
       @expr_lexer = ExpressionLexer.new
       @cycle_counter = 0 # For unique cycle identities
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
-      @error_mode = error_mode  # :lax, :warn, :strict
+      @error_mode = error_mode  # :lax, :warn, :strict, :strict2
       @warnings = warnings || []  # Collect non-fatal warnings
     end
+
+    # strict? — true for :strict and :strict2 (both reject malformed syntax)
+    # strict2 additionally rejects bare bracket access like {{ ['x'] }}
+    def strict? = @error_mode == :strict || @error_mode == :strict2
 
     attr_reader :warnings
 
@@ -295,7 +299,7 @@ module LiquidIL
           parse_registered_tag(tag_def, tag_args)
         else
           case @error_mode
-          when :strict
+          when :strict, :strict2
             raise SyntaxError.new(
               "Unknown tag '#{tag_name}'",
               position: start_pos,
@@ -454,7 +458,7 @@ module LiquidIL
         lexer.advance
         # Lax mode: if no right operand (EOF or PIPE), ignore the comparison op
         if lexer.eos? || lexer.current == ExpressionLexer::PIPE
-          if @error_mode == :strict
+          if strict?
             raise SyntaxError, "Expected expression after comparison operator"
           end
           break
@@ -505,6 +509,10 @@ module LiquidIL
       when ExpressionLexer::IDENTIFIER
         parse_variable_lookup(lexer)
       when ExpressionLexer::LBRACKET
+        # strict2 mode: bare bracket access like {{ ['product'] }} is not allowed
+        if strict?
+          raise SyntaxError, "Bare bracket access is not allowed; use self[key] instead"
+        end
         # Dynamic root lookup - {{ [key] }} looks up key, then looks up that value in context
         lexer.advance
         parse_expression(lexer)
@@ -2450,7 +2458,7 @@ module LiquidIL
     def expect_eos(lexer)
       return if lexer.eos?
 
-      if @error_mode == :strict
+      if strict?
         raise SyntaxError, "Unexpected token #{lexer.current} after expression"
       end
       # Lax/warn mode: ignore trailing junk after a valid expression
