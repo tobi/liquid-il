@@ -2,6 +2,8 @@
 
 require "shellwords"
 require "fileutils"
+require "json"
+require "open3"
 
 task default: :test
 
@@ -93,16 +95,32 @@ module LiquidVmRake
     system(bundle_env, *command, chdir: path) || abort("command failed: #{command.shelljoin}")
   end
 
-  def run_liquid_spec!(*argv)
+  def liquid_spec_command(*argv)
     liquid_spec_root = Gem.loaded_specs.fetch("liquid-spec").full_gem_path
-    command = [
+    [
       "bundle", "exec", "ruby",
       "-I#{File.join(liquid_spec_root, "lib")}",
       File.join(liquid_spec_root, "bin", "liquid-spec"),
       *argv.flatten.map(&:to_s),
     ]
+  end
+
+  def run_liquid_spec!(*argv)
+    command = liquid_spec_command(*argv)
     puts "(cd #{path.shellescape} && #{command.shelljoin})"
     system(bundle_env.merge(env), *command, chdir: path) || abort("command failed: #{command.shelljoin}")
+  end
+
+  def capture_liquid_spec!(*argv)
+    command = liquid_spec_command(*argv)
+    puts "(cd #{path.shellescape} && #{command.shelljoin})"
+    stdout, stderr, status = Open3.capture3(bundle_env.merge(env), *command, chdir: path)
+    unless status.success?
+      warn stderr unless stderr.empty?
+      abort("command failed: #{command.shelljoin}")
+    end
+    warn stderr unless stderr.empty?
+    stdout
   end
 
   def ensure_adapter!(path = adapter)
@@ -118,6 +136,87 @@ module LiquidVmRake
 
   def ensure_adapters!
     adapters.each { |path| ensure_adapter!(path) }
+  end
+
+  def print_cache_scenario_table(jsonl)
+    rows = jsonl.each_line.filter_map do |line|
+      data = JSON.parse(line, symbolize_names: true) rescue nil
+      data if data && data[:type] == "spec" && data[:status] == "success"
+    end
+
+    adapters = rows.map { |row| row[:adapter] }.uniq
+    common = adapters.map do |adapter|
+      rows.filter_map { |row| spec_name(row) if row[:adapter] == adapter }.uniq
+    end.reduce(:&) || []
+
+    puts "Cache scenario benchmark table"
+    puts
+    puts "source+render       = parse mean + render mean"
+    puts "string-cache+render = artifact load mean + render mean"
+    puts "memory+render       = render mean from an already-loaded compiled template"
+    puts
+    puts "Geomean across common successful specs (n=#{common.size})"
+    print_cache_scenario_rows(rows.select { |row| common.include?(spec_name(row)) })
+
+    rows.group_by { |row| spec_name(row) }.sort_by(&:first).each do |name, spec_rows|
+      puts
+      puts name.sub(/\Abench_/, "")
+      print_cache_scenario_rows(spec_rows)
+    end
+  end
+
+  def print_cache_scenario_rows(rows)
+    puts "| adapter | source+render | string-cache+render | memory+render | artifact | specs |"
+    puts "|---|---:|---:|---:|---:|---:|"
+    rows.group_by { |row| row[:adapter] }.sort_by(&:first).each do |adapter, adapter_rows|
+      metrics = adapter_rows.map { |row| cache_scenario_metrics(row) }
+      puts "| #{adapter} | #{fmt_time(geomean(metrics.map { |m| m[:source_render] }))} | " \
+           "#{fmt_time(geomean(metrics.map { |m| m[:string_cache_render] }))} | " \
+           "#{fmt_time(geomean(metrics.map { |m| m[:memory_render] }))} | " \
+           "#{fmt_bytes(geomean(metrics.map { |m| m[:artifact_bytes] }))} | #{adapter_rows.size} |"
+    end
+  end
+
+  def cache_scenario_metrics(row)
+    parse = row.dig(:parse, :mean) || row[:parse_mean]
+    render = row.dig(:render, :mean) || row[:render_mean]
+    load = row.dig(:artifact, :load_mean) || row[:load_mean]
+    bytes = row.dig(:artifact, :bytes) || row[:artifact_bytes]
+    {
+      source_render: parse && render && parse + render,
+      string_cache_render: load && render && load + render,
+      memory_render: render,
+      artifact_bytes: bytes,
+    }
+  end
+
+  def spec_name(row)
+    row[:spec] || row[:spec_name]
+  end
+
+  def geomean(values)
+    values = values.compact.select { |value| value.to_f.positive? }
+    return nil if values.empty?
+
+    Math.exp(values.sum { |value| Math.log(value.to_f) } / values.size)
+  end
+
+  def fmt_time(seconds)
+    return "—" unless seconds
+
+    if seconds < 0.001
+      "%.0fµs" % (seconds * 1_000_000)
+    elsif seconds < 1.0
+      "%.2fms" % (seconds * 1_000)
+    else
+      "%.2fs" % seconds
+    end
+  end
+
+  def fmt_bytes(bytes)
+    return "—" unless bytes
+
+    bytes < 1024 ? "%.0fB" % bytes : "%.1fKB" % (bytes / 1024.0)
   end
 end
 
@@ -235,6 +334,25 @@ namespace :liquid_vm do
       "--adapter=#{File.expand_path(ADAPTER_VM_SSA)}",
       LiquidVmRake.extra_args
     )
+  end
+
+  desc "Print source/cache/memory render comparison table for LiquidIL and optional liquid-vm"
+  task scenarios: :setup do
+    LiquidVmRake.ensure_adapters!
+    jsonl = LiquidVmRake.capture_liquid_spec!(
+      "bench",
+      "--adapters=liquid_ruby",
+      "--adapter=#{File.expand_path(ADAPTER)}",
+      "--adapter=#{File.expand_path(ADAPTER_VM)}",
+      "--adapter=#{File.expand_path(ADAPTER_VM_SSA)}",
+      "--jsonl",
+      LiquidVmRake.extra_args
+    )
+    FileUtils.mkdir_p("tmp")
+    File.write("tmp/liquid_vm_scenarios.jsonl", jsonl)
+    LiquidVmRake.print_cache_scenario_table(jsonl)
+    puts
+    puts "Raw JSONL: tmp/liquid_vm_scenarios.jsonl"
   end
 end
 
