@@ -98,8 +98,9 @@ module LiquidIL
         when 2 then send(name, input, args[0], args[1])
         else send(name, input, *args)
         end
-      rescue ArgumentError => e
-        # Convert ArgumentError to FilterRuntimeError so it shows in output
+      rescue ArgumentError, ZeroDivisionError => e
+        # Convert to FilterRuntimeError so it shows in output ("invalid integer",
+        # "divided by 0", ...)
         raise context.strict_errors ? e : FilterRuntimeError.new(e.message)
       rescue => e
         # Re-raise in strict mode, raise FilterRuntimeError("internal") otherwise
@@ -120,7 +121,7 @@ module LiquidIL
         when 2 then send(name, input, args[0], args[1])
         else send(name, input, *args)
         end
-      rescue ArgumentError => e
+      rescue ArgumentError, ZeroDivisionError => e
         raise context.strict_errors ? e : FilterRuntimeError.new(e.message)
       rescue => e
         raise e if context.strict_errors || e.is_a?(FilterRuntimeError)
@@ -373,10 +374,11 @@ module LiquidIL
       def divided_by(input, operand)
         divisor = to_number(operand)
         dividend = to_number(input)
-        # Float division by 0 returns Infinity/NaN, integer division returns 0
         if divisor == 0
-          return 0 if dividend.is_a?(Integer) && !input.to_s.include?(".")
-          return dividend.to_f / 0.0  # Returns Infinity or NaN
+          # Integer division by integer zero errors (reference: "divided by 0");
+          # float division by 0 returns Infinity/NaN
+          raise ZeroDivisionError, "divided by 0" if dividend.is_a?(Integer) && divisor.is_a?(Integer)
+          return dividend.to_f / 0.0
         end
         if dividend.is_a?(Integer) && divisor.is_a?(Integer)
           dividend / divisor
@@ -571,7 +573,11 @@ module LiquidIL
           if property.nil?
             item
           elsif item.respond_to?(:[])
-            item[property]
+            begin
+              item[property]
+            rescue TypeError
+              raise_property_error(property)
+            end
           else
             0
           end

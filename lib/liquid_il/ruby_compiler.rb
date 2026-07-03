@@ -38,6 +38,14 @@ module LiquidIL
       @template_source = template_source
       @context = context
       @loop_depth = 0 # Track nested loop depth for parentloop support
+      # Compile-time current file (nil for the main template, the partial
+      # name inside partial compilations, updated by SET_CONTEXT). Baked into
+      # emitted error-location literals — no runtime tracking in the code.
+      @current_file_lit = nil
+      # Loop-local naming offset. 0 for the main template; partials get a
+      # unique base (compile_partial) so their loop locals (__i0__, _fl0__,
+      # :loop_break_0, ...) never collide with a call site's when inlined.
+      @loop_name_base = 0
       @has_resource_limits = !!context&.resource_limits
       @partials = partials || {}
       @partial_names_in_progress = partial_names_in_progress || Set.new
@@ -45,9 +53,13 @@ module LiquidIL
       # Maps Liquid variable names to Ruby local variable names inside for loops
       # e.g. "i" => "_i0__", "forloop" => "_fl0__"
       @loop_var_aliases = {}
-      # Frozen array constants for filter args: { "[\"large\"]" => "_fa0__" }
+      # Frozen array constants used by THIS compilation: { "[\"large\"]" => "_fa0__" }
+      # (names come from the process-wide @@frozen_array_names registry)
       @frozen_arrays = {}
-      @frozen_array_counter = 0
+      # Partials that some emitted body actually lambda-calls. Recorded at
+      # emission time (and stored with cached bodies) so generate_partial_lambdas
+      # emits exactly the lambdas that are needed — no decision re-derivation.
+      @lambda_called = Set.new
       # Track which partials are fully inlined (no lambda call sites)
       @inlined_partials = Set.new
       # Pre-built partial spans/source objects — injected via binding at eval time
@@ -89,14 +101,24 @@ module LiquidIL
         return
       end
 
-      # Check class-level cache for unchanged partials
+      # Check class-level cache for unchanged partials.
+      # A cached body may have nested partial bodies inlined into it, so the
+      # hit is only valid when every transitive dependency's source is
+      # unchanged too (cached[:deps] maps dep name → source hash).
       source_key = nil
       fs = @context&.file_system
       partial_source = RuntimeHelpers.read_partial_source(fs, name, @context)
       if partial_source
         source_key = partial_source.hash
-        if (cached = @@partial_cache[source_key])
+        if (cached = @@partial_cache[source_key]) && partial_cache_deps_valid?(cached, fs)
           @partials[name] = cached
+          # The cached body references frozen-array constants and nested
+          # partial lambdas from its original compilation — re-declare the
+          # constants, replay its recorded lambda calls, and compile the
+          # nested partials in this compilation too.
+          adopt_frozen_arrays(cached[:compiled_body])
+          @lambda_called.merge(cached[:lambda_called]) if cached[:lambda_called]
+          compile_nested_partials(cached[:instructions])
           return
         end
       end
@@ -139,9 +161,16 @@ module LiquidIL
         partials: @partials,
         partial_names_in_progress: @partial_names_in_progress
       )
-      # Share frozen array registry so partial constants are declared in the parent proc
+      # Share frozen array usage map so partial constants are declared in the parent proc
       ruby_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
-      ruby_compiler.instance_variable_set(:@frozen_array_counter, @frozen_array_counter)
+      # Unique loop-naming base per partial source (process-wide, stable for
+      # @@partial_cache hits) — prevents loop-local collisions when this
+      # body is inlined inside a caller's loop.
+      base = (@@partial_loop_bases[source.hash] ||= @@partial_loop_bases.size * 100 + 100)
+      ruby_compiler.instance_variable_set(:@loop_name_base, base)
+      ruby_compiler.instance_variable_set(:@current_file_lit, name)
+      child_lambda_called = Set.new
+      ruby_compiler.instance_variable_set(:@lambda_called, child_lambda_called)
 
       # Check if this partial can be compiled
       unless ruby_compiler.send(:can_compile?)
@@ -155,8 +184,6 @@ module LiquidIL
       # Generate code for this partial's body
       ruby_compiler.instance_variable_set(:@pc, 0)
       partial_body = ruby_compiler.send(:generate_body)
-      # Sync frozen array counter back (the hash is shared by reference, but counter is an int)
-      @frozen_array_counter = ruby_compiler.instance_variable_get(:@frozen_array_counter)
 
       # Detect which features this partial uses (for conditional preamble generation)
       partial_uses_cycles = false
@@ -178,8 +205,11 @@ module LiquidIL
         compiled_body: partial_body,
         uses_cycles: partial_uses_cycles,
         uses_captures: partial_uses_captures || partial_uses_ifchanged,
-        uses_ifchanged: partial_uses_ifchanged
+        uses_ifchanged: partial_uses_ifchanged,
+        deps: partial_dependency_hashes(instructions),
+        lambda_called: child_lambda_called.to_a.freeze
       }
+      @lambda_called.merge(child_lambda_called)
 
       # Cache for next compile of a template using this partial
       if source_key
@@ -188,6 +218,46 @@ module LiquidIL
       end
 
       @partial_names_in_progress.delete(name)
+    end
+
+    # Transitive {partial name => source hash} for every static partial this
+    # body depends on. Nested bodies can be inlined into this body, so a cache
+    # hit is only valid when all of these sources are unchanged.
+    def partial_dependency_hashes(instructions)
+      deps = {}
+      instructions.each do |i|
+        next unless i[0] == IL::RENDER_PARTIAL || i[0] == IL::INCLUDE_PARTIAL
+        args = i[2] || {}
+        next if args["__dynamic_name__"] || args["__invalid_name__"]
+        dep = i[1]
+        info = @partials[dep]
+        next unless info
+        deps[dep] = info[:source].hash if info[:source]
+        info[:deps]&.each { |k, v| deps[k] ||= v }
+      end
+      deps
+    end
+
+    def partial_cache_deps_valid?(cached, fs)
+      deps = cached[:deps]
+      return true if deps.nil? || deps.empty?
+      deps.all? do |dep_name, source_hash|
+        RuntimeHelpers.read_partial_source(fs, dep_name, @context)&.hash == source_hash
+      end
+    end
+
+    # Re-declare the frozen-array constants a cached body references.
+    # Names are globally unique per literal (see register_frozen_array), so a
+    # body compiled in an earlier compilation resolves to the same constants.
+    def adopt_frozen_arrays(body)
+      return unless body
+      names = body.scan(/_fa\d+__/)
+      return if names.empty?
+      inverse = @@frozen_array_names.invert
+      names.uniq.each do |constant_name|
+        literal = inverse[constant_name]
+        @frozen_arrays[literal] = constant_name if literal
+      end
     end
 
     def partial_lambda_name(name)
@@ -304,7 +374,7 @@ module LiquidIL
       end
       code << "  _H = LiquidIL::RuntimeHelpers\n"
       code << "  _U = LiquidIL::Utils\n" if body_code.include?("_U.") || partial_code.include?("_U.")
-      code << "  _F = LiquidIL::Filters\n" if body_code.include?("_F") || partial_code.include?("_F")
+      code << "  _F = LiquidIL::Filters\n" if body_code.include?("_F.") || partial_code.include?("_F.")
       # Frozen array constants must be declared before partial lambdas
       # (lambdas are closures that capture these variables)
       code << generate_frozen_array_constants
@@ -326,7 +396,12 @@ module LiquidIL
 
     # Scan instructions for partials and compile them
     def scan_and_compile_partials
-      @instructions.each do |inst|
+      compile_nested_partials(@instructions)
+    end
+
+    def compile_nested_partials(instructions)
+      return unless instructions
+      instructions.each do |inst|
         case inst[0]
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
           name = inst[1]
@@ -341,7 +416,38 @@ module LiquidIL
       end
     end
 
-          # Check if a partial is safe for inlining (no complex features that need lambda wrapper)
+    # Static call sites per partial across this template and all its partials.
+    # Drives the inline-vs-lambda size policy: a single-call-site partial
+    # inlines (no lambda apparatus), a multi-site partial only inlines while
+    # its body is small (duplication cost), otherwise all sites share the
+    # runtime-wrapped lambda.
+    def call_site_count(name)
+      @call_site_counts ||= begin
+        counts = Hash.new(0)
+        scan = lambda do |instructions|
+          instructions&.each do |inst|
+            next unless inst[0] == IL::RENDER_PARTIAL || inst[0] == IL::INCLUDE_PARTIAL
+            args = inst[2] || {}
+            next if args["__dynamic_name__"] || args["__invalid_name__"]
+            counts[inst[1]] += 1
+          end
+        end
+        scan.call(@instructions)
+        @partials.each_value { |info| scan.call(info[:instructions]) }
+        counts
+      end
+      @call_site_counts[name]
+    end
+
+    # Bodies larger than this render via the shared lambda instead of being
+    # inlined at every call site. Inlining duplicates the body into each site,
+    # bloating the artifact (cold-load cost ~3µs/KB of ISeq); the lambda costs
+    # one already-jitted call. Small bodies still inline — the call overhead
+    # dominates their size. Deliberately a function of the CALLEE only, so the
+    # decision is stable for @@partial_cache-reused bodies.
+    INLINE_BODY_MAX_BYTES = 512
+
+    # Check if a partial is safe for inlining (no complex features that need lambda wrapper)
     def partial_inlinable?(name)
       info = @partials[name] || {}
       return false unless info[:compiled_body]
@@ -356,6 +462,8 @@ module LiquidIL
     def generate_partial_lambdas
       return "" if @partials.empty?
 
+      required = @lambda_called
+
       code = String.new
       code << "\n  # Compiled partial lambdas\n"
       # Forward-declare all lambda variables so mutual references work
@@ -367,32 +475,18 @@ module LiquidIL
 
       @partials.each do |name, info|
         next if info[:recursive] || info[:syntax_error] || !info[:compiled_body]
-        # Skip generating lambda body if partial is fully inlined
-        # The forward declaration (nil) is already generated above
-        next if @inlined_partials.include?(name)
+        # Emit the lambda body only when some call site actually calls it
+        # (a partial can be inlined at one site and lambda-called at another).
+        # The forward declaration (nil) is already generated above.
+        next unless required.include?(name)
         lambda_name = partial_lambda_name(name)
-        # Store spans/source as pre-built frozen objects in @partial_constants hash.
-        # The proc receives _pc (partial constants) and reads from it — zero per-render allocation.
-        spans_key = "#{lambda_name}__SP__"
-        source_key = "#{lambda_name}__TS__"
-        @partial_constants[spans_key] = info[:spans].freeze
-        @partial_constants[source_key] = info[:source].freeze
-        # Read from _pc hash (set once at compile time, frozen)
-        spans_const = "_pc[#{spans_key.inspect}]"
-        source_const = "_pc[#{source_key.inspect}]"
+        # All prologue/rescue/ensure bookkeeping lives in the (already-jitted)
+        # runtime helper _H.ip — zero artifact bytes per lambda for it.
+        # Error locations inside the body are compile-time literals, so the
+        # lambda carries no spans/source/current-file state.
         code << "  #{lambda_name} = ->(assigns, _O, __parent_scope__, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
-        code << "    __prev_file__ = __parent_scope__.current_file\n"
-        code << "    __prev_f__ = _F\n"
-        code << "    __parent_scope__.current_file = #{name.inspect}\n"
-        code << "    __parent_scope__.push_render_depth\n"
-        code << "    begin\n"
-        code << "      if __parent_scope__.render_depth_exceeded?(strict: !isolated)\n"
-        code << "        raise LiquidIL::RuntimeError.new(\"Nesting too deep\", file: #{name.inspect}, line: caller_line)\n"
-        code << "      end\n"
+        code << "    _H.ip(#{name.inspect}, __parent_scope__, isolated, caller_line, _O) {\n"
         code << "      __partial_scope__ = isolated ? __parent_scope__.isolated_with(assigns) : __parent_scope__\n"
-        code << "      _sp = #{spans_const}\n"
-        code << "      _ts = #{source_const}\n"
-        code << "      _F = #{name.inspect}\n"
         # Only allocate cycle/capture/ifchanged state when the partial actually uses them
         if info[:uses_cycles]
           code << "      _cs = isolated ? {} : (parent_cycle_state || {})\n"
@@ -404,22 +498,7 @@ module LiquidIL
           code << "      _ics = {}\n"
         end
         code << indent_partial_body(info[:compiled_body], 6)
-        code << "    rescue LiquidIL::RuntimeError => e\n"
-        code << "      raise unless __parent_scope__.render_errors\n"
-        code << "      _O << (e.partial_output || \"\")\n"
-        code << "      location = e.file ? \"\#{e.file} line \#{e.line}\" : \"line \#{e.line}\"\n"
-        code << "      _O << \"Liquid error (\#{location}): \#{e.message}\"\n"
-        code << "    rescue LiquidIL::FilterRuntimeError => e\n"
-        code << "      raise unless __parent_scope__.render_errors\n"
-        code << "      _O << (#{lit("Liquid error (#{name} line 1): ")} + e.message.to_s)\n"
-        code << "    rescue StandardError => e\n"
-        code << "      raise unless __parent_scope__.render_errors\n"
-        code << "      _O << (#{lit("Liquid error (#{name} line 1): ")} + LiquidIL.clean_error_message(e.message).to_s)\n"
-        code << "    ensure\n"
-        code << "      __parent_scope__.current_file = __prev_file__\n"
-        code << "      _F = __prev_f__\n"
-        code << "      __parent_scope__.pop_render_depth\n"
-        code << "    end\n"
+        code << "    }\n"
         code << "  }\n\n"
       end
       code
@@ -481,9 +560,12 @@ module LiquidIL
           @pc += 1
           break
         when IL::WRITE_RAW
-          # Merge consecutive WRITE_RAW instructions into single append
+          # Merge consecutive WRITE_RAW instructions into single append.
+          # Dup before appending — inst[1] may be frozen (custom passthrough
+          # tags) and mutating it in place would corrupt @instructions.
           merged = inst[1]
           while (@pc + 1) < len && instructions[@pc + 1][0] == IL::WRITE_RAW
+            merged = merged.dup if merged.equal?(inst[1])
             @pc += 1
             merged << instructions[@pc][1]
           end
@@ -499,10 +581,8 @@ module LiquidIL
           break if result.nil?
           code << result
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
-          @pc += 1
-          pc = @pc - 1
           isolated = inst[0] == IL::RENDER_PARTIAL
-          code << generate_partial_call(inst, pc, 1, isolated: isolated)
+          code << generate_partial_call(inst, @pc, 1, isolated: isolated)
         when IL::ASSIGN_LOCAL
           @pc += 1
           code << "  _S.assign_local(#{inst[1].inspect}, _S.lookup(#{inst[2].inspect}))\n"
@@ -598,13 +678,11 @@ module LiquidIL
         nil
 
       when IL::SET_CONTEXT
+        # Current file is compile-time state: later emissions bake it into
+        # error-location literals. No runtime assignment needed.
         @pc += 1
-        file_name = inst[1]
-        if file_name
-          %(#{prefix}_F = #{file_name.inspect}\n)
-        else
-          %(#{prefix}_F = nil\n)
-        end
+        @current_file_lit = inst[1]
+        ""
 
       when IL::WRITE_RAW
         @pc += 1
@@ -821,7 +899,7 @@ module LiquidIL
         if @loop_depth > 0
           if interrupt_type == :break
             # Use throw to exit the current loop - depth-1 because we're inside the loop
-            code << "#{prefix}throw(:loop_break_#{@loop_depth - 1})\n"
+            code << "#{prefix}throw(:loop_break_#{@loop_name_base + @loop_depth - 1})\n"
           else
             code << "#{prefix}next\n"
           end
@@ -1008,13 +1086,17 @@ module LiquidIL
       as_alias = args["__as__"]
       item_var = as_alias || name
 
-      # Check if we can inline this partial (affects arg generation)
-      inline_partial = isolated && partial_inlinable?(name) && !for_expr && !with_expr
+      # Inline policy: single-call-site partials always inline; multi-site
+      # partials inline only while the body is small enough that duplication
+      # beats the shared lambda (artifact-size policy, see INLINE_BODY_MAX_BYTES).
+      inline_partial = isolated && !for_expr && !with_expr && partial_inlinable?(name) &&
+        (call_site_count(name) <= 1 || @partials[name][:compiled_body].bytesize <= INLINE_BODY_MAX_BYTES)
+      @lambda_called << name unless inline_partial
 
       # Handle include being disabled inside render context
       unless isolated
         code << "#{prefix}if _S.disable_include\n"
-        code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"include usage is not allowed in this context\", file: _F, line: #{line_num})\n"
+        code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"include usage is not allowed in this context\", file: #{@current_file_lit.inspect}, line: #{line_num})\n"
         code << "#{prefix}else\n"
         prefix = "  " * (indent + 1)
       end
@@ -1158,12 +1240,8 @@ module LiquidIL
       # After include: propagate interrupts (break/continue) from partial to caller's loop
       if !isolated && @loop_depth > 0
         code << "#{prefix}if _S.has_interrupt?\n"
-        code << "#{prefix}  __int__ = _S.pop_interrupt\n"
-        code << "#{prefix}  if __int__ == :break\n"
-        code << "#{prefix}    throw(:loop_break_#{@loop_depth - 1})\n"
-        code << "#{prefix}  else\n"
-        code << "#{prefix}    next\n"
-        code << "#{prefix}  end\n"
+        code << "#{prefix}  throw(:loop_break_#{@loop_name_base + @loop_depth - 1}) if _S.pop_interrupt == :break\n"
+        code << "#{prefix}  next\n"
         code << "#{prefix}end\n"
       end
 
@@ -1207,13 +1285,8 @@ module LiquidIL
       interrupt_check = ""
       unless isolated || @loop_depth <= 0
         interrupt_check = "#{prefix}    if _S.has_interrupt?\n" \
-          "#{prefix}      __int__ = _S.peek_interrupt\n" \
-          "#{prefix}      _S.pop_interrupt\n" \
-          "#{prefix}      if __int__ == :break\n" \
-          "#{prefix}        throw(:loop_break_#{@loop_depth - 1})\n" \
-          "#{prefix}      else\n" \
-          "#{prefix}        next\n" \
-          "#{prefix}      end\n" \
+          "#{prefix}      throw(:loop_break_#{@loop_name_base + @loop_depth - 1}) if _S.pop_interrupt == :break\n" \
+          "#{prefix}      next\n" \
           "#{prefix}    end\n"
       end
 
@@ -1444,7 +1517,7 @@ module LiquidIL
               stack << "((_t = #{left_ruby}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
             end
           else
-            stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, _F)"
+            stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, #{@current_file_lit.inspect})"
           end
           @pc += 1
         when IL::CONTAINS
@@ -1494,30 +1567,7 @@ module LiquidIL
           argc = inst[2] || 0
           args = argc > 0 ? stack.pop(argc) : []
           input_ruby = stack.pop || "nil"
-          filter_name = inst[1]
-          # Identity optimizations: skip filters that are no-ops
-          if (filter_name == "plus" && args.length == 1 && args[0] == "0") ||
-             (filter_name == "minus" && args.length == 1 && args[0] == "0") ||
-             (filter_name == "times" && args.length == 1 && args[0] == "1") ||
-             (filter_name == "divided_by" && args.length == 1 && args[0] == "1")
-            stack << input_ruby
-          # Inline round/ceil/floor with numeric args: skip _F method dispatch
-          # Uses temp variable to evaluate input only once
-          # _F.round(input, 2) -> ((_i = input; _i.is_a?(String) ? _i.to_f : (_i || 0)).round(2))
-          elsif SAFE_NUMERIC_FILTERS.match?("_F.#{filter_name}(") && args.length > 0
-            args_str = args.join(", ")
-            # No outer parens: parenthesized expression already groups the semicolon
-            stack << "(#{input_ruby} || 0).to_f.#{filter_name}(#{args_str})"
-          elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
-            # Inline simple filters: Utils.to_s(input).method -> input.to_s.method
-            # No parens needed: method call chain binds tighter than most operators
-            stack << "#{input_ruby}.to_s.#{filter_name}"
-          elsif args.empty?
-            stack << "_F.#{filter_name}(#{input_ruby})"
-          else
-            args_str = args.join(", ")
-            stack << "_F.#{filter_name}(#{input_ruby}, #{args_str})"
-          end
+          stack << emit_filter_call(inst[1], input_ruby, args, filter_pc)
           @pc += 1
         when IL::JUMP
           # Follow unconditional jumps (optimizer may insert these for constant folding)
@@ -1602,7 +1652,7 @@ module LiquidIL
                       stack << "((_t = #{left_ruby_inner}); _t = _t.to_liquid_value if _t.respond_to?(:to_liquid_value); _t.is_a?(Numeric) && _t #{ruby_op} #{right_ruby})"
                     end
                   else
-                    stack << "_H.cmp(#{left_ruby_inner}, #{right_ruby}, #{cmp_op.inspect}, _O, _F)"
+                    stack << "_H.cmp(#{left_ruby_inner}, #{right_ruby}, #{cmp_op.inspect}, _O, #{@current_file_lit.inspect})"
                   end
                   @pc += 1
                 when IL::CONTAINS
@@ -1904,8 +1954,11 @@ module LiquidIL
       reversed = for_init[6]
       @pc += 1
 
-      # Track loop depth for nested loops - increment BEFORE parsing body
-      depth = @loop_depth
+      # Track loop depth for nested loops - increment BEFORE parsing body.
+      # Naming uses @loop_name_base so a partial body INLINED into another
+      # template's loop can't collide with the call site's loop locals
+      # (each partial compilation gets a unique base; see compile_partial).
+      depth = @loop_name_base + @loop_depth
       @loop_depth += 1
 
       # Skip structural instructions
@@ -2048,13 +2101,15 @@ module LiquidIL
         code << "#{prefix}#{idx_var_name} = 0\n"
         code << "#{prefix}while #{idx_var_name} < #{len_var_name}\n"
         code << "#{prefix}  #{item_var_internal} = #{coll_var_name}[#{idx_var_name}]\n"
+        # Increment BEFORE the body: {% continue %} compiles to `next`, which
+        # would skip a trailing increment and loop forever.
+        code << "#{prefix}  #{idx_var_name} += 1\n"
         if @has_resource_limits
           code << "#{prefix}  _S.increment_render_score!\n"
           code << "#{prefix}  _S.check_output_limit!(_O)\n"
         end
         # body_code is at INDENT[indent+3], needs INDENT[indent+1] (strip 4 spaces)
         code << body_code.gsub(/^#{Regexp.escape(prefix)}      /, prefix + "  ")
-        code << "#{prefix}  #{idx_var_name} += 1\n"
         code << "#{prefix}end\n"
         @loop_depth -= 1
         return code
@@ -2081,7 +2136,7 @@ module LiquidIL
         offset_ruby = offset_expr
         if has_offset
           code << "#{inner_prefix}_ov#{depth}__ = #{offset_ruby}\n"
-          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.vi(_ov#{depth}__)\n"
+          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: #{@current_file_lit.inspect}, line: 1) unless _in#{depth}__ || _H.vi(_ov#{depth}__)\n"
           code << "#{inner_prefix}#{offset_var} = _ov#{depth}__.to_i\n"
         else
           code << "#{inner_prefix}#{offset_var} = (#{offset_ruby}).to_i\n"
@@ -2095,7 +2150,7 @@ module LiquidIL
         limit_ruby = limit_expr
         if has_limit
           code << "#{inner_prefix}_lv#{depth}__ = #{limit_ruby}\n"
-          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _in#{depth}__ || _H.vi(_lv#{depth}__)\n"
+          code << "#{inner_prefix}raise LiquidIL::RuntimeError.new(\"invalid integer\", file: #{@current_file_lit.inspect}, line: 1) unless _in#{depth}__ || _H.vi(_lv#{depth}__)\n"
           code << "#{inner_prefix}_to#{depth}__ = #{offset_var} + _lv#{depth}__.to_i\n"
         else
           code << "#{inner_prefix}_to#{depth}__ = #{offset_var} + (#{limit_ruby}).to_i\n"
@@ -2124,6 +2179,9 @@ module LiquidIL
         code << "#{inner_prefix}    while #{idx_var} < #{coll_var}_len\n"
         code << "#{inner_prefix}      #{item_var_internal} = #{coll_var}[#{idx_var}]\n"
         code << "#{inner_prefix}      #{forloop_var}.index0 = #{idx_var}\n"
+        # Increment BEFORE the body: `next` (continue / interrupt checks) would
+        # skip a trailing increment and loop forever.
+        code << "#{inner_prefix}      #{idx_var} += 1\n"
       else
         # No forloop needed — use plain each (skip index tracking overhead)
         code << "#{inner_prefix}    #{coll_var}.each do |#{item_var_internal}|\n"
@@ -2142,10 +2200,6 @@ module LiquidIL
         body_code = body_code.gsub(/^/, "  ")
       end
       code << body_code
-      if needs_forloop
-        # Increment loop index for while loop
-        code << "#{inner_prefix}      #{idx_var} += 1\n"
-      end
       code << "#{inner_prefix}    end\n"
       code << "#{inner_prefix}  end\n" if needs_catch
       if needs_forloop
@@ -2274,8 +2328,9 @@ module LiquidIL
         coll_expr = ruby_var_reference("items")
       end
 
-      # Track loop depth for nested loops
-      depth = @loop_depth
+      # Track loop depth for nested loops (naming offset by @loop_name_base —
+      # see generate_for_loop)
+      depth = @loop_name_base + @loop_depth
       @loop_depth += 1
 
       # Skip structural instructions (PUSH_SCOPE, TABLEROW_NEXT)
@@ -2366,7 +2421,7 @@ module LiquidIL
           code << "#{prefix}  #{cols_var} = #{coll_var}.length\n"
           code << "#{prefix}  __cols_explicit_nil_#{depth}__ = true\n"
           code << "#{prefix}elsif !_in#{depth}__ && !_H.vi(__cols_val_#{depth}__)\n"
-          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1)\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: #{@current_file_lit.inspect}, line: 1)\n"
           code << "#{prefix}else\n"
           code << "#{prefix}  #{cols_var} = __cols_val_#{depth}__.to_i\n"
           code << "#{prefix}  __cols_explicit_nil_#{depth}__ = false\n"
@@ -2394,7 +2449,7 @@ module LiquidIL
           offset_ruby = offset_expr
           code << "#{prefix}_ov#{depth}__ = #{offset_ruby}\n"
           code << "#{prefix}unless _in#{depth}__\n"
-          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.vi(_ov#{depth}__)\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: #{@current_file_lit.inspect}, line: 1) unless _H.vi(_ov#{depth}__)\n"
           code << "#{prefix}  __offset_#{depth}__ = _ov#{depth}__.nil? ? 0 : _ov#{depth}__.to_i\n"
           code << "#{prefix}  __offset_#{depth}__ = [__offset_#{depth}__, 0].max\n"
           code << "#{prefix}  #{coll_var} = #{coll_var}.drop(__offset_#{depth}__) unless _is#{depth}__\n"
@@ -2410,7 +2465,7 @@ module LiquidIL
           limit_ruby = limit_expr
           code << "#{prefix}_lv#{depth}__ = #{limit_ruby}\n"
           code << "#{prefix}unless _in#{depth}__\n"
-          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: _F, line: 1) unless _H.vi(_lv#{depth}__)\n"
+          code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"invalid integer\", file: #{@current_file_lit.inspect}, line: 1) unless _H.vi(_lv#{depth}__)\n"
           code << "#{prefix}  __limit_#{depth}__ = _lv#{depth}__.nil? ? 0 : _lv#{depth}__.to_i\n"
           code << "#{prefix}  __limit_#{depth}__ = 0 if __limit_#{depth}__ < 0\n"
           code << "#{prefix}  #{coll_var} = #{coll_var}.take(__limit_#{depth}__) unless _is#{depth}__\n"
@@ -2597,6 +2652,7 @@ module LiquidIL
     def generate_case_when_or(first_cond, success_target, indent)
       prefix = INDENT[indent]
       conditions = [first_cond]
+      case_end = nil
 
       # Collect remaining OR conditions that jump to the same target
       while @pc < success_target
@@ -2615,7 +2671,12 @@ module LiquidIL
             break
           end
         when IL::JUMP
-          # No more conditions, this is the "else" jump
+          # No more conditions, this is the "else" jump. Its target marks the
+          # end of the whole case statement — used below to bound the success
+          # body (otherwise the LAST when branch, having no following
+          # LOAD_TEMP matched-flag check, would swallow statements after the
+          # case: scope pops, trailing raw text, loop-back jumps, ...).
+          case_end = inst[1]
           break
         else
           break
@@ -2643,8 +2704,9 @@ module LiquidIL
       # Set the success flag to prevent else branch
       code << "#{prefix}  __temp_#{success_slot}__ = true\n" if success_slot
 
-      # Parse success body until we hit LOAD_TEMP (checking matched flag) or end
-      while @pc < @instructions.length
+      # Parse success body until the end of the branch: a LOAD_TEMP
+      # (next when's matched-flag check), a jump out of the case, or case_end
+      while @pc < @instructions.length && (case_end.nil? || @pc < case_end)
         inst = @instructions[@pc]
         break if inst.nil?
 
@@ -2654,6 +2716,15 @@ module LiquidIL
           break
         when IL::HALT
           break
+        when IL::JUMP
+          # Forward jump to (or past) the end of the case — branch exit
+          if case_end && inst[1] >= case_end
+            @pc += 1
+            break
+          end
+          result = generate_statement(indent + 1)
+          break if result.nil?
+          code << result
         else
           result = generate_statement(indent + 1)
           break if result.nil?
@@ -2673,22 +2744,28 @@ module LiquidIL
     # Emit a standard filter dispatch call (cff, cf, or ccf)
     def emit_filter_dispatch(dispatcher, name, input, args, line)
       if args.empty?
-        "_H.#{dispatcher}(#{name.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, _F, #{line})"
+        "_H.#{dispatcher}(#{name.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, #{@current_file_lit.inspect}, #{line})"
       elsif args.all? { |a| a.match?(/\A(?:-?\d+(?:\.\d+)?|"[^"]*")\z/) }
         frozen_name = register_frozen_array(args)
-        "_H.#{dispatcher}(#{name.inspect}, #{input}, #{frozen_name}, _S, _F, #{line})"
+        "_H.#{dispatcher}(#{name.inspect}, #{input}, #{frozen_name}, _S, #{@current_file_lit.inspect}, #{line})"
       else
-        "_H.#{dispatcher}(#{name.inspect}, #{input}, [#{args.join(', ')}], _S, _F, #{line})"
+        "_H.#{dispatcher}(#{name.inspect}, #{input}, [#{args.join(', ')}], _S, #{@current_file_lit.inspect}, #{line})"
       end
     end
 
+    # Process-wide loop-naming bases per partial source hash (append-only)
+    @@partial_loop_bases = {}
+
+    # Process-wide literal → constant-name registry (append-only). Names are
+    # unique per literal so partial bodies cached across compilations keep
+    # resolving to the right constant (see adopt_frozen_arrays).
+    @@frozen_array_names = {}
+
     def register_frozen_array(args)
       key = "[#{args.join(', ')}]"
-      @frozen_arrays[key] ||= begin
-        name = "_fa#{@frozen_array_counter}__"
-        @frozen_array_counter += 1
-        name
-      end
+      name = (@@frozen_array_names[key] ||= "_fa#{@@frozen_array_names.size}__")
+      @frozen_arrays[key] = name
+      name
     end
 
     # Generate frozen array constant declarations for top of proc
@@ -2701,112 +2778,61 @@ module LiquidIL
       code
     end
 
-    def inline_filter(name, input, args)
-      case name
-      when "upcase"
-        return nil unless args.empty?
-        "_U.to_s(#{input}).upcase"
-      when "downcase"
-        return nil unless args.empty?
-        "_U.to_s(#{input}).downcase"
-      when "capitalize"
-        return nil unless args.empty?
-        "_U.to_s(#{input}).capitalize"
-      when "strip"
-        return nil unless args.empty?
-        "_U.to_s(#{input}).strip"
-      when "lstrip"
-        return nil unless args.empty?
-        "_U.to_s(#{input}).lstrip"
-      when "rstrip"
-        return nil unless args.empty?
-        "_U.to_s(#{input}).rstrip"
-      when "escape"
-        return nil unless args.empty?
-        "_H.eh(#{input})"
-      when "size"
-        return nil unless args.empty?
-        "((_fi = #{input}); _fi.respond_to?(:size) ? _fi.size : 0)"
-      when "append"
-        return nil unless args.length == 1
-        "(_U.to_s(#{input}) + _U.to_s(#{args[0]}))"
-      when "prepend"
-        return nil unless args.length == 1
-        "(_U.to_s(#{args[0]}) + _U.to_s(#{input}))"
-      when "default"
-        # default filter has complex semantics (allow_false option, empty arrays/hashes)
-        # Too many edge cases to inline safely
-        nil
-      when "plus"
-        return nil unless args.length == 1
-        "LiquidIL::Filters.plus(#{input}, #{args[0]})"
-      when "minus"
-        return nil unless args.length == 1
-        "LiquidIL::Filters.minus(#{input}, #{args[0]})"
-      when "times"
-        return nil unless args.length == 1
-        "LiquidIL::Filters.times(#{input}, #{args[0]})"
-      when "divided_by"
-        return nil unless args.length == 1
-        "LiquidIL::Filters.divided_by(#{input}, #{args[0]})"
-      when "round"
-        return nil unless args.length <= 1
-        if args.empty?
-          "LiquidIL::Filters.round(#{input})"
+    # Built-in filters that can never raise for any input (they coerce via
+    # Utils.to_s / to_number, or rescue internally). These are safe to call
+    # directly on _F — errors are impossible, so no dispatcher wrapper needed.
+    #
+    # Every OTHER known filter can raise FilterRuntimeError/ArgumentError
+    # (to_integer, property selection, division by zero, ...) and MUST go
+    # through _H.cff, which converts errors to an ErrorMarker so rendering
+    # continues per-statement like reference Liquid. Unknown-at-compile-time
+    # filters go through _H.cf (they may be custom filters registered at
+    # render time, or unknown → input passthrough).
+    SAFE_DIRECT_FILTERS = %w[
+      append prepend capitalize downcase upcase t strip lstrip rstrip
+      strip_html strip_newlines squish newline_to_br
+      replace_first replace_last remove remove_first remove_last split
+      escape escape_once url_encode base64_encode base64_url_safe_encode
+      plus minus times abs ceil floor round at_least at_most
+      size first last join reverse date json default
+    ].each_with_object({}) { |n, h| h[n] = true }.freeze
+
+    # Integer-literal argument (safe for inline .round(n) etc.)
+    INT_LITERAL_RE = /\A-?\d+\z/
+
+    def emit_filter_call(filter_name, input_ruby, args, filter_pc)
+      # Identity optimizations: skip filters that are no-ops
+      if (filter_name == "plus" && args.length == 1 && args[0] == "0") ||
+         (filter_name == "minus" && args.length == 1 && args[0] == "0") ||
+         (filter_name == "times" && args.length == 1 && args[0] == "1") ||
+         (filter_name == "divided_by" && args.length == 1 && args[0] == "1")
+        return input_ruby
+      end
+
+      # If an earlier filter in this chain went through a dispatcher, its
+      # result may be an ErrorMarker. Keep the rest of the chain in
+      # dispatcher-land so the marker short-circuits through untouched.
+      chain_may_error = input_ruby.include?("_H.cf")
+
+      if !chain_may_error && SAFE_DIRECT_FILTERS[filter_name]
+        # Inline round/ceil/floor with integer-literal args: skip _F dispatch
+        if SAFE_NUMERIC_FILTERS.match?("_F.#{filter_name}(") && args.length > 0 && args.all? { |a| a.match?(INT_LITERAL_RE) }
+          return "(#{input_ruby} || 0).to_f.#{filter_name}(#{args.join(', ')})"
+        elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
+          # Inline simple filters: Utils.to_s(input).method -> input.to_s.method
+          return "#{input_ruby}.to_s.#{filter_name}"
+        elsif args.empty?
+          return "_F.#{filter_name}(#{input_ruby})"
         else
-          "LiquidIL::Filters.round(#{input}, #{args[0]})"
+          return "_F.#{filter_name}(#{input_ruby}, #{args.join(', ')})"
         end
-      when "ceil"
-        return nil unless args.empty?
-        "LiquidIL::Filters.ceil(#{input})"
-      when "floor"
-        return nil unless args.empty?
-        "LiquidIL::Filters.floor(#{input})"
-      when "handle", "handleize"
-        return nil unless args.empty?
-        # Inline handleize using tr! chain (4.5x faster, 25% fewer allocs vs gsub)
-        "((_fh = _U.to_s(#{input}).downcase); _fh.tr!(\"^a-z0-9\", \"-\"); _fh.squeeze!(\"-\"); _fh.delete_prefix!(\"-\"); _fh.delete_suffix!(\"-\"); _fh)"
-      when "truncate"
-        # Not inlined — truncate can raise FilterRuntimeError (e.g. float args),
-        # needs cff error handling for correct line numbers in error messages.
-        return nil
-      when "url_encode"
-        return nil unless args.empty?
-        "URI.encode_www_form_component(_U.to_s(#{input}))"
-      when "url_decode"
-        return nil unless args.empty?
-        "URI.decode_www_form_component(_U.to_s(#{input}))"
-      when "strip_html"
-        return nil unless args.empty?
-        "((_fsh = _U.to_s(#{input})); _fsh.gsub(LiquidIL::Filters::STRIP_HTML_BLOCKS, \"\").gsub(LiquidIL::Filters::STRIP_HTML_TAGS, \"\"))"
-      when "first"
-        return nil unless args.empty?
-        "((_ffi = #{input}); _ffi.is_a?(String) ? _ffi[0] : _ffi.is_a?(Array) ? _ffi.first : _ffi.respond_to?(:first) ? _ffi.first : nil)"
-      when "last"
-        return nil unless args.empty?
-        "((_fla = #{input}); _fla.is_a?(String) ? _fla[-1] : _fla.is_a?(Array) ? _fla.last : _fla.respond_to?(:last) ? _fla.last : nil)"
-      when "flatten"
-        return nil unless args.empty?
-        "((_ff = #{input}); _ff.is_a?(Array) ? _ff.flatten : [_ff])"
-      when "abs"
-        return nil unless args.empty?
-        "LiquidIL::Filters.send(:abs, #{input})"
-      when "modulo"
-        return nil unless args.length == 1
-        "LiquidIL::Filters.send(:modulo, #{input}, #{args[0]})"
-      when "at_least"
-        return nil unless args.length == 1
-        "LiquidIL::Filters.send(:at_least, #{input}, #{args[0]})"
-      when "at_most"
-        return nil unless args.length == 1
-        "LiquidIL::Filters.send(:at_most, #{input}, #{args[0]})"
+      end
+
+      line = line_for_pc(filter_pc)
+      if Filters.valid_filter_methods[filter_name]
+        emit_filter_dispatch("cff", filter_name, input_ruby, args, line)
       else
-        # General case: any filter (including externally-supplied ones).
-        # Check at compile time if the filter is known, and if so, generate a
-        # direct Filters.apply call with the name pre-resolved. This avoids the
-        # overhead of the generic _H.cf wrapper's extra indirection while keeping
-        # all error handling intact.
-        nil
+        emit_filter_dispatch("cf", filter_name, input_ruby, args, line)
       end
     end
 
@@ -2820,39 +2846,12 @@ module LiquidIL
     def inline_lookup(obj_ruby, key)
       key_s = key.to_s
       if RuntimeHelpers::SPECIAL_KEYS[key_s]
-        # Inline property lookup for common special keys to avoid _H.lp() method call
-        # This replaces ~85ns method call with ~35ns inline expression
-        # For complex expressions, use a temp to avoid repeated evaluation
-        is_complex = obj_ruby.length > 20 || !obj_ruby.match?(/\A[a-zA-Z_][a-zA-Z0-9_]*\z/)
-        if key_s == "size" || key_s == "length"
-          "#{obj_ruby}&.#{key_s}"
-        elsif key_s == "first"
-          if is_complex
-            "((_o = #{obj_ruby}; _o.nil? ? nil : (_o.is_a?(Hash) ? ((p = _o.first) ? \"\#{p[0]}\#{p[1]}\" : nil) : _o.first)))"
-          else
-            "(#{obj_ruby}.nil? ? nil : (#{obj_ruby}.is_a?(Hash) ? ((p = #{obj_ruby}.first) ? \"\#{p[0]}\#{p[1]}\" : nil) : #{obj_ruby}.first))"
-          end
-        elsif key_s == "last"
-          if is_complex
-            "((_o = #{obj_ruby}; _o.nil? ? nil : _o.last))"
-          else
-            "(#{obj_ruby}.nil? ? nil : #{obj_ruby}.last)"
-          end
-        elsif key_s == "empty"
-          if is_complex
-            "((_o = #{obj_ruby}; _o.nil? ? true : (_o.is_a?(Hash) ? (_o.empty?) : _o.respond_to?(:empty?) ? _o.empty? : false)))"
-          else
-            "(#{obj_ruby}.nil? ? true : (#{obj_ruby}.is_a?(Hash) ? (#{obj_ruby}.empty?) : #{obj_ruby}.respond_to?(:empty?) ? #{obj_ruby}.empty? : false))"
-          end
-        elsif key_s == "count"
-          if is_complex
-            "((_o = #{obj_ruby}; _o.nil? ? nil : _o.count))"
-          else
-            "(#{obj_ruby}.nil? ? nil : #{obj_ruby}.count)"
-          end
-        else
-          "_H.lp(#{obj_ruby}, #{key_s.inspect})"
-        end
+        # Special keys (size/length/first/last) dispatch through the runtime:
+        # lookup() knows the per-type semantics (String#first is a byteslice,
+        # Arrays/Hashes differ, to_liquid must unwrap first). Inlining these
+        # as ternary chains was both bigger (artifact bytes) and wrong for
+        # non-collection receivers.
+        "_H.lp(#{obj_ruby}, #{key_s.inspect})"
       elsif obj_ruby.match?(LOOP_VAR_RE)
         # Loop variable is always a Hash — inline the hash lookup directly
         # Skip symbol fallback for performance (string keys are the common case)

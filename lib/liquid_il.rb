@@ -77,7 +77,11 @@ module LiquidIL
   class UndefinedVariable < Error; end
 
   # Error raised when resource limits are exceeded
-  class ResourceLimitError < Error; end
+  class ResourceLimitError < Error
+    # Output rendered before the limit tripped (limits abort the render but
+    # the caller gets what was produced, like reference Liquid)
+    attr_accessor :partial_output
+  end
 
   class Context
     attr_accessor :file_system, :strict_errors, :registers
@@ -191,7 +195,8 @@ module LiquidIL
   #   template.write_ruby("my_template.rb")  # writes standalone file
   #
   class Template
-    attr_reader :source, :instructions, :spans, :compiled_source, :errors, :warnings
+    attr_reader :source, :instructions, :spans, :compiled_source, :errors, :warnings,
+                :partial_constants
 
     def initialize(source, instructions, spans, context, compiled_result, iseq_binary: nil)
       @source = source
@@ -247,6 +252,21 @@ module LiquidIL
       new(source, [], spans, nil, result, iseq_binary: iseq_binary)
     end
 
+    # Reconstruct a Template from a raw ISeq binary (the Artifact load path —
+    # no source/spans needed: error locations are compile-time literals baked
+    # into the emitted code).
+    def self.from_iseq_binary(iseq_binary, partial_constants: nil)
+      from_cache(source: "", spans: EMPTY_ARRAY, iseq_binary: iseq_binary,
+                 partial_constants: partial_constants)
+    end
+
+    # Encode this compiled template into the persistable artifact string
+    # (see LiquidIL::Artifact for the format and LiquidIL::Artifact.load /
+    # LiquidIL.load_artifact for the other side).
+    def to_artifact
+      Artifact.encode(self)
+    end
+
     # Render the template with the given variables.
     #
     #   template.render(name: "World")
@@ -266,7 +286,9 @@ module LiquidIL
         regs = base_regs ? base_regs.dup : EMPTY_HASH
       end
       scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false)
-      scope.file_system = ctx&.file_system
+      # file_system: context wins; registers allow artifact-loaded templates
+      # (no context) to resolve dynamic partials at render time.
+      scope.file_system = ctx&.file_system || regs["file_system"] || regs[:file_system]
       scope.render_errors = render_errors
       # strict_variables: render-time overrides context-level
       scope.strict_variables = strict_variables.nil? ? (ctx&.strict_variables || false) : strict_variables
@@ -290,7 +312,7 @@ module LiquidIL
       end
     rescue LiquidIL::ResourceLimitError => e
       raise unless render_errors
-      "Liquid error: #{e.message}"
+      (e.partial_output || "") + "Liquid error: #{e.message}"
     rescue LiquidIL::RuntimeError => e
       raise unless render_errors
       output = e.partial_output || ""
@@ -342,13 +364,13 @@ module LiquidIL
       File.binwrite(filename, iseq_binary)
     end
 
-    # Write full cache payload (source, spans, binary, partial constants) to disk.
+    # Write the artifact envelope to disk.
     #
     #   template.write_cache("template.ilc")
     #   restored = LiquidIL::Template.load_cache("template.ilc")
     #
     def write_cache(filename)
-      File.binwrite(filename, Marshal.dump(cache_data))
+      File.binwrite(filename, to_artifact)
     end
 
     # Pretty-print IL instructions (for debugging).
@@ -385,9 +407,10 @@ module LiquidIL
         )
       end
 
-      # Load a template from a full cache file written by #write_cache.
+      # Load a template from a cache file written by #write_cache.
+      # Accepts both the framed artifact format and legacy Marshal payloads.
       def load_cache(filename)
-        from_cache(**Marshal.load(File.binread(filename)))
+        Artifact.load(File.binread(filename))
       end
     end
 
@@ -486,5 +509,26 @@ module LiquidIL
     def register_filter(mod, pure: false)
       Filters.register(mod, pure: pure)
     end
+
+    # Load a persisted artifact string into a CompiledArtifact — the fast
+    # path for the compile-once → memcache/DB → cold load+render workflow.
+    #
+    #   artifact = LiquidIL.load_artifact(memcache.get(key))
+    #   artifact.render(assigns)
+    #
+    def load_artifact(blob)
+      Artifact.load_compiled(blob)
+    end
+
+    # One-shot cold load + render.
+    #
+    #   LiquidIL.load_and_render(memcache.get(key), assigns)
+    #
+    def load_and_render(blob, assigns = {}, registers: nil)
+      Artifact.load_compiled(blob).render(assigns, registers: registers)
+    end
   end
 end
+
+require_relative "liquid_il/artifact"
+require_relative "liquid_il/template_cache"

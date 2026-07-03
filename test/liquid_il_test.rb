@@ -207,7 +207,9 @@ class PartialInliningTest < Minitest::Test
     fs = MemoryFS.new("snippet" => "Hi {{ target }}")
     ctx = LiquidIL::Context.new(file_system: fs)
     opt = LiquidIL::Optimizer.optimize(ctx)
-    template = opt.parse("{% render 'snippet' %}")
+    # render is isolated: top-level assigns are NOT visible inside the partial
+    # (reference semantics), so the value must be passed explicitly.
+    template = opt.parse("{% render 'snippet', target: target %}")
 
     assert_equal "Hi World", template.render("target" => "World")
     # Partial may be loaded more than once during compile + inline lowering.

@@ -160,6 +160,8 @@ module LiquidIL
     LOOKUP = method(:lookup)
 
     def self.call_filter(name, input, args, scope, current_file = nil, line = 1)
+      # An earlier filter in the chain errored — pass the marker through
+      return input if input.is_a?(LiquidIL::ErrorMarker)
       # Try built-in filters first
       if LiquidIL::Filters.valid_filter_methods[name]
         return LiquidIL::Filters.apply(name, input, args, scope)
@@ -186,6 +188,8 @@ module LiquidIL
     # Fast filter call — filter name pre-validated at compile time.
     # Skips name lookup in Filters.apply. Used for filters known to exist.
     def self.call_filter_fast(name, input, args, scope, current_file = nil, line = 1)
+      # An earlier filter in the chain errored — pass the marker through
+      return input if input.is_a?(LiquidIL::ErrorMarker)
       LiquidIL::Filters.apply_fast(name, input, args, scope)
     rescue LiquidIL::FilterError
       nil
@@ -197,6 +201,8 @@ module LiquidIL
     # Custom filter call — dispatches to a custom filter module registered via register_filter.
     # Pure filters get direct dispatch (no scope). Impure filters receive scope.
     def self.call_custom_filter(name, input, args, scope, current_file = nil, line = 1)
+      # An earlier filter in the chain errored — pass the marker through
+      return input if input.is_a?(LiquidIL::ErrorMarker)
       scope.apply_custom_filter(name, input, args)
     rescue LiquidIL::FilterError
       nil
@@ -447,6 +453,37 @@ module LiquidIL
       end
     end
 
+    # Partial-lambda wrapper: all per-invocation bookkeeping (current-file
+    # tracking, render-depth limit, render_errors recovery) for statically
+    # compiled partial lambdas. Hoisted out of the emitted code — this JITs
+    # once in the runtime instead of being duplicated into every artifact.
+    # The block runs the partial body and appends to `output`.
+    def self.invoke_partial(name, scope, isolated, caller_line, output)
+      prev_file = scope.current_file
+      scope.current_file = name
+      scope.push_render_depth
+      if scope.render_depth_exceeded?(strict: !isolated)
+        raise LiquidIL::RuntimeError.new("Nesting too deep", file: name, line: caller_line)
+      end
+      yield
+    rescue LiquidIL::ResourceLimitError
+      raise  # Resource limits abort the whole render — never recovered inline
+    rescue LiquidIL::RuntimeError => e
+      raise unless scope.render_errors
+      output << (e.partial_output || "")
+      location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
+      output << "Liquid error (#{location}): #{e.message}"
+    rescue LiquidIL::FilterRuntimeError => e
+      raise unless scope.render_errors
+      output << "Liquid error (#{name} line 1): " << e.message.to_s
+    rescue StandardError => e
+      raise unless scope.render_errors
+      output << "Liquid error (#{name} line 1): " << LiquidIL.clean_error_message(e.message).to_s
+    ensure
+      scope.current_file = prev_file
+      scope.pop_render_depth
+    end
+
     # Runtime dynamic partial execution — used when partial name is a variable.
     # Compiles and runs the partial on-the-fly.
     def self.execute_dynamic_partial(name, assigns, output, scope, isolated:, tag_type: "include", caller_line: 1, parent_cycle_state: nil)
@@ -571,6 +608,7 @@ module LiquidIL
       alias_method :lf, :lookup_prop_fast
       alias_method :lp, :lookup_prop
       alias_method :oa, :output_append
+      alias_method :ip, :invoke_partial
       alias_method :cf, :call_filter
       alias_method :cff, :call_filter_fast
       alias_method :ccf, :call_custom_filter

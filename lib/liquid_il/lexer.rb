@@ -171,12 +171,15 @@ module LiquidIL
       @_needs_lstrip = @trim_next
       @trim_next = false
 
-      # Fast path: use String#index (C implementation) to skip to '{' positions
-      # instead of byte-by-byte scanning in Ruby
+      # Fast path: use String#byteindex (C implementation) to skip to '{'
+      # positions instead of byte-by-byte scanning in Ruby.
+      # MUST be byteindex, not index: all lexer positions are byte offsets
+      # (getbyte/byteslice/StringScanner.pos), and char indexes diverge as
+      # soon as the template contains a multibyte character.
       pos = @source_bytes  # Default: no delimiter found, raw to end
       src = @source
       search_from = start_pos
-      while (brace_pos = src.index("{", search_from))
+      while (brace_pos = src.byteindex("{", search_from))
         search_from = brace_pos + 1
         b1 = src.getbyte(brace_pos + 1)
         if b1 == 123 || b1 == 37  # '{' or '%'

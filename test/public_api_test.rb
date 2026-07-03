@@ -210,7 +210,7 @@ class TemplateIntrospectionTest < Minitest::Test
     t = LiquidIL::Template.parse("hello {{ x }}")
     ruby_src = t.to_ruby("MyTemplate")
     assert_includes ruby_src, "module MyTemplate"
-    assert_includes ruby_src, "def render"
+    assert_includes ruby_src, "def self.render"
   end
 
   def test_template_write_ruby

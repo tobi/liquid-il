@@ -22,6 +22,60 @@ LiquidIL achieves its performance through a combination of compile-time decision
 
 See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for detailed profiling data and future optimization paths.
 
+## The Optimization Target
+
+LiquidIL is optimized, by default and without tuning knobs, for one specific production workload:
+
+> **Compile a template once, persist the compiled artifact (memcache / database), then in some other process — one that has never seen this template — fetch the artifact and execute it.**
+
+```ruby
+blob = memcache.get(key)                  # a compiled artifact string
+LiquidIL.load_and_render(blob, assigns)   # load → render, cold
+```
+
+The hot path is therefore **deserialize → callable proc → first render**, *not* re-rendering a template already resident in memory. That single assumption drives every design decision, and there are no `optimize_for:`-style switches — the one default *is* the optimized configuration:
+
+- **The emitted code is kept small.** The generated Ruby (and thus the ISeq binary) is the thing we load cold, and `RubyVM::InstructionSequence.load_from_binary` cost scales with binary size (~3µs/KB). Repeated codegen patterns are pulled into the runtime library instead of being emitted per-template, so the artifact carries as little code as possible.
+- **The load process is optimized.** Artifacts are raw ISeq binaries in a thin framed envelope — no source, no spans (error locations are baked in as compile-time literals, so the artifact needs neither). Decoding is a magic-check plus a `byteslice`, not a Marshal object graph.
+- **The source is not embedded.** Callers already hold their templates in a filesystem or database; the artifact stays lean and the source is refetched only if a Ruby-version change forces a recompile.
+
+### Runtime environment assumptions
+
+LiquidIL assumes and is tuned for:
+
+- **Ruby 4+ with a JIT always enabled** (YJIT today, ZJIT later). Emitted code is written to be JIT-friendly: minimal branching, minimal allocation, and hot patterns lifted into the runtime so the JIT compiles them **once** and reuses them across every template.
+- **The LiquidIL runtime already loaded and warm** in the executing process (the JIT has already compiled the shared helpers). Only the per-template ISeq is cold.
+- **Templates delivered as compiled string artifacts** that are loaded and executed, rather than re-parsed.
+
+### Memory-bounded template cache
+
+For processes that render the same templates repeatedly, an optional LRU cache loads each artifact once and keeps the live proc resident, evicting least-recently-used entries when a byte budget is exceeded:
+
+```ruby
+cache = LiquidIL::TemplateCache.new(max_bytes: 64 * 1024 * 1024)
+
+blob = memcache.get(key)             # fetch the compiled artifact
+cache.render(key, blob, assigns)     # loads+caches on first use, reuses thereafter
+```
+
+The budget is accounted by the summed size of the loaded artifacts; once it is exceeded, the least-recently-used templates are dropped. Each entry remembers its blob's CRC32, so republishing a template under the same key transparently reloads it.
+
+### The artifact format
+
+`Template#to_artifact` produces a framed binary (`"LQIL"` magic, format version, Ruby version/platform stamp, content digest, length-prefixed segments — see `lib/liquid_il/artifact.rb`). Loading an artifact built by a different Ruby raises `LiquidIL::StaleArtifactError` (a mismatched ISeq binary can crash the VM, so it is never fed to `load_from_binary`); a damaged blob raises `LiquidIL::CorruptArtifactError`. In both cases the caller recompiles from its own copy of the source and re-persists.
+
+### Measured cold-path numbers
+
+`rake bench:cold` (Ruby 4.0, YJIT, medians; hard-fails unless artifact output == fresh-compile output == reference liquid gem output):
+
+| spec | artifact | decode | ISeq load | cold total | warm render |
+|---|---|---|---|---|---|
+| bench_nested_partials | 5.0KB | 2.4µs | 10.7µs | **14.2µs** | 2.4µs |
+| bench_theme_cart_page | 15.3KB | 3.6µs | 24.9µs | **29.7µs** | 19.0µs |
+| bench_theme_product_page | 20.7KB | 4.8µs | 33.2µs | **39.2µs** | 20.2µs |
+
+Before this optimization pass the same pages cost 45–81µs cold with 18–37KB artifacts: the wins came from hoisting per-partial boilerplate into the (already-jitted) runtime, a census-based inline-vs-shared-lambda policy for partials, baking error locations in as compile-time literals, and replacing the Marshal envelope with the framed binary.
+
 ## Quick Start
 
 ```ruby

@@ -96,10 +96,10 @@ class PaginateIncludeReproTest < Minitest::Test
     assert_equal "/a\n/b\n", out.gsub(/^\s+/, "")
   end
 
-  def test_liquid_il_current_behavior_repro
+  def test_liquid_il_matches_reference_behavior
     ctx = LiquidIL::Context.new(file_system: FS.new("product-card" => SNIPPET))
     out = ctx.render(TEMPLATE, assigns)
 
-    assert_includes out, "Liquid error (product-card line 1): no implicit conversion of String into Integer"
+    assert_equal "/a\n/b\n", out.gsub(/^\s+/, "")
   end
 end

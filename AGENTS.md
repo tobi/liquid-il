@@ -12,6 +12,36 @@ LiquidIL is a high-performance Liquid template implementation that compiles Liqu
 2. **Solving problems at the right level** - Parse-time decisions in lexer/parser, compile-time optimizations via IL passes, runtime only when necessary
 3. **Code that tenderlove would be proud of** - Performance-conscious Ruby following the patterns in the ruby skill's performance resources
 
+## The Optimization Target (read this before touching codegen)
+
+LiquidIL is optimized for **one** workload, by default, with **no tuning switches**:
+
+> Compile once → persist the compiled artifact (memcache/DB) → in a *different* process that has never seen the template, `blob = memcache.get(key)` → load → render.
+
+The hot path is **deserialize → callable proc → first render**, not warm re-render. Two consequences govern every codegen change:
+
+- **Keep the emitted ISeq small.** The generated Ruby becomes an ISeq binary that we load *cold*, and `RubyVM::InstructionSequence.load_from_binary` cost scales with binary size (~3µs/KB). For realistic templates the cold load costs *more than the render itself*. Smaller emitted code = faster cold start. Before adding an inline expansion, ask: "how many bytes does this add to every artifact that uses it?"
+- **Prefer the runtime over the emitted string — the "create-runtime" nudge.** When a code pattern would be emitted repeatedly (per call site, per loop, per partial), **lift it into a runtime helper** (`lib/liquid_il/runtime_helpers.rb`) and emit a single call instead. The runtime library is loaded once and JIT-compiles once, so moving a pattern there costs **zero artifact bytes** and gets compiled to native code a single time — versus duplicating it into every template's ISeq. This is almost always the right trade for anything that isn't a trivial one-liner.
+
+  ```ruby
+  # AVOID: ~25 lines of prologue/rescue/ensure emitted per partial call site
+  # PREFER: emit one call, put the body in the runtime
+  _H.invoke_partial(name, body, assigns, _O, _S, ...)   # helper JITs once, adds ~1 line/artifact
+  ```
+
+## JIT / YJIT usage (assume it is always on)
+
+Emitted code runs under **Ruby 4+ with a JIT always enabled** (YJIT now, ZJIT later), with the LiquidIL runtime already loaded and warm. Write generated code for that reality:
+
+- **Minimize branching** in emitted code — prefer a branchless helper call over inline conditionals; the JIT deoptimizes on cold/polymorphic branches.
+- **Avoid allocations** in emitted code (reuse buffers, use free-array tricks like `[a,b].max`, don't allocate transient hashes/arrays per iteration).
+- **Push hot patterns into the runtime** so the JIT compiles them once and shares them across all templates, rather than re-emitting (and re-JITting) them per template.
+- **Never embed the template source or spans in the artifact** — error line numbers and filenames are compile-time literals baked into the emitted code, so the artifact needs neither. (Verified: stripping them leaves error output byte-identical.)
+
+## Security invariant (emitted code runs untrusted input)
+
+Templates are untrusted and are compiled into Ruby *source*. **Never interpolate a template-derived value raw into an emitted double-quoted string** (`"... #{name} ..."`) — that is a code-injection primitive. Emit every template-derived value through `.inspect` / the string-literal helper so `#{...}`, quotes, and backslashes are escaped. Constrain this at compile time: route all string emission through one helper so the dangerous shape is unrepresentable.
+
 ## Commands
 
 ```bash
@@ -27,6 +57,14 @@ bundle exec liquid-spec eval adapter.rb -l "{{ 'hi' | upcase }}"
 
 # List available specs
 bundle exec liquid-spec run adapter.rb --list
+
+# Cold-path benchmark (the optimization target's regression gate):
+# artifact decode -> ISeq load -> eval -> first render, medians per spec,
+# hard-fails unless artifact/fresh/reference outputs all match
+rake bench:cold
+
+# Warm benchmark (must not regress when trading warm speed for artifact size)
+rake bench
 ```
 
 ## Architecture

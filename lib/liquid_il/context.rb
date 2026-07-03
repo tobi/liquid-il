@@ -86,7 +86,9 @@ module LiquidIL
       limit = @resource_limits[:output_limit] || @resource_limits["output_limit"]
       return unless limit
       if output.bytesize > limit
-        raise LiquidIL::ResourceLimitError, "Memory limits exceeded"
+        error = LiquidIL::ResourceLimitError.new("Memory limits exceeded")
+        error.partial_output = output
+        raise error
       end
     end
 
@@ -188,9 +190,9 @@ module LiquidIL
         @static_environments = stringify_keys(static_environments)
         root_scope = stringify_keys(assigns)
       else
-        # No explicit static_environments: assigns is both the initial context
-        # and the mutable scope. We dup for static_environments so that
-        # runtime assigns ({% assign %}) don't leak into isolated render scopes.
+        # No explicit static_environments: render-call assigns are the mutable
+        # scope ONLY. Reference Liquid does not expose them inside {% render %}
+        # (isolated partials see just static_environments + explicit args).
         all_strings = false
         if assigns.is_a?(Hash) && !assigns.empty?
           all_strings = true
@@ -201,7 +203,7 @@ module LiquidIL
         else
           root_scope = stringify_keys(assigns)
         end
-        @static_environments = root_scope.dup
+        @static_environments = nil
       end
       @scopes = nil  # Lazy: only created on push_scope
       @root_scope = root_scope
@@ -486,7 +488,9 @@ module LiquidIL
       limit = @resource_limits[:output_limit] || @resource_limits["output_limit"]
       return unless limit
       if output.bytesize > limit
-        raise LiquidIL::ResourceLimitError, "Memory limits exceeded"
+        error = LiquidIL::ResourceLimitError.new("Memory limits exceeded")
+        error.partial_output = output
+        raise error
       end
     end
 

@@ -50,7 +50,8 @@ class FileSystemCompatTest < Minitest::Test
       fs = Liquid::LocalFileSystem.new(dir)
       ctx = LiquidIL::Context.new(file_system: fs)
 
-      assert_equal "HEADER Bob", ctx.render("{% render 'header' %}", "name" => "Bob")
+      # render is isolated (reference semantics): pass the value explicitly
+      assert_equal "HEADER Bob", ctx.render("{% render 'header', name: name %}", "name" => "Bob")
     end
   end
 

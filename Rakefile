@@ -72,6 +72,13 @@ task :bench do
   end
 end
 
+desc "Cold-path benchmark: artifact decode → ISeq load → eval → first render"
+namespace :bench do
+  task :cold do
+    system("RUBY_YJIT_ENABLE=1 bundle exec ruby bench/cold_bench.rb") || exit(1)
+  end
+end
+
 desc "Show available optimization passes"
 task :passes do
   system "bin/liquidil passes"
