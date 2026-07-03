@@ -605,7 +605,10 @@ module LiquidIL
       argc = 0
       if lexer.current == ExpressionLexer::COLON
         lexer.advance
-        argc = parse_filter_args(lexer)
+        # Allow trailing colon with no args (e.g., upcase:)
+        unless lexer.current == ExpressionLexer::EOF || lexer.current == ExpressionLexer::PIPE
+          argc = parse_filter_args(lexer)
+        end
       end
 
       # Apply filter aliases at compile time (lowering)
@@ -654,6 +657,8 @@ module LiquidIL
         break unless lexer.current == ExpressionLexer::COMMA
 
         lexer.advance
+        # Allow trailing comma: break if next token is PIPE (next filter) or EOF (end)
+        break if lexer.current == ExpressionLexer::PIPE || lexer.current == ExpressionLexer::EOF
       end
 
       # Now emit all keyword arguments
