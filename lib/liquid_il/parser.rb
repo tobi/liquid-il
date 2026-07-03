@@ -529,7 +529,11 @@ module LiquidIL
     def parse_variable_lookup(lexer)
       name = lexer.value
       lexer.advance
-      @builder.find_var(name)
+      if name == "self"
+        @builder.find_self
+      else
+        @builder.find_var(name)
+      end
       parse_property_chain(lexer)
     end
 

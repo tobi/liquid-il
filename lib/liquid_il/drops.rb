@@ -236,4 +236,33 @@ module LiquidIL
       end
     end
   end
+
+  # SelfDrop — returned by the special `self` keyword (FIND_SELF IL instruction).
+  # It wraps the current Scope and delegates property/bracket access back to
+  # scope.lookup, so templates can do {{ self.foo }} or {{ self['foo'] }} to
+  # access assigns dynamically without exposing context internals.
+  # When captured via {% assign s = self %}, it retains the scope reference,
+  # so later access resolves through the captured scope, not the current one.
+  class SelfDrop < Drop
+    def initialize(scope)
+      super()
+      @scope = scope
+    end
+
+    def invoke_drop(key)
+      @scope.lookup(key.to_s)
+    end
+
+    def key?(key)
+      !@scope.lookup(key.to_s).nil?
+    end
+
+    def to_liquid
+      self
+    end
+
+    def to_s
+      ""
+    end
+  end
 end

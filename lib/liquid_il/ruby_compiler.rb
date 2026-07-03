@@ -575,7 +575,7 @@ module LiquidIL
           else
             code << "  _O << " << merged.inspect << "\n"
           end
-        when IL::FIND_VAR, IL::FIND_VAR_PATH
+        when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::FIND_SELF
           # Needs peek - delegate to generate_statement
           result = generate_statement(1)
           break if result.nil?
@@ -706,7 +706,7 @@ module LiquidIL
         var_expr = generate_var_path_expr(inst[1], inst[2])
         inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts)
 
-      when IL::FIND_VAR, IL::FIND_VAR_PATH
+      when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::FIND_SELF
         if peek_for_loop?
           generate_for_loop(indent)
         elsif peek_tablerow?
@@ -1462,6 +1462,9 @@ module LiquidIL
             stack << "_S.lookup(#{inst[1].inspect})"
           end
           @pc += 1
+        when IL::FIND_SELF
+          stack << "_S.self_drop"
+          @pc += 1
         when IL::FIND_VAR_PATH
           stack << generate_var_path_expr(inst[1], inst[2])
           @pc += 1
@@ -1633,6 +1636,7 @@ module LiquidIL
                 when IL::CONST_BLANK then stack << "LiquidIL::BlankLiteral.instance"; @pc += 1
                 when IL::FIND_VAR then stack << "_S.lookup(#{build_inst[1].inspect})"; @pc += 1
                 when IL::FIND_VAR_PATH then stack << generate_var_path_expr(build_inst[1], build_inst[2]); @pc += 1
+                when IL::FIND_SELF then stack << "_S.self_drop"; @pc += 1
                 when IL::LOAD_TEMP then stack << "__temp_#{build_inst[1]}__"; @pc += 1
                 when IL::LOOKUP_CONST_KEY
                   obj_ruby = stack.pop || "nil"
@@ -1704,6 +1708,10 @@ module LiquidIL
                 or_ruby = build_or_operand_ruby(build_inst[1])
                 or_operands << or_ruby if or_ruby
                 break unless or_ruby
+              when IL::FIND_SELF
+                or_operands << "_S.self_drop"
+                @pc += 1
+                break
               when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_FALSE, IL::CONST_NIL
                 case build_inst[0]
                 when IL::CONST_INT then or_operands << build_inst[1].inspect

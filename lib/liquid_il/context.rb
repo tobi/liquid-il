@@ -278,6 +278,11 @@ module LiquidIL
       @top_scope = @scopes.first
     end
 
+    # Return a SelfDrop wrapping this scope for the `self` keyword
+    def self_drop
+      SelfDrop.new(self)
+    end
+
     def lookup(key)
       key = key.to_s unless key.is_a?(String)
       # Fast path: check top scope first (most common for loop vars, assigns)
