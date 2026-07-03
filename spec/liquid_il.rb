@@ -23,17 +23,13 @@ end
 LiquidSpec.configure do |config|
   # Run all default suites, excluding Shopify runtime extensions that require
   # Shopify theme objects, filters, include quirks, or production error formats
-  # outside core LiquidIL. The liquid_vm_diff_pending feature marks local
-  # parity repros where reference Liquid and liquid-vm agree but LiquidIL still
-  # differs; opt out until each behavior is implemented and the feature can be
-  # removed from that spec.
+  # outside core LiquidIL.
   config.missing_features = [
     :shopify_tags,
     :shopify_objects,
     :shopify_filters,
     :shopify_includes,
     :shopify_error_handling,
-    :liquid_vm_diff_pending,
   ]
 end
 
