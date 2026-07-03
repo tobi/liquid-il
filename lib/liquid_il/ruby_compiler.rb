@@ -2819,8 +2819,9 @@ module LiquidIL
         if SAFE_NUMERIC_FILTERS.match?("_F.#{filter_name}(") && args.length > 0 && args.all? { |a| a.match?(INT_LITERAL_RE) }
           return "(#{input_ruby} || 0).to_f.#{filter_name}(#{args.join(', ')})"
         elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
-          # Inline simple filters: Utils.to_s(input).method -> input.to_s.method
-          return "#{input_ruby}.to_s.#{filter_name}"
+          # Inline simple filters: Utils.to_s(input).method
+          # Use _U.to_s (not .to_s) to get correct Liquid hash/array stringification
+          return "_U.to_s(#{input_ruby}).#{filter_name}"
         elsif args.empty?
           return "_F.#{filter_name}(#{input_ruby})"
         else
@@ -2890,13 +2891,12 @@ module LiquidIL
       # For simple inline filters, use a per-filter cache to avoid repeated method calls
       # e.g., input.to_s.capitalize -> (_CAP__ ||= {})[(_v = input.to_s)] ||= _v.capitalize
       cache_pattern = nil
-      if (suffix_m = expr_ruby.match(/\.to_s\.(capitalize|upcase|downcase|strip|lstrip|rstrip)\z/))
-        filter_name = suffix_m[1]
+      if (suffix_m = expr_ruby.match(/\._U\.to_s\((.+)\)\.(capitalize|upcase|downcase|strip|lstrip|rstrip)\z/))
+        filter_name = suffix_m[2]
         if (cache_var = FILTER_CACHE[filter_name])
-          # Extract the input expression (before .to_s)
-          input_expr = expr_ruby.sub(/\.to_s\.(?:capitalize|upcase|downcase|strip|lstrip|rstrip)\z/, '')
-          # Remove trailing .to_s if present
-          cache_pattern = "(#{cache_var}[(_v = #{input_expr}.to_s)] || (#{cache_var}[_v] = _v.#{filter_name}))"
+          # Extract the input expression (inside _U.to_s(...))
+          input_expr = suffix_m[1]
+          cache_pattern = "(#{cache_var}[(_v = _U.to_s(#{input_expr}))] || (#{cache_var}[_v] = _v.#{filter_name}))"
         end
       end
       direct = cache_pattern || expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)
