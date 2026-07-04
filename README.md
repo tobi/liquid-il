@@ -39,6 +39,27 @@ The hot path is therefore **deserialize → callable proc → first render**, *n
 - **The load process is optimized.** Artifacts are raw ISeq binaries in a thin framed envelope — no source, no spans (error locations are baked in as compile-time literals, so the artifact needs neither). Decoding is a magic-check plus a `byteslice`, not a Marshal object graph.
 - **The source is not embedded.** Callers already hold their templates in a filesystem or database; the artifact stays lean and the source is refetched only if a Ruby-version change forces a recompile.
 
+### The three render scenarios
+
+Every render in production falls into one of three cache scenarios, and every benchmark in this repo reports all three (plus the artifact size that links them). These are **the** core optimization and test scenarios:
+
+| scenario | what happens | dominated by |
+|---|---|---|
+| **cache-miss → render** | template never seen: parse + compile + render | parser + IL optimizer + codegen |
+| **remote-hit → render** | compiled artifact fetched as a string (memcache/DB) → load → render | artifact size (~3µs/KB ISeq load) |
+| **in-process → render** | template already loaded in this process → render | generated-code quality under JIT |
+
+`rake bench` (alias `rake scenarios`) prints exactly this table against reference liquid; `rake liquid_vm:scenarios` adds Shopify/liquid-vm classic and SSA. Sample (Ruby 4.0, YJIT, geomean over the common bench specs):
+
+| adapter | cache-miss | remote-hit | in-process | artifact |
+|---|---:|---:|---:|---:|
+| liquid_il | 563µs | **104µs** | **68µs** | 9.4KB |
+| liquid_ruby | 459µs | — | 197µs | — |
+| liquid_vm | 427µs | 109µs | 92µs | 1.7KB |
+| liquid_vm_ssa | 985µs | 111µs | 93µs | 1.8KB |
+
+remote-hit is the production workload and the primary target; in-process shows the ceiling of the generated code; cache-miss is the cost of a cold fleet. Artifact size is the main lever on remote-hit — it is where LiquidIL still trails liquid-vm's compact bytecode.
+
 ### Runtime environment assumptions
 
 LiquidIL assumes and is tuned for:
@@ -78,10 +99,11 @@ Before this optimization pass the same pages cost 45–81µs cold with 18–37KB
 
 All benchmarking runs through liquid-spec's harness (GC-disciplined timing, real percentiles, allocation counts). The adapter implements liquid-spec's **compiled-artifact protocol** (`LiquidSpec.dump_artifact` / `LiquidSpec.load_artifact`), so every bench reports the artifact stage — payload bytes, cold load, load+first-render, steady-state load time and allocations — with a dump → load → render roundtrip check per spec:
 
-- `rake bench` — liquid-spec's benchmark suite, compared against reference liquid (render + artifact-load geometric means)
-- `rake bench:partials` — the partial-heavy matrix in `specs/partials/` (a local liquid-spec suite; its `expected:` blocks are generated from the reference liquid gem), same comparison
-- `rake bench:cold` — per-stage breakdown of the load pipeline (envelope decode / `load_from_binary` / eval / first render), hard-validated against the reference gem
-- `rake liquid_vm:bench` / `rake bench:liquid_vm` — optional JIT-enabled comparison against Shopify/liquid-vm classic and SSA. This private repo is cloned to `/tmp/liquid-vm` by default and skipped by all default tasks; see [docs/liquid_vm.md](docs/liquid_vm.md).
+- `rake bench` (alias `rake scenarios`) — the three-scenario table (cache-miss / remote-hit / in-process + artifact size) vs reference liquid, geomean plus per-spec
+- `rake bench:detail` — liquid-spec's detailed per-stage output (parse/render/load distributions, allocation counts, YJIT stats)
+- `rake bench:partials` — the partial-heavy matrix in `specs/partials/` (a local liquid-spec suite; its `expected:` blocks are generated from the reference liquid gem)
+- `rake bench:cold` — per-stage breakdown of the remote-hit load pipeline (envelope decode / `load_from_binary` / eval / first render), hard-validated against the reference gem
+- `rake liquid_vm:scenarios` — the same three-scenario table including Shopify/liquid-vm classic and SSA; `rake liquid_vm:bench` for their detailed output. This private repo is cloned to `/tmp/liquid-vm` by default and skipped by all default tasks; see [docs/liquid_vm.md](docs/liquid_vm.md).
 
 ## Quick Start
 

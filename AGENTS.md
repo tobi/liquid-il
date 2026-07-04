@@ -18,6 +18,18 @@ LiquidIL is optimized for **one** workload, by default, with **no tuning switche
 
 > Compile once → persist the compiled artifact (memcache/DB) → in a *different* process that has never seen the template, `blob = memcache.get(key)` → load → render.
 
+### The three render scenarios (measure every change against these)
+
+Every render is one of three cache scenarios; benchmarks report all three plus artifact size. When you optimize or evaluate a change, state which scenario it helps and confirm the others didn't regress:
+
+| scenario | what happens | dominated by |
+|---|---|---|
+| **cache-miss → render** | parse + compile + render (template never seen) | parser + IL passes + codegen time |
+| **remote-hit → render** | artifact string (memcache/DB) → load → render — **the production workload** | artifact size (~3µs/KB ISeq load) |
+| **in-process → render** | already-loaded template → render | generated-code quality under JIT |
+
+`rake bench` prints this table vs reference liquid; `rake liquid_vm:scenarios` adds liquid-vm. Current standing: LiquidIL wins remote-hit and in-process; artifact size (vs liquid-vm's compact bytecode) and cache-miss parse time are the open gaps.
+
 The hot path is **deserialize → callable proc → first render**, not warm re-render. Two consequences govern every codegen change:
 
 - **Keep the emitted ISeq small.** The generated Ruby becomes an ISeq binary that we load *cold*, and `RubyVM::InstructionSequence.load_from_binary` cost scales with binary size (~3µs/KB). For realistic templates the cold load costs *more than the render itself*. Smaller emitted code = faster cold start. Before adding an inline expansion, ask: "how many bytes does this add to every artifact that uses it?"
@@ -58,16 +70,22 @@ bundle exec liquid-spec eval spec/liquid_il.rb -l "{{ 'hi' | upcase }}"
 # List available specs
 bundle exec liquid-spec run spec/liquid_il.rb --list
 
-# Cold-path benchmark (the optimization target's regression gate):
+# THE benchmark: three-scenario table (cache-miss / remote-hit / in-process
+# + artifact size) vs reference liquid, geomean and per-spec
+rake bench            # alias: rake scenarios
+
+# Same table including Shopify/liquid-vm classic + SSA (private repo,
+# cloned to /tmp/liquid-vm; see docs/liquid_vm.md)
+rake liquid_vm:scenarios
+
+# Cold-path stage breakdown of the remote-hit scenario (regression gate):
 # artifact decode -> ISeq load -> eval -> first render, medians per spec,
 # hard-fails unless artifact/fresh/reference outputs all match
 rake bench:cold
 
-# Warm + artifact-load benchmark vs reference liquid (liquid-spec harness;
-# the adapter implements LiquidSpec.dump_artifact / load_artifact, so every
-# spec reports a "Load" stage: artifact bytes, cold load @1, load+first-render
-# cold total, steady-state load time/allocs — with roundtrip verification)
-rake bench
+# Detailed per-stage liquid-spec output (parse/render/load distributions,
+# allocation counts, YJIT stats) when the scenario table isn't enough
+rake bench:detail
 
 # Same comparison on the partial-heavy local suite (specs/partials/ —
 # a liquid-spec local suite; expected: blocks generated from reference liquid)

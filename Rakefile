@@ -135,8 +135,34 @@ module LiquidVmRake
   def ensure_adapters!
     adapters.each { |path| ensure_adapter!(path) }
   end
+end
 
-  def print_cache_scenario_table(jsonl)
+# The three core render scenarios (plus artifact size) that every benchmark
+# reports. These are THE optimization and test scenarios for LiquidIL — see
+# README.md "The three render scenarios" and AGENTS.md.
+#
+#   cache-miss  → render : parse + compile + render (template never seen)
+#   remote-hit  → render : compiled artifact fetched as a string (memcache/DB)
+#                          → load → render
+#   in-process  → render : template already loaded in this process → render
+#   artifact             : compiled artifact size (drives remote-hit load
+#                          cost, ~3µs/KB)
+module CacheScenarios
+  module_function
+
+  def capture_bench_jsonl!(*argv)
+    command = ["bundle", "exec", "liquid-spec", "bench", *argv.flatten.map(&:to_s), "--jsonl"]
+    puts command.shelljoin
+    stdout, stderr, status = Open3.capture3({ "RUBY_YJIT_ENABLE" => "1" }, *command)
+    unless status.success?
+      warn stderr unless stderr.empty?
+      abort("command failed: #{command.shelljoin}")
+    end
+    warn stderr unless stderr.empty?
+    stdout
+  end
+
+  def print_table(jsonl)
     rows = jsonl.each_line.filter_map do |line|
       data = JSON.parse(line, symbolize_names: true) rescue nil
       data if data && data[:type] == "spec" && data[:status] == "success"
@@ -149,41 +175,42 @@ module LiquidVmRake
 
     puts "Cache scenario benchmark table"
     puts
-    puts "source+render       = parse mean + render mean"
-    puts "string-cache+render = artifact load mean + render mean"
-    puts "memory+render       = render mean from an already-loaded compiled template"
+    puts "  cache-miss → render : parse + compile + render (template never seen)"
+    puts "  remote-hit → render : compiled artifact fetched as a string (memcache/DB) → load → render"
+    puts "  in-process → render : template already loaded in this process → render"
+    puts "  artifact            : compiled artifact size (drives remote-hit load cost, ~3µs/KB)"
     puts
     puts "Geomean across common successful specs (n=#{common.size})"
-    print_cache_scenario_rows(rows.select { |row| common.include?(spec_name(row)) })
+    print_rows(rows.select { |row| common.include?(spec_name(row)) })
 
     rows.group_by { |row| spec_name(row) }.sort_by(&:first).each do |name, spec_rows|
       puts
       puts name.sub(/\Abench_/, "")
-      print_cache_scenario_rows(spec_rows)
+      print_rows(spec_rows)
     end
   end
 
-  def print_cache_scenario_rows(rows)
-    puts "| adapter | source+render | string-cache+render | memory+render | artifact | specs |"
+  def print_rows(rows)
+    puts "| adapter | cache-miss | remote-hit | in-process | artifact | specs |"
     puts "|---|---:|---:|---:|---:|---:|"
     rows.group_by { |row| row[:adapter] }.sort_by(&:first).each do |adapter, adapter_rows|
-      metrics = adapter_rows.map { |row| cache_scenario_metrics(row) }
-      puts "| #{adapter} | #{fmt_time(geomean(metrics.map { |m| m[:source_render] }))} | " \
-           "#{fmt_time(geomean(metrics.map { |m| m[:string_cache_render] }))} | " \
-           "#{fmt_time(geomean(metrics.map { |m| m[:memory_render] }))} | " \
+      metrics = adapter_rows.map { |row| scenario_metrics(row) }
+      puts "| #{adapter} | #{fmt_time(geomean(metrics.map { |m| m[:cache_miss] }))} | " \
+           "#{fmt_time(geomean(metrics.map { |m| m[:remote_hit] }))} | " \
+           "#{fmt_time(geomean(metrics.map { |m| m[:in_process] }))} | " \
            "#{fmt_bytes(geomean(metrics.map { |m| m[:artifact_bytes] }))} | #{adapter_rows.size} |"
     end
   end
 
-  def cache_scenario_metrics(row)
+  def scenario_metrics(row)
     parse = row.dig(:parse, :mean) || row[:parse_mean]
     render = row.dig(:render, :mean) || row[:render_mean]
     load = row.dig(:artifact, :load_mean) || row[:load_mean]
     bytes = row.dig(:artifact, :bytes) || row[:artifact_bytes]
     {
-      source_render: parse && render && parse + render,
-      string_cache_render: load && render && load + render,
-      memory_render: render,
+      cache_miss: parse && render && parse + render,
+      remote_hit: load && render && load + render,
+      in_process: render,
       artifact_bytes: bytes,
     }
   end
@@ -256,12 +283,29 @@ end
 # (LiquidSpec.dump_artifact / load_artifact), so every bench also reports the
 # artifact stage: payload bytes, cold load, load+first-render, steady-state
 # load — with a dump → load → render roundtrip check per spec.
-desc "Benchmark vs reference liquid (liquid-spec suite, warm + artifact load, comparison)"
+desc "Benchmark vs reference liquid: the three core scenarios (cache-miss / remote-hit / in-process) + artifact size"
 task :bench do
-  system("RUBY_YJIT_ENABLE=1 bundle exec liquid-spec bench #{ADAPTER}") || exit(1)
+  jsonl = CacheScenarios.capture_bench_jsonl!(
+    "--adapters=liquid_ruby",
+    "--adapter=#{File.expand_path(ADAPTER)}"
+  )
+  FileUtils.mkdir_p("tmp")
+  File.write("tmp/scenarios.jsonl", jsonl)
+  CacheScenarios.print_table(jsonl)
+  puts
+  puts "Raw JSONL: tmp/scenarios.jsonl  (per-stage detail: rake bench:detail)"
 end
 
+# `rake scenarios` is the canonical name for the core comparison table
+desc "Alias of rake bench: the three core scenarios vs reference liquid"
+task scenarios: :bench
+
 namespace :bench do
+  desc "Detailed per-stage benchmark output (parse/render/load distributions, allocs, YJIT stats)"
+  task :detail do
+    system("RUBY_YJIT_ENABLE=1 bundle exec liquid-spec bench #{ADAPTER}") || exit(1)
+  end
+
   desc "Benchmark the local partial-heavy suite (specs/partials) vs reference liquid"
   task :partials do
     system("RUBY_YJIT_ENABLE=1 bundle exec liquid-spec bench #{ADAPTER} -s partials") || exit(1)
@@ -334,7 +378,7 @@ namespace :liquid_vm do
     )
   end
 
-  desc "Print source/cache/memory render comparison table for LiquidIL and optional liquid-vm"
+  desc "The three core scenarios (cache-miss / remote-hit / in-process) for LiquidIL, reference liquid, and optional liquid-vm"
   task scenarios: :setup do
     LiquidVmRake.ensure_adapters!
     jsonl = LiquidVmRake.capture_liquid_spec!(
@@ -348,7 +392,7 @@ namespace :liquid_vm do
     )
     FileUtils.mkdir_p("tmp")
     File.write("tmp/liquid_vm_scenarios.jsonl", jsonl)
-    LiquidVmRake.print_cache_scenario_table(jsonl)
+    CacheScenarios.print_table(jsonl)
     puts
     puts "Raw JSONL: tmp/liquid_vm_scenarios.jsonl"
   end
