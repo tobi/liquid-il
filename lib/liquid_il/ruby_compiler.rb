@@ -973,10 +973,10 @@ module LiquidIL
         temp_code + inline_output_append(expr_ruby, prefix, guard_interrupt: @uses_interrupts)
       when :assign
         var = @instructions[@pc - 1][1]
-        temp_code + "#{prefix}_v = #{expr_ruby}; _S.assign(#{var.inspect}, _v) unless _v.is_a?(LiquidIL::ErrorMarker)\n"
+        temp_code + "#{prefix}_H.af(_S, #{var.inspect}, #{expr_ruby})\n"
       when :assign_local
         var = @instructions[@pc - 1][1]
-        temp_code + "#{prefix}_v = #{expr_ruby}; _S.assign_local(#{var.inspect}, _v) unless _v.is_a?(LiquidIL::ErrorMarker)\n"
+        temp_code + "#{prefix}_H.afl(_S, #{var.inspect}, #{expr_ruby})\n"
       when :store_temp
         slot = @instructions[@pc][1]
         @pc += 1
@@ -2583,26 +2583,34 @@ module LiquidIL
     # Inline lookup for loop variables (avoids _H.lf method call + is_a? check)
     LOOP_VAR_RE = /\A_i\d+__\z/
 
-    # Fuse WRITE_RAW + following WRITE_VAR_PATH into one runtime send:
-    # `_O << "pre"` + `_H.olf(_O, base, "k")` → `_H.rolf(_O, "pre", base, "k")`
-    # (~40B of ISeq per site; the raw/lookup/raw sandwich is the most common
-    # statement pair in real templates). Consumes the WRITE_VAR_PATH from the
-    # stream on success; same eligibility rules as the olf/olp emission.
+    # Fuse WRITE_RAW + following WRITE_VAR / WRITE_VAR_PATH into one runtime
+    # send: `_O << "pre"` + `_H.olf(_O, base, "k")` → `_H.rolf(_O, "pre",
+    # base, "k")` (~40B of ISeq per site; the raw/lookup/raw sandwich is the
+    # most common statement pair in real templates). Consumes the write from
+    # the stream on success; same eligibility rules as the olf/olp emission.
     def try_fuse_raw_with_var_path(raw, _indent)
       nxt = @instructions[@pc]
-      return nil unless nxt && nxt[0] == IL::WRITE_VAR_PATH
-      return nil if @loop_var_aliases[nxt[1]]
-      path = nxt[2]
-      return nil if path.any? { |k| RuntimeHelpers::SPECIAL_KEYS[k.to_s] }
-
-      @pc += 1
-      base = "_S.lookup(#{nxt[1].inspect})"
+      return nil unless nxt
       guard = @uses_interrupts ? " unless _S.has_interrupt?" : ""
-      if path.length == 1
-        "  _H.rolf(_O, #{raw.inspect}, #{base}, #{path[0].to_s.inspect})#{guard}\n"
-      else
-        arr = register_frozen_array(path.map { |k| k.to_s.inspect })
-        "  _H.rolp(_O, #{raw.inspect}, #{base}, #{arr})#{guard}\n"
+
+      case nxt[0]
+      when IL::WRITE_VAR
+        return nil if @loop_var_aliases[nxt[1]]
+        @pc += 1
+        "  _H.roa(_O, #{raw.inspect}, _S.lookup(#{nxt[1].inspect}))#{guard}\n"
+      when IL::WRITE_VAR_PATH
+        return nil if @loop_var_aliases[nxt[1]]
+        path = nxt[2]
+        return nil if path.any? { |k| RuntimeHelpers::SPECIAL_KEYS[k.to_s] }
+
+        @pc += 1
+        base = "_S.lookup(#{nxt[1].inspect})"
+        if path.length == 1
+          "  _H.rolf(_O, #{raw.inspect}, #{base}, #{path[0].to_s.inspect})#{guard}\n"
+        else
+          arr = register_frozen_array(path.map { |k| k.to_s.inspect })
+          "  _H.rolp(_O, #{raw.inspect}, #{base}, #{arr})#{guard}\n"
+        end
       end
     end
 
@@ -2746,20 +2754,24 @@ module LiquidIL
     # Emitted code is one complete statement per line with no heredocs or
     # continuation lines, so newline → ";" is semantics-preserving; the
     # frozen_string_literal magic comment must stay on its own line.
-    # Consecutive raw appends that survive IL-level merging (they meet only
-    # after partial inlining assembles the final text) are fused via string
-    # literal juxtaposition: `_O << "a"` + `_O << "b"` → `_O << "a" "b"`,
-    # which Ruby folds into a single literal at parse time — one statement,
-    # one putstring, zero runtime cost.
-    RAW_APPEND_LINE = /\A_O << ("(?:[^"\\]|\\.)*")( unless _S\.has_interrupt\?)?\z/
+    # Consecutive output appends that survive IL-level merging (they meet
+    # only after partial inlining assembles the final text) are fused:
+    #   - raw + raw via string literal juxtaposition — `_O << "a" "b"` folds
+    #     into a single literal at parse time (one putstring)
+    #   - raw/expr runs via `<<` chaining — `_O << "a" << (x.to_s)` keeps one
+    #     statement (one getlocal/pop) instead of one per append
+    # Only self-contained right-hand sides chain: string literals, bare
+    # identifiers, or fully parenthesized expressions.
+    APPEND_LINE = /\A_O << ("(?:[^"\\]|\\.)*"|\w+|\(.*\))( unless _S\.has_interrupt\?)?\z/
 
     def self.compact_source(src)
       out = String.new(capacity: src.bytesize)
-      pending_raw = nil   # [literal, guard] of a not-yet-flushed raw append
+      parts = nil   # chained append parts; last-literal juxtaposition applies
+      guard = nil
       flush = lambda do
-        if pending_raw
-          out << "_O << " << pending_raw[0] << (pending_raw[1] || "") << ";"
-          pending_raw = nil
+        if parts
+          out << "_O << " << parts.join(" << ") << (guard || "") << ";"
+          parts = nil
         end
       end
       src.each_line do |line|
@@ -2769,12 +2781,17 @@ module LiquidIL
           out << s << "\n" if out.empty? && s.start_with?("# frozen_string_literal")
           next
         end
-        if (m = RAW_APPEND_LINE.match(s))
-          if pending_raw && pending_raw[1] == m[2]
-            pending_raw[0] << " " << m[1]
+        if (m = APPEND_LINE.match(s)) && (rhs = m[1]) && (rhs[0] != "(" || balanced_expr?(rhs))
+          flush.call if parts && guard != m[2]
+          if parts
+            if rhs[0] == "\"" && parts[-1][-1] == "\""
+              parts[-1] = parts[-1] + " " + rhs
+            else
+              parts << rhs
+            end
           else
-            flush.call
-            pending_raw = [m[1].dup, m[2]]
+            parts = [rhs]
+            guard = m[2]
           end
         else
           flush.call
@@ -2783,6 +2800,36 @@ module LiquidIL
       end
       flush.call
       out
+    end
+
+    # True when the string is one parenthesized expression — the closing
+    # paren of the leading "(" is the final character. Skips string literals
+    # so parens/quotes inside them don't confuse the depth scan.
+    def self.balanced_expr?(s)
+      depth = 0
+      in_str = false
+      i = 0
+      len = s.length
+      while i < len
+        c = s.getbyte(i)
+        if in_str
+          if c == 0x5C # backslash
+            i += 1
+          elsif c == 0x22 # "
+            in_str = false
+          end
+        else
+          case c
+          when 0x22 then in_str = true
+          when 0x28 then depth += 1
+          when 0x29
+            depth -= 1
+            return i == len - 1 if depth.zero?
+          end
+        end
+        i += 1
+      end
+      false
     end
 
     # Look up the ISeq binary for a given Ruby source string.

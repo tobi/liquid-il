@@ -111,6 +111,23 @@ module LiquidIL
       olp(output, obj, path)
     end
 
+    # roa: raw text + any appended value (variable writes, filter results)
+    def self.roa(output, raw, value)
+      output << raw
+      output_append(output, value)
+    end
+
+    # af/afl: assign unless the value is an error marker — replaces the
+    # inline `_v = ...; assign unless _v.is_a?(ErrorMarker)` shape (the
+    # ErrorMarker constant path alone costs ~30B of ISeq per site).
+    def self.af(scope, name, value)
+      scope.assign(name, value) unless value.is_a?(LiquidIL::ErrorMarker)
+    end
+
+    def self.afl(scope, name, value)
+      scope.assign_local(name, value) unless value.is_a?(LiquidIL::ErrorMarker)
+    end
+
     OUTPUT_STRING = ->(value) {
       case value
       when Integer, Float then value.to_s
