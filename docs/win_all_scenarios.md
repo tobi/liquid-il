@@ -3,8 +3,17 @@
 **Goal:** LiquidIL beats Shopify/liquid-vm (classic and SSA) and reference liquid in **all
 three render scenarios, on every benchmark spec** — not just on geomean.
 
-Status: plan. Baselines measured 2026-07-04 on main `0422024` (Ruby 4.0, YJIT), liquid-vm
-`b118c553`, via `rake liquid_vm:scenarios`.
+Status: in progress. Baselines measured 2026-07-04 on main `0422024` (Ruby 4.0, YJIT),
+liquid-vm `b118c553`, via `rake liquid_vm:scenarios`.
+
+**Tranche 1 landed** (`e4d6dc8`): `rake bench:bytes` attribution tool, compact compilation
+(statements fused before RubyVM compile), fused output sends (`olf`/`olp`/`rolf`/`rolp`/`tia`),
+raw-append juxtaposition across partial-inline seams. Partials-suite artifacts −13–15%
+(theme_product 19.8→17.3KB, cart 15.0→12.7KB); liquid-vm geomean artifact 9.4→9.0KB,
+remote-hit 97µs vs vm 103µs. Gem-suite cart only −6.6% — its weight is inside `for`
+loops where loop-var-alias writes deliberately skip the fusions. **Next tranche: loop-body
+append fusion (alias-aware `rolf` variant or `<<`-chaining), gem-suite coverage in
+bench:bytes, then the cache-miss lexer work.**
 
 ## Where we stand
 

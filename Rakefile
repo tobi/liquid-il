@@ -316,6 +316,11 @@ namespace :bench do
     system("RUBY_YJIT_ENABLE=1 bundle exec ruby bench/cold_bench.rb") || exit(1)
   end
 
+  desc "Artifact byte attribution: where compiled-artifact bytes come from, per codegen pattern"
+  task :bytes do
+    system("bundle exec ruby bench/bytes_bench.rb") || exit(1)
+  end
+
   desc "Benchmark LiquidIL against optional Shopify/liquid-vm (cloned in /tmp by default)"
   task liquid_vm: "liquid_vm:bench"
 end
