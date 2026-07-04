@@ -109,14 +109,22 @@ module LiquidIL
     def current_line
       pos = @line_pos
       if pos >= @line_scan_pos
-        # to_s: byteslice returns nil when a sub-lexer offset runs past the
-        # original source's end
-        @line += @line_source.byteslice(@line_scan_pos, pos - @line_scan_pos).to_s.count("\n")
+        @line += count_newlines(@line_scan_pos, pos - @line_scan_pos)
       else
-        @line = @line_source.byteslice(0, pos).to_s.count("\n") + 1
+        @line = count_newlines(0, pos) + 1
       end
       @line_scan_pos = pos
       @line
+    end
+
+    # Count newline bytes in a byte range of the source. The slice is forced
+    # to BINARY before counting: a byteslice can split a multi-byte UTF-8
+    # character and String#count raises on invalid encoding. Newline bytes
+    # never occur inside multi-byte sequences, so byte counting is exact.
+    # to_s: byteslice returns nil when a sub-lexer offset runs past the
+    # original source's end.
+    def count_newlines(start, len)
+      @line_source.byteslice(start, len).to_s.force_encoding(Encoding::BINARY).count("\n")
     end
 
     def parse_block_body(end_tags)

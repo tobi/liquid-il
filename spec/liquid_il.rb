@@ -51,7 +51,8 @@ end
 
 LiquidSpec.compile do |ctx, source, compile_options|
   file_system = compile_options[:file_system]
-  file_system = LiquidIL::ShopifyMock.wrap_file_system(file_system) if LiquidIL::ShopifyMock.shopify_template?(source)
+  ctx[:shopify] = LiquidIL::ShopifyMock.shopify_template?(source)
+  file_system = LiquidIL::ShopifyMock.wrap_file_system(file_system) if ctx[:shopify]
 
   context = LiquidIL::Context.new(
     file_system: file_system,
@@ -88,7 +89,9 @@ LiquidSpec.render do |ctx, assigns, render_options|
   # static_environments (visible inside isolated {% render %} partials),
   # with an empty mutable scope — see Liquid::Context.build in
   # examples/liquid_ruby.rb.
-  LiquidIL::ShopifyMock.prepare_environment!(assigns)
+  # The mock-environment walk is expensive (recurses the whole assigns hash);
+  # only Shopify-tagged templates need it.
+  LiquidIL::ShopifyMock.prepare_environment!(assigns) if ctx[:shopify]
   ctx[:template].render({}, render_errors: render_errors, registers: registers,
     static_environments: assigns, resource_limits: render_options[:resource_limits])
 end

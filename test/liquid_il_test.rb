@@ -20,6 +20,16 @@ class ContextTest < Minitest::Test
     assert_instance_of LiquidIL::Template, template
   end
 
+  def test_multibyte_source_renders_and_reports_lines
+    ctx = LiquidIL::Context.new
+    # Multi-byte characters before a tag: line counting works on byteslices,
+    # which can split UTF-8 sequences — must not raise, and the error line
+    # must count physical lines, not bytes.
+    src = "═══ ünïcode ═══\n\n{{ 5 | divided_by: 0 }}"
+    assert_equal "═══ ünïcode ═══\n\nLiquid error (line 3): divided by 0", ctx.render(src)
+    assert_equal "══ ok ══", ctx.render("══ {% if true %}ok{% endif %} ══")
+  end
+
   def test_template_render
     ctx = LiquidIL::Context.new
     template = ctx.parse("{{ x }} + {{ y }}")
