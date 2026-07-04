@@ -57,7 +57,7 @@ module LiquidIL
       @current_file_lit = nil
       # Loop-local naming offset. 0 for the main template; partials get a
       # unique base (compile_partial) so their loop locals (__i0__, _fl0__,
-      # :loop_break_0, ...) never collide with a call site's when inlined.
+      # _c0__, ...) never collide with a call site's when inlined.
       @loop_name_base = 0
       @has_resource_limits = !!context&.resource_limits
       @partials = partials || {}
@@ -853,16 +853,19 @@ module LiquidIL
         end
 
       when IL::PUSH_INTERRUPT
-        # Break/continue: translate to Ruby control flow
-        # We use throw/catch for break (to avoid LocalJumpError in nested blocks)
-        # and Ruby's next for continue (works inside each blocks)
+        # Break/continue: plain Ruby control flow. Every break site is
+        # lexically inside its innermost loop (while or an _H.ei/_H.eif
+        # yield block — `break` from the block terminates the driver's loop
+        # with exactly {% break %} semantics), so no throw/catch bookkeeping
+        # is needed. Breaks that cross partial-lambda boundaries use the
+        # scope-interrupt protocol instead (the depth-0 path below).
         interrupt_type = inst[1]
         @pc += 1
 
         code = String.new
 
         # If break/continue is followed by POP_CAPTURE + ASSIGN, we need to handle
-        # capture cleanup. When inside a loop, complete the assignment BEFORE throwing.
+        # capture cleanup. When inside a loop, complete the assignment BEFORE breaking.
         # When outside a loop, just restore output without assigning (discard capture).
         if @instructions[@pc]&.[](0) == IL::POP_CAPTURE &&
            @instructions[@pc + 1]&.[](0) == IL::ASSIGN
@@ -878,12 +881,7 @@ module LiquidIL
         end
 
         if @loop_depth > 0
-          if interrupt_type == :break
-            # Use throw to exit the current loop - depth-1 because we're inside the loop
-            code << "#{prefix}throw(:loop_break_#{@loop_name_base + @loop_depth - 1})\n"
-          else
-            code << "#{prefix}next\n"
-          end
+          code << (interrupt_type == :break ? "#{prefix}break\n" : "#{prefix}next\n")
         else
           # Break/continue outside of loop - push interrupt to scope to stop further output
           code << "#{prefix}_S.push_interrupt(#{interrupt_type.inspect})\n"
@@ -1227,7 +1225,7 @@ module LiquidIL
       # After include: propagate interrupts (break/continue) from partial to caller's loop
       if !isolated && @loop_depth > 0
         code << "#{prefix}if _S.has_interrupt?\n"
-        code << "#{prefix}  throw(:loop_break_#{@loop_name_base + @loop_depth - 1}) if _S.pop_interrupt == :break\n"
+        code << "#{prefix}  break if _S.pop_interrupt == :break\n"
         code << "#{prefix}  next\n"
         code << "#{prefix}end\n"
       end
@@ -1272,7 +1270,7 @@ module LiquidIL
       interrupt_check = ""
       unless isolated || @loop_depth <= 0
         interrupt_check = "#{prefix}    if _S.has_interrupt?\n" \
-          "#{prefix}      throw(:loop_break_#{@loop_name_base + @loop_depth - 1}) if _S.pop_interrupt == :break\n" \
+          "#{prefix}      break if _S.pop_interrupt == :break\n" \
           "#{prefix}      next\n" \
           "#{prefix}    end\n"
       end
@@ -1901,17 +1899,24 @@ module LiquidIL
                          body_code.include?("_S.lookup('forloop')") ||
                          body_code.include?("_S.lookup(#{item_var.inspect})")
       needs_forloop = body_code.include?(forloop_var) || needs_scope_sync
-      needs_catch = body_code.include?(":loop_break_#{depth}") || body_code.include?("throw(:loop_break")
       needs_error_handling = has_offset || has_limit
       needs_slicing = limit_expr || offset_expr || offset_continue
 
-      # Fast path: simple loops emit one _H.ei block — the driver (coerce,
-      # length, index walk) lives in the already-jitted runtime, saving ~190B
-      # of ISeq per loop vs the six-statement while machinery; render cost is
-      # identical under YJIT. {% continue %} compiles to `next` in the block.
-      if !needs_forloop && !needs_scope_sync && !needs_catch && !needs_error_handling &&
+      # Fast path: simple and forloop-bearing loops emit one _H.ei/_H.eif
+      # block — the driver (coerce, length, index walk, ForloopDrop
+      # management) lives in the already-jitted runtime, saving ~190B+ of
+      # ISeq per loop vs the inline while machinery; render cost is
+      # identical under YJIT. Plain Ruby control flow does the rest:
+      # {% continue %} is `next`, {% break %} is `break` — a break from the
+      # yield block terminates the driver's loop with exactly the right
+      # semantics, no throw/catch bookkeeping.
+      if !needs_scope_sync && !needs_error_handling &&
          !reversed && !needs_slicing && !offset_continue && else_code.empty?
-        code << "#{prefix}_H.ei(#{coll_ruby}) do |#{item_var_internal}|\n"
+        if needs_forloop
+          code << "#{prefix}_H.eif(#{coll_ruby}, #{loop_name.inspect}, #{parent_forloop}) do |#{item_var_internal}, #{forloop_var}|\n"
+        else
+          code << "#{prefix}_H.ei(#{coll_ruby}) do |#{item_var_internal}|\n"
+        end
         if @has_resource_limits
           code << "#{prefix}  _S.increment_render_score!\n"
           code << "#{prefix}  _S.check_output_limit!(_O)\n"
@@ -1979,7 +1984,6 @@ module LiquidIL
         code << "#{inner_prefix}  _pfl#{depth}__ = _S.lookup('forloop')\n"
       end
       code << "#{inner_prefix}  _pi#{depth}__ = _S.lookup(#{item_var.inspect})\n" if needs_scope_sync
-      code << "#{inner_prefix}  catch(:loop_break_#{depth}) do\n" if needs_catch
       if needs_forloop
         # Use while loop instead of each_with_index block — avoids block yield overhead
         code << "#{inner_prefix}    #{idx_var} = 0\n"
@@ -2009,7 +2013,6 @@ module LiquidIL
       end
       code << body_code
       code << "#{inner_prefix}    end\n"
-      code << "#{inner_prefix}  end\n" if needs_catch
       if needs_forloop
         code << "#{inner_prefix}  #{forloop_var}.index0 = #{coll_var}.length\n"
       end
@@ -2287,9 +2290,6 @@ module LiquidIL
       code << "#{prefix}_S.push_scope\n"
       code << "#{prefix}#{tablerowloop_var} = LiquidIL::TablerowloopDrop.new(#{loop_name.inspect}, #{coll_var}.length, #{cols_var}, nil, __cols_explicit_nil_#{depth}__)\n"
 
-      # Wrap with catch for break support
-      code << "#{prefix}catch(:loop_break_#{depth}) do\n"
-
       # Output opening row tag for empty collections
       code << "#{prefix}  if #{coll_var}.empty? && !_in#{depth}__\n"
       code << "#{prefix}    _O << \"<tr class=\\\"row1\\\">\\n\"\n"
@@ -2328,7 +2328,6 @@ module LiquidIL
       code << body_code
 
       code << "#{prefix}  end\n"  # end each_with_index
-      code << "#{prefix}end\n"    # end catch
 
       # Close final tags
       code << "#{prefix}if !#{coll_var}.empty?\n"

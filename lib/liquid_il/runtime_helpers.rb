@@ -114,6 +114,25 @@ module LiquidIL
       end
     end
 
+    # eif: like ei, but manages the ForloopDrop for bodies that read
+    # forloop.* — creation and per-iteration index live in the driver.
+    # `break` from the yield block terminates the loop; `next` continues.
+    # The index increments AFTER each iteration (reference semantics: a drop
+    # assigned out of the loop reads index0 == length after completion, but
+    # keeps the current index when the loop exits via {% break %}).
+    def self.eif(collection, loop_name, parent)
+      coll = collection.is_a?(Array) ? collection : to_iterable(collection)
+      return if coll.empty?
+      fl = LiquidIL::ForloopDrop.new(loop_name, coll.length, parent)
+      i = 0
+      len = coll.length
+      while i < len
+        yield coll[i], fl
+        i += 1
+        fl.index0 = i
+      end
+    end
+
     # rolf/rolp: raw text + looked-up value in one send — the raw/lookup/raw
     # sandwich is the most common statement pair in real templates.
     def self.rolf(output, raw, obj, key)
