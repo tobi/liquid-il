@@ -260,7 +260,9 @@ module LiquidIL
       end
 
       def lookup_const_key(name)
-        # Optimization: merge with preceding FIND_VAR or FIND_VAR_PATH
+        # Sole owner of FIND_VAR(+path) + LOOKUP_CONST_KEY fusion: merging at
+        # emit time means the pattern never reaches the optimizer (the old
+        # collapse_find_var_paths pass never fired and was retired).
         last = @instructions.last
         if last && last[0] == FIND_VAR
           # FIND_VAR + LOOKUP_CONST_KEY → FIND_VAR_PATH

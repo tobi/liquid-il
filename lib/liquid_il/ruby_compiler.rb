@@ -2761,12 +2761,19 @@ module LiquidIL
     # Ruby compiler — the default (and only) compilation path.
     # Generates YJIT-friendly Ruby with native control flow.
     module Ruby
-      # Active passes: strip_labels only — it removes LABEL instructions
-      # (REQUIRED for Ruby compiler correctness). The Ruby compiler generates
-      # native Ruby control flow (if/for/while), so most IL optimizations
-      # (constant folding, instruction merging) don't provide benefit and only
-      # add compile overhead.
-      RUBY_SKIP_PASSES = (Passes::ALL_PASSES - [Passes::STRIP_LABELS]).freeze
+      # Optimization is on by default: the folding peepholes run because they
+      # do work codegen cannot (const filter calls, static branch elimination,
+      # capture folding) and shrink the emitted ISeq. Skipped: the VM-era
+      # global analyses (hoisting/lookup-caching/value-numbering insert
+      # DUP/STORE_TEMP locals that make the generated native Ruby worse),
+      # jump cleanups that native control flow makes moot, and
+      # register_allocation (RegisterAllocator is not wired in this branch).
+      # strip_labels is REQUIRED for Ruby compiler correctness.
+      RUBY_SKIP_PASSES = Passes.resolve(%i[
+        remove_redundant_is_truthy remove_jump_to_next_label remove_unreachable
+        merge_raw_writes_2 hoist_loop_invariants cache_repeated_lookups
+        value_numbering register_allocation remove_interrupt_checks
+      ]).freeze
       RUBY_DEFAULTS = { optimize: true, skip_passes: RUBY_SKIP_PASSES }.freeze
 
       def self.compile(source, context: nil, **options)

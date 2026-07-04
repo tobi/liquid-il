@@ -17,7 +17,7 @@ module LiquidIL
 
     # Passes handled by fused_peephole (used for conditional dispatch)
     FUSED_PEEPHOLE_PASSES = Passes.resolve(%i[
-      fold_const_writes collapse_const_paths collapse_find_var_paths
+      fold_const_writes collapse_const_paths
       remove_redundant_is_truthy remove_noops remove_jump_to_next_label
       merge_raw_writes remove_empty_raw_writes fuse_write_var
     ])
@@ -40,14 +40,16 @@ module LiquidIL
 
       lower_const_partials(instructions)
 
-      # Optional optimization passes
-      if @options[:optimize]
+      # Optimization passes run by default; optimize: false opts out
+      # (useful for debugging raw parser output).
+      optimize_enabled = @options.fetch(:optimize, true)
+      if optimize_enabled
         optimize(instructions, skip_passes: @options[:skip_passes])
       end
 
       # Fuse link + strip_labels when strip_labels is enabled
       # This saves 3 passes over the instruction array (17-20µs for typical templates)
-      if @options[:optimize] && Passes.enabled.include?(Passes::STRIP_LABELS)
+      if optimize_enabled && Passes.enabled.include?(Passes::STRIP_LABELS)
         link_and_strip(instructions)
       else
         IL.link(instructions)
@@ -77,7 +79,6 @@ module LiquidIL
       # Each was a separate linear scan; now one pass handles:
       #   - Fold const writes (CONST + WRITE_VALUE → WRITE_RAW)        [pass 3]
       #   - Collapse const paths (LOOKUP_CONST_KEY chains)              [pass 4]
-      #   - Collapse find_var paths (FIND_VAR + LOOKUP_CONST_PATH)      [pass 5]
       #   - Remove redundant IS_TRUTHY after boolean ops                [pass 6]
       #   - Remove NOOPs                                                [pass 7]
       #   - Remove jump-to-next-label                                   [pass 8]
@@ -122,7 +123,6 @@ module LiquidIL
       # Pre-compute pass flags to avoid Set#include? per instruction
       p3 = enabled.include?(Passes::FOLD_CONST_WRITES)
       p4 = enabled.include?(Passes::COLLAPSE_CONST_PATHS)
-      p5 = enabled.include?(Passes::COLLAPSE_FIND_VAR_PATHS)
       p6 = enabled.include?(Passes::REMOVE_REDUNDANT_IS_TRUTHY)
       p7 = enabled.include?(Passes::REMOVE_NOOPS)
       p8 = enabled.include?(Passes::REMOVE_JUMP_TO_NEXT_LABEL)
@@ -160,13 +160,6 @@ module LiquidIL
               instructions.delete_at(i + 1)
               next  # re-check at i (might merge with prev WRITE_RAW)
             end
-          end
-
-          # Pass 5: Collapse FIND_VAR + LOOKUP_CONST_PATH
-          if p5 && opcode == IL::FIND_VAR && next_opcode == IL::LOOKUP_CONST_PATH
-            instructions[i] = [IL::FIND_VAR_PATH, inst[1], next_inst[1]]
-            instructions.delete_at(i + 1)
-            next
           end
 
           # Pass 6: Remove redundant IS_TRUTHY after boolean ops
@@ -249,23 +242,23 @@ module LiquidIL
         if (const1 = const_value(inst))
           val1 = const1[1]
           # CONST + IS_TRUTHY / BOOL_NOT
-          if i + 1 < instructions.length
+          # Truthiness of the empty/blank literals is NOT folded: as standalone
+          # conditions they are truthy at runtime (spec-mandated), which
+          # disagrees with RuntimeHelpers::IS_TRUTHY — leave them to codegen.
+          if i + 1 < instructions.length && (truthy = const_truthiness(val1)) != nil
             next_inst = instructions[i + 1]
             case next_inst[0]
             when IL::IS_TRUTHY
-              truthy = const_evaluator.truthy?(val1)
               instructions[i] = truthy ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
               instructions.delete_at(i + 1)
               next
             when IL::BOOL_NOT
-              truthy = const_evaluator.truthy?(val1)
               instructions[i] = truthy ? [IL::CONST_FALSE] : [IL::CONST_TRUE]
               instructions.delete_at(i + 1)
               next
             when IL::IF
               # Static branch elimination: the marker structure makes branch
               # extents explicit, so a constant condition selects one branch.
-              truthy = const_evaluator.truthy?(val1)
               take_then = next_inst[1] ? !truthy : truthy
               else_idx, end_idx = find_if_branch_bounds(instructions, i + 1)
               if end_idx
@@ -326,19 +319,31 @@ module LiquidIL
                   next
                 end
               when IL::BOOL_AND, IL::BOOL_OR
-                l = const_evaluator.truthy?(val1)
-                r = const_evaluator.truthy?(val2)
-                result = inst3[0] == IL::BOOL_AND ? l && r : l || r
-                instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
-                instructions.delete_at(i + 2)
-                instructions.delete_at(i + 1)
-                next
+                l = const_truthiness(val1)
+                r = const_truthiness(val2)
+                if l != nil && r != nil
+                  result = inst3[0] == IL::BOOL_AND ? l && r : l || r
+                  instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+                  instructions.delete_at(i + 2)
+                  instructions.delete_at(i + 1)
+                  next
+                end
               end
             end
           end
         end
 
         i += 1
+      end
+    end
+
+    # Compile-time truthiness, or nil when it cannot be decided statically.
+    # EmptyLiteral/BlankLiteral are truthy as standalone conditions but falsy
+    # through RuntimeHelpers::IS_TRUTHY, so their truthiness never folds.
+    def const_truthiness(value)
+      case value
+      when EmptyLiteral, BlankLiteral then nil
+      else const_evaluator.truthy?(value)
       end
     end
 
@@ -433,20 +438,6 @@ module LiquidIL
           end
         end
         i += 1
-      end
-    end
-
-    def collapse_find_var_paths(instructions)
-      i = 0
-      while i < instructions.length - 1
-        inst = instructions[i]
-        next_inst = instructions[i + 1]
-        if inst[0] == IL::FIND_VAR && next_inst[0] == IL::LOOKUP_CONST_PATH
-          instructions[i] = [IL::FIND_VAR_PATH, inst[1], next_inst[1]]
-          instructions.delete_at(i + 1)
-        else
-          i += 1
-        end
       end
     end
 

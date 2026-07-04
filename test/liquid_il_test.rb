@@ -136,8 +136,8 @@ class ILOptimizationTest < Minitest::Test
   def test_const_write_value_folded
     template = @ctx.parse("{{ 'hello' }}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    # Current default pass set keeps WRITE_VALUE in IL for this case.
-    assert_includes opcodes, LiquidIL::IL::WRITE_VALUE
+    refute_includes opcodes, LiquidIL::IL::WRITE_VALUE
+    assert_includes opcodes, LiquidIL::IL::WRITE_RAW
     assert_equal "hello", template.render
   end
 
@@ -184,9 +184,8 @@ class ILOptimizationTest < Minitest::Test
   def test_const_capture_folded
     template = @ctx.parse("{% capture foo %}hi{% endcapture %}{{ foo }}", optimize: true)
     opcodes = template.instructions.map(&:first)
-    # Default pass set keeps capture opcodes.
-    assert_includes opcodes, LiquidIL::IL::PUSH_CAPTURE
-    assert_includes opcodes, LiquidIL::IL::POP_CAPTURE
+    refute_includes opcodes, LiquidIL::IL::PUSH_CAPTURE
+    refute_includes opcodes, LiquidIL::IL::POP_CAPTURE
     assert_equal "hi", template.render
   end
 

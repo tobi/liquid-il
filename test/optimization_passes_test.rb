@@ -3,19 +3,9 @@
 require "minitest/autorun"
 require_relative "../lib/liquid_il"
 
-# These tests validate individual optimizer passes and expect nearly all passes enabled.
-# Runtime compilation defaults skip many passes for latency, so force a full pass set here
-# (except register_allocation, which depends on RegisterAllocator not wired in this branch).
-module FullPassesForOptimizationTests
-  def parse(source, **options)
-    if options[:optimize] && !options.key?(:skip_passes)
-      options = options.merge(skip_passes: [:register_allocation])
-    end
-    super(source, **options)
-  end
-end
-
-LiquidIL::Context.prepend(FullPassesForOptimizationTests)
+# These tests validate individual optimizer passes. The production default
+# runs the full pass set (minus register_allocation), so plain Context#parse
+# exercises exactly what these tests assert.
 
 # Comprehensive tests for each IL optimization pass
 #
@@ -24,7 +14,6 @@ LiquidIL::Context.prepend(FullPassesForOptimizationTests)
 #  2. fold_const_filters
 #  3. fold_const_writes
 #  4. collapse_const_paths
-#  5. collapse_find_var_paths
 #  6. remove_redundant_is_truthy
 #  7. remove_noops
 #  8. remove_jump_to_next_label
@@ -323,20 +312,23 @@ class Pass4CollapseConstPathsTest < Minitest::Test
   end
 end
 
-class Pass5CollapseFindVarPathsTest < Minitest::Test
+# FIND_VAR + LOOKUP_CONST_KEY fusion is owned by Builder#lookup_const_key at
+# emit time (the collapse_find_var_paths pass was retired as dead code).
+class BuilderLookupFusionTest < Minitest::Test
   def setup
     @ctx = LiquidIL::Context.new
   end
 
-  def test_find_var_plus_path_collapsed
+  def test_find_var_plus_path_fused_at_emit
     template = @ctx.parse("{{ x.y.z }}", optimize: true)
+    opcodes = template.instructions.map(&:first)
+    refute_includes opcodes, LiquidIL::IL::LOOKUP_CONST_KEY
     assert_equal "value", template.render("x" => { "y" => { "z" => "value" } })
   end
 
-  def test_single_key_not_collapsed
-    # Single key path lookup renders correctly.
-    # The optimizer fuses FIND_VAR + LOOKUP_CONST_KEY → FIND_VAR_PATH (pass 5),
-    # then FIND_VAR_PATH + WRITE_VALUE → WRITE_VAR_PATH (pass 20).
+  def test_single_key_fused
+    # FIND_VAR + LOOKUP_CONST_KEY → FIND_VAR_PATH at emit time,
+    # then FIND_VAR_PATH + WRITE_VALUE → WRITE_VAR_PATH (fuse_write_var).
     # Both are valid; the key invariant is correct rendering.
     template = @ctx.parse("{{ x.y }}", optimize: true)
     assert_equal "value", template.render("x" => { "y" => "value" })
@@ -732,8 +724,13 @@ class Pass22RemoveInterruptChecksTest < Minitest::Test
     @ctx = LiquidIL::Context.new
   end
 
+  # This pass is skipped by the production default (the backend already
+  # no-ops interrupt checks in generated Ruby); enable it explicitly here
+  # to test its mechanism.
+  WITH_PASS_22 = { optimize: true, skip_passes: [:register_allocation] }.freeze
+
   def test_removes_interrupt_checks_when_no_break_or_continue
-    template = @ctx.parse("{% for i in (1..3) %}{{ i }}{% endfor %}", optimize: true)
+    template = @ctx.parse("{% for i in (1..3) %}{{ i }}{% endfor %}", **WITH_PASS_22)
     opcodes = template.instructions.map(&:first)
     refute_includes opcodes, LiquidIL::IL::JUMP_IF_INTERRUPT
     refute_includes opcodes, LiquidIL::IL::POP_INTERRUPT
@@ -741,7 +738,7 @@ class Pass22RemoveInterruptChecksTest < Minitest::Test
   end
 
   def test_keeps_interrupt_checks_when_break_is_used
-    template = @ctx.parse("{% for i in (1..3) %}{% break %}{{ i }}{% endfor %}", optimize: true)
+    template = @ctx.parse("{% for i in (1..3) %}{% break %}{{ i }}{% endfor %}", **WITH_PASS_22)
     opcodes = template.instructions.map(&:first)
     assert_includes opcodes, LiquidIL::IL::JUMP_IF_INTERRUPT
     assert_includes opcodes, LiquidIL::IL::POP_INTERRUPT
@@ -754,7 +751,7 @@ class Pass22RemoveInterruptChecksTest < Minitest::Test
     # conservative: any include keeps the interrupt checks.
     fs = MemoryFS.new("part" => "x")
     ctx = LiquidIL::Context.new(file_system: fs)
-    template = ctx.parse("{% for i in (1..3) %}{% include 'part' %}{% endfor %}", optimize: true)
+    template = ctx.parse("{% for i in (1..3) %}{% include 'part' %}{% endfor %}", **WITH_PASS_22)
     opcodes = template.instructions.map(&:first)
     assert_includes opcodes, LiquidIL::IL::JUMP_IF_INTERRUPT
     assert_includes opcodes, LiquidIL::IL::POP_INTERRUPT
@@ -764,7 +761,7 @@ class Pass22RemoveInterruptChecksTest < Minitest::Test
   def test_include_with_break_keeps_interrupt_checks
     fs = MemoryFS.new("part" => "{% break %}")
     ctx = LiquidIL::Context.new(file_system: fs)
-    template = ctx.parse("{% for i in (1..3) %}{% include 'part' %}{% endfor %}", optimize: true)
+    template = ctx.parse("{% for i in (1..3) %}{% include 'part' %}{% endfor %}", **WITH_PASS_22)
     opcodes = template.instructions.map(&:first)
     assert_includes opcodes, LiquidIL::IL::JUMP_IF_INTERRUPT
     assert_includes opcodes, LiquidIL::IL::POP_INTERRUPT

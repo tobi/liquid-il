@@ -28,7 +28,6 @@ module LiquidIL
   #   2: fold_const_filters         - Fold constant filter calls (upcase, plus, etc.)
   #   3: fold_const_writes          - Fold CONST + WRITE_VALUE -> WRITE_RAW
   #   4: collapse_const_paths       - Merge chained LOOKUP_CONST_KEY
-  #   5: collapse_find_var_paths    - Merge FIND_VAR + LOOKUP_CONST_PATH
   #   6: remove_redundant_is_truthy - Remove IS_TRUTHY after boolean ops
   #   7: remove_noops               - Remove NOOP instructions
   #   8: remove_jump_to_next_label  - Remove jumps to immediate next label
@@ -79,7 +78,9 @@ module LiquidIL
       2 => :fold_const_filters,
       3 => :fold_const_writes,
       4 => :collapse_const_paths,
-      5 => :collapse_find_var_paths,
+      # 5 (collapse_find_var_paths) retired: Builder#lookup_const_key fuses
+      # FIND_VAR + LOOKUP_CONST_KEY at emit time, so the pattern never reaches
+      # the optimizer. IDs are never reused.
       6 => :remove_redundant_is_truthy,
       7 => :remove_noops,
       8 => :remove_jump_to_next_label,
