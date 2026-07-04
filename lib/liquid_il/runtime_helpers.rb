@@ -75,6 +75,42 @@ module LiquidIL
       end
     end
 
+    # Fused output helpers — one send in generated code where the naive
+    # emission needs two or more (~50B of ISeq per fused call site; see
+    # docs/win_all_scenarios.md workstream A).
+    # olf: output_append(lookup_prop_fast(obj, key))
+    def self.olf(output, obj, key)
+      output_append(output, lookup_prop_fast(obj, key))
+    end
+
+    # olp: output_append after walking a frozen key path
+    def self.olp(output, obj, path)
+      i = 0
+      n = path.length
+      while i < n
+        obj = lookup_prop_fast(obj, path[i])
+        i += 1
+      end
+      output_append(output, obj)
+    end
+
+    # tia: coerce to iterable unless already an Array (for-loop preamble)
+    def self.tia(value)
+      value.is_a?(Array) ? value : to_iterable(value)
+    end
+
+    # rolf/rolp: raw text + looked-up value in one send — the raw/lookup/raw
+    # sandwich is the most common statement pair in real templates.
+    def self.rolf(output, raw, obj, key)
+      output << raw
+      output_append(output, lookup_prop_fast(obj, key))
+    end
+
+    def self.rolp(output, raw, obj, path)
+      output << raw
+      olp(output, obj, path)
+    end
+
     OUTPUT_STRING = ->(value) {
       case value
       when Integer, Float then value.to_s

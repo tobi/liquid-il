@@ -541,7 +541,9 @@ module LiquidIL
             merged << instructions[@pc][1]
           end
           @pc += 1
-          if interrupt
+          if (fused = try_fuse_raw_with_var_path(merged, 1))
+            code << fused
+          elsif interrupt
             code << "  _O << " << merged.inspect << " unless _S.has_interrupt?\n"
           else
             code << "  _O << " << merged.inspect << "\n"
@@ -649,7 +651,9 @@ module LiquidIL
 
       when IL::WRITE_RAW
         @pc += 1
-        if @uses_interrupts
+        if (fused = try_fuse_raw_with_var_path(inst[1], indent))
+          fused
+        elsif @uses_interrupts
           %(#{prefix}_O << #{inst[1].inspect} unless _S.has_interrupt?\n)
         else
           %(#{prefix}_O << #{inst[1].inspect}\n)
@@ -666,8 +670,25 @@ module LiquidIL
 
       when IL::WRITE_VAR_PATH
         @pc += 1
-        var_expr = generate_var_path_expr(inst[1], inst[2])
-        inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts)
+        path = inst[2]
+        # Fused emission: _H.olf/_H.olp collapse the oa + lf(-chain) sends
+        # into one call site (~50B of ISeq each). Only for plain lookups —
+        # loop-var aliases and special keys (size/first/...) keep the
+        # specialized inline paths. The base stays a textual _S.lookup(...)
+        # so the partial-arg rewrites keep matching.
+        if !@loop_var_aliases[inst[1]] && path.none? { |k| RuntimeHelpers::SPECIAL_KEYS[k.to_s] }
+          base = "_S.lookup(#{inst[1].inspect})"
+          guard = @uses_interrupts ? " unless _S.has_interrupt?" : ""
+          if path.length == 1
+            "#{prefix}_H.olf(_O, #{base}, #{path[0].to_s.inspect})#{guard}\n"
+          else
+            arr = register_frozen_array(path.map { |k| k.to_s.inspect })
+            "#{prefix}_H.olp(_O, #{base}, #{arr})#{guard}\n"
+          end
+        else
+          var_expr = generate_var_path_expr(inst[1], path)
+          inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts)
+        end
 
       when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::FIND_SELF
         if peek_for_loop?
@@ -1932,7 +1953,7 @@ module LiquidIL
         if coll_ruby.match?(/\A_[a-z]\d+__\["[^"]+"\]\z/) || coll_ruby.match?(/\A_cache_\w+__\z/)
           code << "#{prefix}#{coll_var_name} ||= []\n"
         else
-          code << "#{prefix}#{coll_var_name} = _H.ti(#{coll_var_name}) unless #{coll_var_name}.is_a?(Array)\n"
+          code << "#{prefix}#{coll_var_name} = _H.tia(#{coll_var_name})\n"
         end
         code << "#{prefix}#{len_var_name} = #{coll_var_name}.length\n"
         code << "#{prefix}#{idx_var_name} = 0\n"
@@ -1960,10 +1981,10 @@ module LiquidIL
         code << "#{inner_prefix}_oc#{depth}__ = #{coll_ruby}\n"
         code << "#{inner_prefix}_is#{depth}__ = _oc#{depth}__.is_a?(String)\n"
         code << "#{inner_prefix}_in#{depth}__ = _oc#{depth}__.nil? || _oc#{depth}__ == false\n"
-        code << "#{inner_prefix}#{coll_var} = _oc#{depth}__.is_a?(Array) ? _oc#{depth}__ : _H.ti(_oc#{depth}__)\n"
+        code << "#{inner_prefix}#{coll_var} = _H.tia(_oc#{depth}__)\n"
       else
         code << "#{inner_prefix}#{coll_var} = #{coll_ruby}\n"
-        code << "#{inner_prefix}#{coll_var} = _H.ti(#{coll_var}) unless #{coll_var}.is_a?(Array)\n"
+        code << "#{inner_prefix}#{coll_var} = _H.tia(#{coll_var})\n"
       end
 
       offset_var = "_so#{depth}__"
@@ -2562,6 +2583,29 @@ module LiquidIL
     # Inline lookup for loop variables (avoids _H.lf method call + is_a? check)
     LOOP_VAR_RE = /\A_i\d+__\z/
 
+    # Fuse WRITE_RAW + following WRITE_VAR_PATH into one runtime send:
+    # `_O << "pre"` + `_H.olf(_O, base, "k")` → `_H.rolf(_O, "pre", base, "k")`
+    # (~40B of ISeq per site; the raw/lookup/raw sandwich is the most common
+    # statement pair in real templates). Consumes the WRITE_VAR_PATH from the
+    # stream on success; same eligibility rules as the olf/olp emission.
+    def try_fuse_raw_with_var_path(raw, _indent)
+      nxt = @instructions[@pc]
+      return nil unless nxt && nxt[0] == IL::WRITE_VAR_PATH
+      return nil if @loop_var_aliases[nxt[1]]
+      path = nxt[2]
+      return nil if path.any? { |k| RuntimeHelpers::SPECIAL_KEYS[k.to_s] }
+
+      @pc += 1
+      base = "_S.lookup(#{nxt[1].inspect})"
+      guard = @uses_interrupts ? " unless _S.has_interrupt?" : ""
+      if path.length == 1
+        "  _H.rolf(_O, #{raw.inspect}, #{base}, #{path[0].to_s.inspect})#{guard}\n"
+      else
+        arr = register_frozen_array(path.map { |k| k.to_s.inspect })
+        "  _H.rolp(_O, #{raw.inspect}, #{base}, #{arr})#{guard}\n"
+      end
+    end
+
     def inline_lookup(obj_ruby, key)
       key_s = key.to_s
       if RuntimeHelpers::SPECIAL_KEYS[key_s]
@@ -2684,7 +2728,7 @@ module LiquidIL
       if (bin = @@iseq_cache[key])
         RubyVM::InstructionSequence.load_from_binary(bin).eval
       else
-        iseq = RubyVM::InstructionSequence.compile(source, "(liquid_il_ruby)")
+        iseq = RubyVM::InstructionSequence.compile(RubyCompiler.compact_source(source), "(liquid_il_ruby)")
         @@iseq_cache.clear if @@iseq_cache.size >= ISEQ_CACHE_MAX
         @@iseq_cache[key] = iseq.to_binary.freeze
         iseq.eval
@@ -2693,13 +2737,61 @@ module LiquidIL
       nil
     end
 
+    # Compact generated source before compiling it: strip indentation, drop
+    # comment-only lines, and fuse all statements onto one line. Whitespace
+    # and comments never reach the ISeq, but per-line metadata in nested
+    # ISeqs costs ~5% of the artifact, and RubyVM compile time scales with
+    # source bytes. The pretty source is kept on the template for
+    # to_ruby/write_ruby/inspection; only the compiled form is compact.
+    # Emitted code is one complete statement per line with no heredocs or
+    # continuation lines, so newline → ";" is semantics-preserving; the
+    # frozen_string_literal magic comment must stay on its own line.
+    # Consecutive raw appends that survive IL-level merging (they meet only
+    # after partial inlining assembles the final text) are fused via string
+    # literal juxtaposition: `_O << "a"` + `_O << "b"` → `_O << "a" "b"`,
+    # which Ruby folds into a single literal at parse time — one statement,
+    # one putstring, zero runtime cost.
+    RAW_APPEND_LINE = /\A_O << ("(?:[^"\\]|\\.)*")( unless _S\.has_interrupt\?)?\z/
+
+    def self.compact_source(src)
+      out = String.new(capacity: src.bytesize)
+      pending_raw = nil   # [literal, guard] of a not-yet-flushed raw append
+      flush = lambda do
+        if pending_raw
+          out << "_O << " << pending_raw[0] << (pending_raw[1] || "") << ";"
+          pending_raw = nil
+        end
+      end
+      src.each_line do |line|
+        s = line.strip
+        next if s.empty?
+        if s.start_with?("#")
+          out << s << "\n" if out.empty? && s.start_with?("# frozen_string_literal")
+          next
+        end
+        if (m = RAW_APPEND_LINE.match(s))
+          if pending_raw && pending_raw[1] == m[2]
+            pending_raw[0] << " " << m[1]
+          else
+            flush.call
+            pending_raw = [m[1].dup, m[2]]
+          end
+        else
+          flush.call
+          out << s << ";"
+        end
+      end
+      flush.call
+      out
+    end
+
     # Look up the ISeq binary for a given Ruby source string.
     # After eval_ruby, the binary is already in @@iseq_cache (free O(1) lookup).
     # Falls back to compiling + serializing if the cache was evicted.
     def self.iseq_binary_for(ruby_source)
       key = ruby_source.hash
       @@iseq_cache[key] || begin
-        iseq = RubyVM::InstructionSequence.compile(ruby_source, "(liquid_il_structured)")
+        iseq = RubyVM::InstructionSequence.compile(compact_source(ruby_source), "(liquid_il_structured)")
         bin = iseq.to_binary.freeze
         @@iseq_cache.clear if @@iseq_cache.size >= ISEQ_CACHE_MAX
         @@iseq_cache[key] = bin
