@@ -19,8 +19,18 @@ module LiquidIL
     FUSED_PEEPHOLE_PASSES = Passes.resolve(%i[
       fold_const_writes collapse_const_paths
       remove_redundant_is_truthy remove_noops remove_jump_to_next_label
-      merge_raw_writes remove_empty_raw_writes fuse_write_var
+      merge_raw_writes remove_empty_raw_writes propagate_constants fuse_write_var
     ])
+
+    # Opcodes across which constant propagation must forget everything
+    # (hash for O(1) per-instruction lookup in the peephole scan)
+    PROPAGATION_BARRIERS = [
+      IL::LABEL, IL::JUMP, IL::JUMP_IF_INTERRUPT,
+      IL::IF, IL::ELSE, IL::END_IF,
+      IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END,
+      IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
+      IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
+    ].each_with_object({}) { |op, h| h[op] = true }.freeze
 
     def initialize(source, **options)
       @source = source
@@ -88,17 +98,22 @@ module LiquidIL
       fused_peephole(instructions, enabled) if FUSED_PEEPHOLE_PASSES.intersect?(enabled)
 
       # Phase 4: Structural passes (need global analysis, can't easily fuse)
-      remove_unreachable(instructions) if enabled.include?(Passes::REMOVE_UNREACHABLE)
+      removed = enabled.include?(Passes::REMOVE_UNREACHABLE) && remove_unreachable(instructions)
 
-      # Phase 5: Post-cleanup fused peephole (re-merge after removals = old pass 11)
-      fused_peephole(instructions, enabled) if enabled.include?(Passes::MERGE_RAW_WRITES_2)
+      # Phase 5: Post-cleanup fused peephole (re-merge after removals = old pass 11);
+      # nothing to re-merge when phase 4 removed nothing
+      fused_peephole(instructions, enabled) if removed && enabled.include?(Passes::MERGE_RAW_WRITES_2)
 
       # Phase 6: Constant captures
-      fold_const_captures(instructions) if enabled.include?(Passes::FOLD_CONST_CAPTURES)
+      captures_folded = enabled.include?(Passes::FOLD_CONST_CAPTURES) && fold_const_captures(instructions)
 
-      # Phase 7: Constant propagation + re-fold
-      propagate_constants(instructions) if enabled.include?(Passes::PROPAGATE_CONSTANTS)
-      if enabled.include?(Passes::FOLD_CONST_FILTERS_2)
+      # Phase 7: re-fold when new constants appeared — from capture folding
+      # (re-run the peephole so its fused propagation sees them) or from
+      # propagation substitutions made during the phase-3 peephole itself.
+      # Constant propagation runs inside fused_peephole (pass 14).
+      if (captures_folded || @peephole_substituted) && enabled.include?(Passes::FOLD_CONST_FILTERS_2)
+        fused_peephole(instructions, enabled) if captures_folded
+        fold_const_ops(instructions) if enabled.include?(Passes::FOLD_CONST_OPS)
         fold_const_filters(instructions)
         fused_peephole(instructions, enabled)
       end
@@ -118,7 +133,11 @@ module LiquidIL
     end
 
     # Fused peephole optimizer — one forward scan handles multiple transforms.
-    # Avoids N separate array walks by combining all simple peephole patterns.
+    # Compacts in place with a write cursor: each incoming instruction is
+    # matched against the last instruction already written, so every fuse or
+    # drop is O(1) instead of an O(n) delete_at. Every pattern consumes at
+    # least one instruction, so "changed" is simply "did the array shrink" —
+    # callers use the return value to skip redundant re-runs.
     def fused_peephole(instructions, enabled)
       # Pre-compute pass flags to avoid Set#include? per instruction
       p3 = enabled.include?(Passes::FOLD_CONST_WRITES)
@@ -128,96 +147,117 @@ module LiquidIL
       p8 = enabled.include?(Passes::REMOVE_JUMP_TO_NEXT_LABEL)
       p9 = enabled.include?(Passes::MERGE_RAW_WRITES)
       p13 = enabled.include?(Passes::REMOVE_EMPTY_RAW_WRITES)
+      p14 = enabled.include?(Passes::PROPAGATE_CONSTANTS)
       p20 = enabled.include?(Passes::FUSE_WRITE_VAR)
 
+      len = instructions.length
+      w = 0            # instructions[0...w] is the compacted output
+      path_at = -1     # index of a LOOKUP_CONST_PATH this scan created (safe to extend)
+      known = p14 ? {} : nil  # var name -> const instruction (straight-line only)
+      @peephole_substituted = false
       i = 0
-      while i < instructions.length
+      while i < len
         inst = instructions[i]
         opcode = inst[0]
-
-        # Pass 7: Remove NOOPs
-        if opcode == IL::NOOP && p7
-          instructions.delete_at(i)
-          next
-        end
-
-        # Pass 13: Remove empty WRITE_RAW
-        if opcode == IL::WRITE_RAW && inst[1].empty? && p13
-          instructions.delete_at(i)
-          next
-        end
-
-        # Peephole patterns that look at i and i+1
-        if i + 1 < instructions.length
-          next_inst = instructions[i + 1]
-          next_opcode = next_inst[0]
-
-          # Pass 3: Fold const writes (CONST + WRITE_VALUE → WRITE_RAW)
-          if p3 && next_opcode == IL::WRITE_VALUE
-            cv = const_value(inst)
-            if cv
-              instructions[i] = [IL::WRITE_RAW, Utils.output_string(cv[1])]
-              instructions.delete_at(i + 1)
-              next  # re-check at i (might merge with prev WRITE_RAW)
-            end
-          end
-
-          # Pass 6: Remove redundant IS_TRUTHY after boolean ops
-          if p6 && next_opcode == IL::IS_TRUTHY
-            if opcode == IL::COMPARE || opcode == IL::CASE_COMPARE || opcode == IL::CONTAINS ||
-               opcode == IL::BOOL_NOT || opcode == IL::BOOL_AND || opcode == IL::BOOL_OR
-              instructions.delete_at(i + 1)
-              i += 1
-              next
-            end
-          end
-
-          # Pass 8: Remove jump-to-next-label
-          if p8 && opcode == IL::JUMP && next_opcode == IL::LABEL && inst[1] == next_inst[1]
-            instructions.delete_at(i)
-            next
-          end
-
-          # Pass 9: Merge consecutive WRITE_RAW
-          if p9 && opcode == IL::WRITE_RAW && next_opcode == IL::WRITE_RAW
-            instructions[i] = [IL::WRITE_RAW, inst[1] + next_inst[1]]
-            instructions.delete_at(i + 1)
-            next  # keep merging if more follow
-          end
-
-          # Pass 20: Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR
-          if p20 && opcode == IL::FIND_VAR && next_opcode == IL::WRITE_VALUE
-            instructions[i] = [IL::WRITE_VAR, inst[1]]
-            instructions.delete_at(i + 1)
-            i += 1
-            next
-          end
-
-          # Pass 20: Fuse FIND_VAR_PATH + WRITE_VALUE → WRITE_VAR_PATH
-          if p20 && opcode == IL::FIND_VAR_PATH && next_opcode == IL::WRITE_VALUE
-            instructions[i] = [IL::WRITE_VAR_PATH, inst[1], inst[2]]
-            instructions.delete_at(i + 1)
-            i += 1
-            next
-          end
-        end
-
-        # Pass 4: Collapse LOOKUP_CONST_KEY chains (looks ahead multiple)
-        if p4 && opcode == IL::LOOKUP_CONST_KEY
-          j = i + 1
-          while j < instructions.length && instructions[j][0] == IL::LOOKUP_CONST_KEY
-            j += 1
-          end
-          if j > i + 1
-            path = (i...j).map { |k| instructions[k][1] }
-            instructions[i] = [IL::LOOKUP_CONST_PATH, path]
-            delete_count = j - i - 1
-            instructions.slice!(i + 1, delete_count)
-          end
-        end
-
         i += 1
+
+        # Pass 7 / 13: drop NOOPs and empty WRITE_RAW
+        if (p7 && opcode == IL::NOOP) || (p13 && opcode == IL::WRITE_RAW && inst[1].empty?)
+          next
+        end
+
+        prev = w > 0 ? instructions[w - 1] : nil
+        prev_op = prev && prev[0]
+
+        # Pass 14: constant propagation, fused into the same scan. Substituted
+        # constants immediately feed the const-folding patterns below.
+        # Adjacency is judged on the compacted stream, which is safe: only
+        # stack-neutral instructions are ever dropped ahead of an ASSIGN.
+        # Fast path: with no constants in flight (the common case), only the
+        # ASSIGN check runs per instruction.
+        if p14
+          if opcode == IL::ASSIGN
+            if prev && const_value(prev)
+              known[inst[1]] = prev
+            else
+              known.delete(inst[1])
+            end
+          elsif !known.empty?
+            if opcode == IL::FIND_VAR
+              if (const_inst = known[inst[1]])
+                inst = const_inst.dup
+                opcode = inst[0]
+                @peephole_substituted = true
+              end
+            elsif opcode == IL::ASSIGN_LOCAL || opcode == IL::INCREMENT || opcode == IL::DECREMENT
+              known.delete(inst[1])
+            elsif PROPAGATION_BARRIERS[opcode]
+              # Control flow or partial render — variables could change
+              known.clear
+            end
+          end
+        end
+
+        case opcode
+        when IL::WRITE_VALUE
+          # Pass 20: FIND_VAR(_PATH) + WRITE_VALUE → WRITE_VAR(_PATH)
+          if p20 && prev_op == IL::FIND_VAR
+            instructions[w - 1] = [IL::WRITE_VAR, prev[1]]
+            next
+          elsif p20 && prev_op == IL::FIND_VAR_PATH
+            instructions[w - 1] = [IL::WRITE_VAR_PATH, prev[1], prev[2]]
+            next
+          elsif p3 && prev && (cv = const_value(prev))
+            # Pass 3: CONST + WRITE_VALUE → WRITE_RAW, cascading into a
+            # preceding WRITE_RAW merge (pass 9) or empty-write drop (pass 13)
+            raw = Utils.output_string(cv[1])
+            if p9 && w > 1 && instructions[w - 2][0] == IL::WRITE_RAW
+              instructions[w - 2] = [IL::WRITE_RAW, instructions[w - 2][1] + raw]
+              w -= 1
+            elsif p13 && raw.empty?
+              w -= 1
+            else
+              instructions[w - 1] = [IL::WRITE_RAW, raw]
+            end
+            next
+          end
+        when IL::WRITE_RAW
+          # Pass 9: merge consecutive WRITE_RAW
+          if p9 && prev_op == IL::WRITE_RAW
+            instructions[w - 1] = [IL::WRITE_RAW, prev[1] + inst[1]]
+            next
+          end
+        when IL::IS_TRUTHY
+          # Pass 6: redundant IS_TRUTHY after boolean-producing ops
+          if p6 && (prev_op == IL::COMPARE || prev_op == IL::CASE_COMPARE || prev_op == IL::CONTAINS ||
+                    prev_op == IL::BOOL_NOT || prev_op == IL::BOOL_AND || prev_op == IL::BOOL_OR)
+            next
+          end
+        when IL::LABEL
+          # Pass 8: JUMP directly to the next label — drop the JUMP
+          if p8 && prev_op == IL::JUMP && prev[1] == inst[1]
+            instructions[w - 1] = inst
+            next
+          end
+        when IL::LOOKUP_CONST_KEY
+          # Pass 4: collapse LOOKUP_CONST_KEY chains into LOOKUP_CONST_PATH
+          if p4 && prev_op == IL::LOOKUP_CONST_KEY
+            instructions[w - 1] = [IL::LOOKUP_CONST_PATH, [prev[1], inst[1]]]
+            path_at = w - 1
+            next
+          elsif p4 && prev_op == IL::LOOKUP_CONST_PATH && path_at == w - 1
+            prev[1] << inst[1]
+            next
+          end
+        end
+
+        instructions[w] = inst
+        w += 1
       end
+
+      return false if w == len
+      instructions.slice!(w, len - w)
+      true
     end
 
     # Fast opcode check for constant instructions (avoids const_value method call overhead)
@@ -370,19 +410,6 @@ module LiquidIL
       [nil, nil]
     end
 
-    def fold_const_writes(instructions)
-      i = 0
-      while i < instructions.length - 1
-        inst = instructions[i]
-        if (const_val = const_value(inst)) && instructions[i + 1][0] == IL::WRITE_VALUE
-          instructions[i] = [IL::WRITE_RAW, Utils.output_string(const_val[1])]
-          instructions.delete_at(i + 1)
-        else
-          i += 1
-        end
-      end
-    end
-
     def fold_const_filters(instructions)
       i = 0
       while i < instructions.length
@@ -409,32 +436,6 @@ module LiquidIL
                 end
               end
             end
-          end
-        end
-        i += 1
-      end
-    end
-
-    def remove_noops(instructions)
-      i = 0
-      while i < instructions.length
-        if instructions[i][0] == IL::NOOP
-          instructions.delete_at(i)
-        else
-          i += 1
-        end
-      end
-    end
-
-    def remove_redundant_is_truthy(instructions)
-      i = 1
-      while i < instructions.length
-        if instructions[i][0] == IL::IS_TRUTHY
-          prev = instructions[i - 1][0]
-          if prev == IL::COMPARE || prev == IL::CASE_COMPARE || prev == IL::CONTAINS ||
-             prev == IL::BOOL_NOT || prev == IL::BOOL_AND || prev == IL::BOOL_OR
-            instructions.delete_at(i)
-            next
           end
         end
         i += 1
@@ -471,58 +472,9 @@ module LiquidIL
       [values, idx]
     end
 
-    def collapse_const_paths(instructions)
-      i = 0
-      while i < instructions.length - 1
-        inst = instructions[i]
-        if inst[0] == IL::LOOKUP_CONST_KEY
-          path = [inst[1]]
-          j = i + 1
-          while j < instructions.length && instructions[j][0] == IL::LOOKUP_CONST_KEY
-            path << instructions[j][1]
-            j += 1
-          end
-
-          if path.length > 1
-            instructions[i] = [IL::LOOKUP_CONST_PATH, path]
-            delete_count = j - i - 1
-            instructions.slice!(i + 1, delete_count)
-          else
-            i += 1
-          end
-        else
-          i += 1
-        end
-      end
-    end
-
-    def remove_jump_to_next_label(instructions)
-      i = 0
-      while i < instructions.length - 1
-        inst = instructions[i]
-        next_inst = instructions[i + 1]
-        if inst[0] == IL::JUMP && next_inst[0] == IL::LABEL && inst[1] == next_inst[1]
-          instructions.delete_at(i)
-        else
-          i += 1
-        end
-      end
-    end
-
-    def merge_raw_writes(instructions)
-      i = 0
-      while i < instructions.length - 1
-        if instructions[i][0] == IL::WRITE_RAW && instructions[i + 1][0] == IL::WRITE_RAW
-          # Merge the two writes
-          instructions[i] = [IL::WRITE_RAW, instructions[i][1] + instructions[i + 1][1]]
-          instructions.delete_at(i + 1)
-        else
-          i += 1
-        end
-      end
-    end
-
+    # Returns true when any capture block was folded.
     def fold_const_captures(instructions)
+      changed = false
       i = 0
       while i < instructions.length
         if instructions[i][0] == IL::PUSH_CAPTURE
@@ -534,12 +486,14 @@ module LiquidIL
               instructions[i] = const_inst
               delete_count = assign_idx - i - 1
               instructions.slice!(i + 1, delete_count)
+              changed = true
               next
             end
           end
         end
         i += 1
       end
+      changed
     end
 
     def capture_assignment?(opcode)
@@ -704,60 +658,10 @@ module LiquidIL
       end
     end
 
-    # Constant propagation: replace FIND_VAR with known constant values
-    # Only propagates in straight-line code (invalidates at control flow)
-    def propagate_constants(instructions)
-      # Map of variable name -> const_instruction
-      known_constants = {}
-
-      i = 0
-      while i < instructions.length
-        inst = instructions[i]
-        opcode = inst[0]
-
-        case opcode
-        when IL::CONST_NIL, IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING
-          # Check if next instruction is ASSIGN
-          if i + 1 < instructions.length && instructions[i + 1][0] == IL::ASSIGN
-            var_name = instructions[i + 1][1]
-            known_constants[var_name] = inst.dup
-          end
-
-        when IL::ASSIGN, IL::ASSIGN_LOCAL
-          # Variable is being reassigned - if not from a constant we just saw, invalidate
-          var_name = inst[1]
-          # Check if previous was a constant (already handled above)
-          prev = i > 0 ? instructions[i - 1] : nil
-          unless prev && const_value(prev)
-            known_constants.delete(var_name)
-          end
-
-        when IL::FIND_VAR
-          # Replace with known constant if available
-          var_name = inst[1]
-          if (const_inst = known_constants[var_name])
-            instructions[i] = const_inst.dup
-          end
-
-        when IL::LABEL, IL::JUMP, IL::JUMP_IF_INTERRUPT,
-             IL::IF, IL::ELSE, IL::END_IF,
-             IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END, IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
-             IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
-          # Control flow or partial render - invalidate all known constants
-          # (Variables could be modified in loops, branches, or partials)
-          known_constants.clear
-
-        when IL::INCREMENT, IL::DECREMENT
-          # These create/modify variables
-          known_constants.delete(inst[1])
-        end
-
-        i += 1
-      end
-    end
-
+    # Returns true when any instruction was removed.
     def remove_unreachable(instructions)
       # Remove instructions after unconditional jumps until we hit a label
+      changed = false
       i = 0
       while i < instructions.length - 1
         if instructions[i][0] == IL::JUMP || instructions[i][0] == IL::HALT
@@ -765,37 +669,12 @@ module LiquidIL
           j = i + 1
           while j < instructions.length && instructions[j][0] != IL::LABEL
             instructions.delete_at(j)
+            changed = true
           end
         end
         i += 1
       end
-    end
-
-    # Fuse FIND_VAR + WRITE_VALUE into WRITE_VAR (and FIND_VAR_PATH + WRITE_VALUE into WRITE_VAR_PATH)
-    # This is a VM optimization that eliminates stack operations for simple variable output
-    def fuse_write_var(instructions)
-      i = 0
-      while i < instructions.length - 1
-        inst = instructions[i]
-        next_inst = instructions[i + 1]
-
-        if next_inst[0] == IL::WRITE_VALUE
-          case inst[0]
-          when IL::FIND_VAR
-            # Fuse FIND_VAR + WRITE_VALUE -> WRITE_VAR
-            instructions[i] = [IL::WRITE_VAR, inst[1]]
-            instructions.delete_at(i + 1)
-            next
-          when IL::FIND_VAR_PATH
-            # Fuse FIND_VAR_PATH + WRITE_VALUE -> WRITE_VAR_PATH
-            instructions[i] = [IL::WRITE_VAR_PATH, inst[1], inst[2]]
-            instructions.delete_at(i + 1)
-            next
-          end
-        end
-
-        i += 1
-      end
+      changed
     end
 
     # Strip LABEL instructions after linking and adjust jump targets
