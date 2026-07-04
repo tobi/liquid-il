@@ -753,11 +753,36 @@ module LiquidIL
       text = condition_str.to_s.strip
       # Lax Liquid turns malformed conditional operators into render-time
       # inline errors for non-blank branches. Detect the common unanchored
-      # operator shape after the first operand without making the lexer
-      # allocate/track skipped junk on every expression.
-      match = text.match(/\A(?:'[^']*'|"[^"]*"|\S+)\s+(\S+)/)
-      op = match&.[](1)
-      return nil unless op
+      # operator shape after the first operand — a byte scan instead of a
+      # regex; this runs for every condition tag in lax mode.
+      len = text.bytesize
+      # Skip the first operand: a quoted string, falling back to a plain
+      # non-space run when the quote is unterminated (regex-alternation
+      # semantics of the shape this replaced). Whitespace = \s (9-13, 32).
+      first = text.getbyte(0)
+      i = 0
+      if first == 0x27 || first == 0x22 # ' or "
+        j = 1
+        j += 1 while j < len && text.getbyte(j) != first
+        i = j + 1 if j < len
+      end
+      if i.zero?
+        while i < len && (b = text.getbyte(i)) && !(b == 32 || (b >= 9 && b <= 13))
+          i += 1
+        end
+      end
+      # Require whitespace, then take the operator token
+      b = i < len ? text.getbyte(i) : nil
+      return nil unless b && (b == 32 || (b >= 9 && b <= 13))
+      while i < len && (b = text.getbyte(i)) && (b == 32 || (b >= 9 && b <= 13))
+        i += 1
+      end
+      op_start = i
+      while i < len && (b = text.getbyte(i)) && !(b == 32 || (b >= 9 && b <= 13))
+        i += 1
+      end
+      return nil if i == op_start
+      op = text.byteslice(op_start, i - op_start)
       return nil if op == '&&' || op == '||'
       VALID_CONDITION_OPERATORS.include?(op) ? nil : op
     end

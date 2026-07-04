@@ -42,11 +42,15 @@ module LiquidIL
       @trim_right = false
       @content_start = 0
       @content_end = 0
+      @tag_name_pos = -1
+      @tag_name_cache = nil
     end
 
     def reset
       @scanner.pos = 0
       @trim_next = false
+      @tag_name_pos = -1
+      @tag_name_cache = nil
       @token_type = nil
     end
 
@@ -72,6 +76,15 @@ module LiquidIL
                      liquid echo].each_with_object({}) { |t, h| h[t] = t.freeze }.freeze
 
     def tag_name
+      # Memoized per token: parse_block_body checks the name for end-tags and
+      # parse_tag reads it again for dispatch — one scan instead of two.
+      return @tag_name_cache if @tag_name_pos == @content_start
+
+      @tag_name_pos = @content_start
+      @tag_name_cache = compute_tag_name
+    end
+
+    def compute_tag_name
       src = @source
       pos = @content_start
       limit = @content_end
@@ -696,13 +709,20 @@ module LiquidIL
       @current_token = NUMBER
     end
 
+    # Identifier body after a valid first char: letters, digits, _, -, with an
+    # optional trailing ?. One StringScanner#skip (C) replaces the per-byte
+    # Ruby loop (~4x faster on typical identifiers).
+    IDENT_RE = /[A-Za-z_][A-Za-z0-9_\-]*\??/
+
     def scan_identifier_or_keyword
       start = @scanner.pos
       src = @source
 
-      # First char: a-z, A-Z, _
-      byte = src.getbyte(start)
-      unless byte && (byte >= 65 && byte <= 90 || byte >= 97 && byte <= 122 || byte == 95)
+      # First char: a-z, A-Z, _ (also rejected by IDENT_RE, but the error
+      # paths need the byte)
+      len = @scanner.skip(IDENT_RE)
+      unless len
+        byte = src.getbyte(start)
         if @error_mode == :lax
           @scanner.pos = @source.bytesize
           @current_value = nil
@@ -712,25 +732,14 @@ module LiquidIL
         raise SyntaxError, "Unexpected character '#{byte&.chr}' at position #{start}"
       end
 
-      pos = start + 1
-
-      # Rest: a-z, A-Z, 0-9, _, -
-      scan_pos = nil
-      while (byte = src.getbyte(pos))
-        if byte >= 65 && byte <= 90 || byte >= 97 && byte <= 122 ||
-           byte >= 48 && byte <= 57 || byte == 95 || byte == 45
-          pos += 1
-        elsif byte == 63  # ? at end
-          pos += 1
-          break
-        else
-          scan_pos = @source.bytesize if byte > 127
-          break
-        end
+      pos = start + len
+      # Lax quirk preserved from the byte-loop version: a non-ASCII byte
+      # directly after the identifier ends the whole expression — unless the
+      # identifier ended with '?', which terminated the old scan first.
+      trailing = src.getbyte(pos)
+      if trailing && trailing > 127 && src.getbyte(pos - 1) != 63
+        @scanner.pos = @source.bytesize
       end
-
-      @scanner.pos = scan_pos || pos
-      len = pos - start
       first_byte = src.getbyte(start)
 
       # Perfect hash keyword lookup — no string allocation for the keyword check!

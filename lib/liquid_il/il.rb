@@ -149,6 +149,10 @@ module LiquidIL
 
     # Instruction builder - creates instructions with minimal allocation
     class Builder
+      # Post-melt, only loops allocate labels; label_counter == 0 means the
+      # stream has no labels or jumps to link/strip at all.
+      attr_reader :label_counter
+
       def initialize
         @instructions = []
         @label_counter = 0

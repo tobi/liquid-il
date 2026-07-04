@@ -59,7 +59,11 @@ module LiquidIL
 
       # Fuse link + strip_labels when strip_labels is enabled
       # This saves 3 passes over the instruction array (17-20µs for typical templates)
-      if optimize_enabled && Passes.enabled.include?(Passes::STRIP_LABELS)
+      # Post-melt only loops allocate labels; when the parser allocated none,
+      # there is nothing to link or strip — skip the scans entirely.
+      if parser.builder.label_counter.zero?
+        # no labels or label-jumps in the stream
+      elsif optimize_enabled && Passes.enabled.include?(Passes::STRIP_LABELS)
         link_and_strip(instructions)
       else
         IL.link(instructions)

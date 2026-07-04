@@ -691,26 +691,20 @@ module LiquidIL
         end
 
       when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::FIND_SELF
-        if peek_for_loop?
-          generate_for_loop(indent)
-        elsif peek_tablerow?
-          generate_tablerow(indent)
-        elsif peek_if_statement?
-          generate_if_statement(indent)
-        else
-          generate_expression_statement(indent)
+        case peek_statement_kind
+        when :for then generate_for_loop(indent)
+        when :tablerow then generate_tablerow(indent)
+        when :if then generate_if_statement(indent)
+        else generate_expression_statement(indent)
         end
 
       when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE,
            IL::CONST_FALSE, IL::CONST_NIL, IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK
-        if peek_for_loop?
-          generate_for_loop(indent)
-        elsif peek_tablerow?
-          generate_tablerow(indent)
-        elsif peek_if_statement?
-          generate_if_statement(indent)
-        else
-          generate_expression_statement(indent)
+        case peek_statement_kind
+        when :for then generate_for_loop(indent)
+        when :tablerow then generate_tablerow(indent)
+        when :if then generate_if_statement(indent)
+        else generate_expression_statement(indent)
         end
 
       when IL::IF
@@ -902,14 +896,11 @@ module LiquidIL
 
       when IL::LOAD_TEMP
         # Load from temp generates expression - peek ahead to see what follows
-        if peek_for_loop?
-          generate_for_loop(indent)
-        elsif peek_tablerow?
-          generate_tablerow(indent)
-        elsif peek_if_statement?
-          generate_if_statement(indent)
-        else
-          generate_expression_statement(indent)
+        case peek_statement_kind
+        when :for then generate_for_loop(indent)
+        when :tablerow then generate_tablerow(indent)
+        when :if then generate_if_statement(indent)
+        else generate_expression_statement(indent)
         end
 
       when IL::RENDER_PARTIAL
@@ -1610,109 +1601,78 @@ module LiquidIL
       result
     end
 
-    # Check if current position starts a for loop
-    # For loops can start with:
-    # - FIND_VAR collection -> JUMP_IF_EMPTY -> FOR_INIT
-    # - Expression (CONST_*, NEW_RANGE) -> JUMP_IF_EMPTY -> FOR_INIT
-    def peek_for_loop?
-      # Scan forward looking for JUMP_IF_EMPTY followed by FOR_INIT
-      # Note: optimizer may insert hoisted expressions between JUMP_IF_EMPTY and FOR_INIT
-      i = @pc
-      while i < @instructions.length
-        inst = @instructions[i]
-        break if inst.nil?
+    # Expression opcodes a for-loop header may scan through before its
+    # JUMP_IF_EMPTY (conditions in limit/offset expressions included).
+    PEEK_FOR_OPS = [
+      IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE,
+      IL::CONST_FALSE, IL::CONST_NIL, IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK,
+      IL::FIND_VAR, IL::FIND_VAR_PATH, IL::NEW_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
+      IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::CALL_FILTER, IL::COMPARE, IL::CONTAINS,
+      IL::BOOL_NOT, IL::IS_TRUTHY, IL::LOAD_TEMP, IL::CASE_COMPARE
+    ].each_with_object({}) { |op, h| h[op] = true }.freeze
 
-        case inst[0]
+    # Expression opcodes allowed before a TABLEROW_INIT.
+    PEEK_TABLEROW_OPS = [
+      IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE,
+      IL::CONST_FALSE, IL::CONST_NIL, IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK,
+      IL::FIND_VAR, IL::FIND_VAR_PATH, IL::NEW_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
+      IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::CALL_FILTER,
+      IL::LOAD_TEMP, IL::DUP
+    ].each_with_object({}) { |op, h| h[op] = true }.freeze
+
+    # Opcodes that may sit between JUMP_IF_EMPTY and FOR_INIT (hoisted
+    # expressions, limit/offset expressions - including dotted lookups).
+    PEEK_FOR_INNER_OPS = [
+      IL::FIND_VAR, IL::FIND_VAR_PATH, IL::CONST_INT, IL::CONST_FLOAT,
+      IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_NIL,
+      IL::CONST_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
+      IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::NEW_RANGE,
+      IL::STORE_TEMP, IL::LOAD_TEMP, IL::DUP
+    ].each_with_object({}) { |op, h| h[op] = true }.freeze
+
+    # Classify the statement starting at @pc in ONE forward scan (was three
+    # separate peeks re-walking the same span): :for, :tablerow, :if, or nil
+    # for a plain expression statement. `f`/`t` track whether every opcode
+    # scanned so far is admissible in a for/tablerow header; the IF marker
+    # scan is permissive (any opcode continues) with explicit terminators -
+    # exactly the semantics the three separate peeks implemented.
+    def peek_statement_kind
+      insts = @instructions
+      i = @pc
+      f = t = true
+      while (inst = insts[i])
+        op = inst[0]
+        case op
+        when IL::IF
+          return :if
+        when IL::TABLEROW_INIT
+          return t ? :tablerow : nil
         when IL::JUMP_IF_EMPTY
-          # After JUMP_IF_EMPTY, look for FOR_INIT (may have hoisted expressions
-          # or offset/limit expressions in between — including dotted lookups)
-          j = i + 1
-          while j < @instructions.length
-            next_inst = @instructions[j]
-            break if next_inst.nil?
-            case next_inst[0]
-            when IL::FOR_INIT
-              return true
-            when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::CONST_INT, IL::CONST_FLOAT,
-                 IL::CONST_STRING, IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_NIL,
-                 IL::CONST_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
-                 IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::NEW_RANGE,
-                 IL::STORE_TEMP, IL::LOAD_TEMP, IL::DUP
+          if f
+            j = i + 1
+            while (nxt = insts[j])
+              return :for if nxt[0] == IL::FOR_INIT
+              break unless PEEK_FOR_INNER_OPS[nxt[0]]
               j += 1
-            else
-              break
             end
           end
-          return false
-        when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE,
-             IL::CONST_FALSE, IL::CONST_NIL, IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK,
-             IL::FIND_VAR, IL::FIND_VAR_PATH, IL::NEW_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
-             IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::CALL_FILTER, IL::COMPARE, IL::CONTAINS,
-             IL::BOOL_NOT, IL::IS_TRUTHY, IL::LOAD_TEMP, IL::CASE_COMPARE
-          i += 1
+          return nil
         when IL::STORE_TEMP
           # Standalone STORE_TEMP ends the statement (e.g. a case/when matched
           # flag); only DUP + STORE_TEMP caching is part of the expression.
-          prev = i > 0 ? @instructions[i - 1] : nil
-          return false unless prev && prev[0] == IL::DUP
-          i += 1
+          prev = i > 0 ? insts[i - 1] : nil
+          return nil unless prev && prev[0] == IL::DUP
+        when IL::FOR_INIT, IL::HALT, IL::WRITE_VALUE, IL::WRITE_RAW,
+             IL::ASSIGN, IL::ASSIGN_LOCAL, IL::ELSE, IL::END_IF
+          # These terminate the expression without being a header
+          return nil
         else
-          return false
+          f = false if f && !PEEK_FOR_OPS[op]
+          t = false if t && !PEEK_TABLEROW_OPS[op]
         end
+        i += 1
       end
-      false
-    end
-
-    # Check if current position starts a tablerow loop
-    # Tablerow doesn't have JUMP_IF_EMPTY, just: collection -> [limit] -> [offset] -> TABLEROW_INIT
-    def peek_tablerow?
-      i = @pc
-      while i < @instructions.length
-        inst = @instructions[i]
-        break if inst.nil?
-
-        case inst[0]
-        when IL::TABLEROW_INIT
-          return true
-        when IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_TRUE,
-             IL::CONST_FALSE, IL::CONST_NIL, IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK,
-             IL::FIND_VAR, IL::FIND_VAR_PATH, IL::NEW_RANGE, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY,
-             IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND, IL::CALL_FILTER,
-             IL::LOAD_TEMP, IL::DUP
-          i += 1
-        when IL::STORE_TEMP
-          prev = i > 0 ? @instructions[i - 1] : nil
-          return false unless prev && prev[0] == IL::DUP
-          i += 1
-        else
-          return false
-        end
-      end
-      false
-    end
-
-    # Check if the expression starting at @pc feeds a structured IF marker
-    def peek_if_statement?
-      pos = @pc
-      while (next_inst = @instructions[pos])
-        case next_inst[0]
-        when IL::IF
-          return true
-        when IL::FOR_INIT, IL::TABLEROW_INIT, IL::HALT, IL::WRITE_VALUE, IL::WRITE_RAW,
-             IL::ASSIGN, IL::ASSIGN_LOCAL, IL::ELSE, IL::END_IF, IL::JUMP_IF_EMPTY
-          # These terminate the expression without being an if condition
-          return false
-        when IL::STORE_TEMP
-          # STORE_TEMP after DUP is mid-expression caching (continue scanning)
-          # Standalone STORE_TEMP terminates the expression
-          prev = pos > 0 ? @instructions[pos - 1] : nil
-          return false unless prev && prev[0] == IL::DUP
-          pos += 1
-        else
-          pos += 1
-        end
-      end
-      false
+      nil
     end
 
     # Generate a for loop
@@ -2657,11 +2617,22 @@ module LiquidIL
     }
 
     def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
+      # Dominant case first: plain scope/helper lookups can never be
+      # string-typed, numeric-filter, or loop-var expressions — skip the
+      # whole regex classification cascade (it was ~3% of compile time).
+      if expr_ruby.start_with?("_S.lookup(", "_H.l", "_H.olp", "__partial_scope__.lookup(")
+        if guard_interrupt
+          return "#{prefix}_H.oa(_O, #{expr_ruby}) unless _S.has_interrupt?\n"
+        else
+          return "#{prefix}_H.oa(_O, #{expr_ruby})\n"
+        end
+      end
+
       # When expression is known to return a String, skip the oa type dispatch
       # For simple inline filters, use a per-filter cache to avoid repeated method calls
       # e.g., input.to_s.capitalize -> (_CAP__ ||= {})[(_v = input.to_s)] ||= _v.capitalize
       cache_pattern = nil
-      if (suffix_m = expr_ruby.match(/\.to_liquid_s\.(capitalize|upcase|downcase|strip|lstrip|rstrip)\z/))
+      if (suffix_m = expr_ruby.include?(".to_liquid_s.") && expr_ruby.match(/\.to_liquid_s\.(capitalize|upcase|downcase|strip|lstrip|rstrip)\z/))
         filter_name = suffix_m[1]
         if (cache_var = FILTER_CACHE[filter_name])
           # Extract the input expression (before .to_liquid_s)
@@ -2781,7 +2752,7 @@ module LiquidIL
           out << s << "\n" if out.empty? && s.start_with?("# frozen_string_literal")
           next
         end
-        if (m = APPEND_LINE.match(s)) && (rhs = m[1]) && (rhs[0] != "(" || balanced_expr?(rhs))
+        if s.start_with?("_O << ") && (m = APPEND_LINE.match(s)) && (rhs = m[1]) && (rhs[0] != "(" || balanced_expr?(rhs))
           flush.call if parts && guard != m[2]
           if parts
             if rhs[0] == "\"" && parts[-1][-1] == "\""
@@ -2850,6 +2821,11 @@ module LiquidIL
     # When _i0__["tags"] appears in both a size/length check and a for-loop,
     # hoist the first lookup to a named temp and reuse it.
     def optimize_repeated_lookups(code)
+      # Fast reject: the pattern needs a safe-navigated size/length lookup
+      # somewhere in the body. One include? scan beats regex-matching every
+      # line of every generated body (this was ~4.6% of total compile time).
+      return code unless code.include?("&.size") || code.include?("&.length")
+
       lines = code.lines
       lookups = []
 
@@ -2857,6 +2833,7 @@ module LiquidIL
       size_re = /(_\w+__\[(?:"[^"]+"|'[^"]+')\])\s*&\.(size|length)/
 
       lines.each_with_index do |line, i|
+        next unless line.include?("&.")
         m = line.match(size_re)
         if m
           lookups << { lookup: m[1], line: i, prop: m[2], indent: line[/\A\s*/], replaced: false }
