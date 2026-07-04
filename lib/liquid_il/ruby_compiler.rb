@@ -22,7 +22,7 @@ module LiquidIL
       remove_redundant_is_truthy remove_jump_to_next_label remove_unreachable
       merge_raw_writes_2 fold_const_captures remove_empty_raw_writes
       propagate_constants fold_const_filters_2 hoist_loop_invariants
-      cache_repeated_lookups value_numbering register_allocation
+      cache_repeated_lookups
       strip_labels remove_interrupt_checks
     ])
 
@@ -172,8 +172,11 @@ module LiquidIL
       ruby_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
       # Unique loop-naming base per partial source (process-wide, stable for
       # @@partial_cache hits) — prevents loop-local collisions when this
-      # body is inlined inside a caller's loop.
-      base = (@@partial_loop_bases[[name, source].hash] ||= @@partial_loop_bases.size * 100 + 100)
+      # body is inlined inside a caller's loop. Minting is mutex-guarded:
+      # a size race here would hand two partials the same base.
+      base = NAME_REGISTRY_MUTEX.synchronize do
+        @@partial_loop_bases[[name, source].hash] ||= @@partial_loop_bases.size * 100 + 100
+      end
       ruby_compiler.instance_variable_set(:@loop_name_base, base)
       ruby_compiler.instance_variable_set(:@current_file_lit, name)
       child_lambda_called = Set.new
@@ -2461,9 +2464,19 @@ module LiquidIL
     # resolving to the right constant (see adopt_frozen_arrays).
     @@frozen_array_names = {}
 
+    # Guards the two size-based name registries above. Their check-then-mint
+    # pattern is NOT value-idempotent: two threads registering different keys
+    # concurrently could both read the same size and mint the same name —
+    # silently binding one constant name to two different literals (wrong
+    # filter args) or two partials to one loop base (loop-var collisions).
+    # Compile-time only, so contention is negligible.
+    NAME_REGISTRY_MUTEX = Mutex.new
+
     def register_frozen_array(args)
       key = "[#{args.join(', ')}]"
-      name = (@@frozen_array_names[key] ||= "_fa#{@@frozen_array_names.size}__")
+      name = NAME_REGISTRY_MUTEX.synchronize do
+        @@frozen_array_names[key] ||= "_fa#{@@frozen_array_names.size}__"
+      end
       @frozen_arrays[key] = name
       name
     end
@@ -2880,15 +2893,15 @@ module LiquidIL
       # Optimization is on by default: the folding peepholes run because they
       # do work codegen cannot (const filter calls, static branch elimination,
       # capture folding) and shrink the emitted ISeq. Skipped: the VM-era
-      # global analyses (hoisting/lookup-caching/value-numbering insert
-      # DUP/STORE_TEMP locals that make the generated native Ruby worse),
-      # jump cleanups that native control flow makes moot, and
-      # register_allocation (RegisterAllocator is not wired in this branch).
-      # strip_labels is REQUIRED for Ruby compiler correctness.
+      # global analyses (hoisting/lookup-caching insert DUP/STORE_TEMP locals
+      # that make the generated native Ruby worse), jump cleanups that native
+      # control flow makes moot, and remove_interrupt_checks (the backend
+      # no-emits those opcodes anyway). strip_labels is REQUIRED for Ruby
+      # compiler correctness.
       RUBY_SKIP_PASSES = Passes.resolve(%i[
         remove_redundant_is_truthy remove_jump_to_next_label remove_unreachable
         merge_raw_writes_2 hoist_loop_invariants cache_repeated_lookups
-        value_numbering register_allocation remove_interrupt_checks
+        remove_interrupt_checks
       ]).freeze
       RUBY_DEFAULTS = { optimize: true, skip_passes: RUBY_SKIP_PASSES }.freeze
 

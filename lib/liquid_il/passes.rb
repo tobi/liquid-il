@@ -17,7 +17,7 @@ module LiquidIL
   #   - "*,-2,-3" - Enable all passes except passes 2 and 3
   #   - "1,2,-1"  - Enable pass 2 only (1 added then removed)
   #   - "fold_const_filters"          - Enable only pass 2, by name
-  #   - "*,-register_allocation"      - All passes except pass 19, by name
+  #   - "*,-remove_unreachable"       - All passes except pass 10, by name
   #
   # ## Available Passes
   #
@@ -40,8 +40,6 @@ module LiquidIL
   #  15: fold_const_filters (again) - Re-fold after propagation
   #  16: hoist_loop_invariants      - Move invariant lookups outside loops
   #  17: cache_repeated_lookups     - Cache repeated variable lookups
-  #  18: value_numbering            - Eliminate redundant computations
-  #  19: register_allocation        - Reuse dead temp register slots
   #  20: fuse_write_var             - Fuse FIND_VAR + WRITE_VALUE → WRITE_VAR
   #  21: strip_labels               - Remove LABEL instructions after linking
   #  22: remove_interrupt_checks    - Remove JUMP_IF_INTERRUPT/POP_INTERRUPT when unused
@@ -62,9 +60,6 @@ module LiquidIL
   #
   #   # Test only pass 2 (constant filter folding)
   #   LIQUID_PASSES=2 ruby -Ilib test/optimization_passes_test.rb
-  #
-  #   # Test all passes except register allocation
-  #   LIQUID_PASSES="*,-19" ruby -Ilib test/optimization_passes_test.rb
   #
   #   # Test with no optimizations (baseline)
   #   LIQUID_PASSES="" ruby -Ilib test/optimization_passes_test.rb
@@ -93,8 +88,10 @@ module LiquidIL
       15 => :fold_const_filters_2,
       16 => :hoist_loop_invariants,
       17 => :cache_repeated_lookups,
-      18 => :value_numbering,
-      19 => :register_allocation,
+      # 18 (value_numbering) retired: the scaffold never cached anything
+      # (value_expression_key always returned nil) yet double-scanned every
+      # basic block. 19 (register_allocation) retired: RegisterAllocator was
+      # never wired into this branch. IDs are never reused.
       20 => :fuse_write_var,
       21 => :strip_labels,
       22 => :remove_interrupt_checks
@@ -114,7 +111,7 @@ module LiquidIL
       # Parse a pass specification string into a Set of enabled pass numbers
       #
       # @param spec [String, nil] Pass specification; tokens may be pass numbers
-      #   or symbolic names (e.g., "*", "0,1,2", "*,-2", "*,-register_allocation")
+      #   or symbolic names (e.g., "*", "0,1,2", "*,-2", "*,-remove_unreachable")
       # @return [Set<Integer>] Set of enabled pass numbers
       #
       # Special values:

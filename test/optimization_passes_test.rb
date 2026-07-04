@@ -4,7 +4,7 @@ require "minitest/autorun"
 require_relative "../lib/liquid_il"
 
 # These tests validate individual optimizer passes. The production default
-# runs the full pass set (minus register_allocation), so plain Context#parse
+# runs the full pass set, so plain Context#parse
 # exercises exactly what these tests assert.
 
 # Comprehensive tests for each IL optimization pass
@@ -26,8 +26,6 @@ require_relative "../lib/liquid_il"
 # 15. fold_const_filters/writes/merge (again after propagation)
 # 16. hoist_loop_invariants
 # 17. cache_repeated_lookups
-# 18. value_numbering
-# 19. RegisterAllocator.optimize
 # 20. fuse_write_var
 # 22. remove_interrupt_checks
 
@@ -572,71 +570,6 @@ class Pass17CacheRepeatedLookupsTest < Minitest::Test
   end
 end
 
-class Pass19RegisterAllocatorTest < Minitest::Test
-  def setup
-    skip "Pass 19 is not enabled in the current Ruby compiler configuration"
-  end
-
-  def test_temp_reuse_basic
-    # Multiple temps should be reused when possible
-    template = @ctx.parse("{{ a }}{{ a }}{{ b }}{{ b }}", optimize: true)
-    # Should produce correct output despite temp reuse
-    assert_equal "aabb", template.render("a" => "a", "b" => "b")
-  end
-
-  def test_nested_loop_temps_not_collide
-    # This was a bug: nested loops had temp register collision
-    template = @ctx.parse(<<~LIQUID, optimize: true)
-      {% for row in data %}
-        {% for col in headers %}{{ row[col] }}{% endfor %}
-      {% endfor %}
-    LIQUID
-
-    data = [
-      { "name" => "Alice", "age" => "30" },
-      { "name" => "Bob", "age" => "25" }
-    ]
-    result = template.render("data" => data, "headers" => %w[name age])
-    assert_includes result, "Alice"
-    assert_includes result, "Bob"
-    assert_includes result, "30"
-    assert_includes result, "25"
-  end
-
-  def test_case_statement_temps_preserved
-    # Case/when with temp for flag should work correctly
-    template = @ctx.parse(<<~LIQUID, optimize: true)
-      {% case x %}
-      {% when 'a' %}A
-      {% when 'b' %}B
-      {% else %}other
-      {% endcase %}
-    LIQUID
-
-    assert_includes template.render("x" => "a"), "A"
-    assert_includes template.render("x" => "b"), "B"
-    assert_includes template.render("x" => "c"), "other"
-  end
-
-  def test_outer_loop_variable_survives_inner_loop
-    # Variable defined before outer loop should survive inner loop iterations
-    template = @ctx.parse(<<~LIQUID, optimize: true)
-      {% for outer in outer_items %}
-        {% for inner in inner_items %}
-          {{ prefix }}
-        {% endfor %}
-      {% endfor %}
-    LIQUID
-
-    result = template.render(
-      "outer_items" => [1, 2],
-      "inner_items" => [1, 2],
-      "prefix" => "X"
-    )
-    assert_equal 4, result.scan("X").size
-  end
-end
-
 # Test that optimizations don't break semantics
 class OptimizationCorrectnessTest < Minitest::Test
   def setup
@@ -727,7 +660,7 @@ class Pass22RemoveInterruptChecksTest < Minitest::Test
   # This pass is skipped by the production default (the backend already
   # no-ops interrupt checks in generated Ruby); enable it explicitly here
   # to test its mechanism.
-  WITH_PASS_22 = { optimize: true, skip_passes: [:register_allocation] }.freeze
+  WITH_PASS_22 = { optimize: true, skip_passes: [] }.freeze
 
   def test_removes_interrupt_checks_when_no_break_or_continue
     template = @ctx.parse("{% for i in (1..3) %}{{ i }}{% endfor %}", **WITH_PASS_22)
