@@ -15,6 +15,12 @@ module LiquidIL
   # Error raised when a filter fails and should show error in output
   class FilterRuntimeError < StandardError; end
 
+  # Raised when stringifying a value that never opted into the Liquid
+  # protocol (Object#to_liquid raised): "X cannot be printed". Subclasses
+  # FilterRuntimeError so it renders inline through the same machinery,
+  # whether it surfaces inside a filter or in direct output.
+  class UnprintableError < FilterRuntimeError; end
+
   module Filters
     STRIP_HTML_BLOCKS = Regexp.union(
       %r{<script.*?</script>}m,

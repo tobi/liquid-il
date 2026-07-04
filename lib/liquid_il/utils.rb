@@ -23,16 +23,21 @@ module LiquidIL
         array_inspect(obj, seen || {})
       else
         # Call to_liquid first (drops may have stateful to_liquid like
-        # ToSDrop). Non-protocol objects pass through to to_s: array/filter
-        # ELEMENTS skip the drop-protocol boundary in reference liquid — a
-        # Class or other plain object inside an array renders, not raises.
+        # ToSDrop). The printability boundary is the protocol raise itself:
+        # Object's default to_liquid raises, and stringification translates
+        # that into "X cannot be printed" — no call-site protocol checks.
         obj = begin
           obj.to_liquid
         rescue LiquidIL::NoMethodError
-          obj
+          raise_unprintable(obj)
         end
         obj.to_s
       end
+    end
+
+    def self.raise_unprintable(obj)
+      desc = obj.is_a?(Module) ? (obj.name || obj.to_s) : obj.class.name
+      raise UnprintableError, "#{desc} cannot be printed"
     end
 
     def self.to_liquid_value(obj)
@@ -50,6 +55,14 @@ module LiquidIL
       when Array
         array_inspect(obj, seen || {})
       else
+        # Same printability boundary as to_s — inspect-flavored
+        # stringification (array elements in filter output) must not leak
+        # objects that never opted into the protocol.
+        begin
+          obj.to_liquid
+        rescue LiquidIL::NoMethodError
+          raise_unprintable(obj)
+        end
         obj.inspect
       end
     end
