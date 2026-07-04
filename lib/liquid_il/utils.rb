@@ -22,8 +22,15 @@ module LiquidIL
       when Array
         array_inspect(obj, seen || {})
       else
-        # Call to_liquid first (drops may have stateful to_liquid like ToSDrop)
-        obj = obj.to_liquid
+        # Call to_liquid first (drops may have stateful to_liquid like
+        # ToSDrop). Non-protocol objects pass through to to_s: array/filter
+        # ELEMENTS skip the drop-protocol boundary in reference liquid — a
+        # Class or other plain object inside an array renders, not raises.
+        obj = begin
+          obj.to_liquid
+        rescue LiquidIL::NoMethodError
+          obj
+        end
         obj.to_s
       end
     end

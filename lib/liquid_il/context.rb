@@ -634,6 +634,7 @@ module LiquidIL
 
   # Empty literal - used for `== empty` comparisons
   class EmptyLiteral
+    include IdentityToLiquid
     def self.instance
       @instance ||= new
     end
@@ -655,6 +656,7 @@ module LiquidIL
 
   # Blank literal - used for `== blank` comparisons
   class BlankLiteral
+    include IdentityToLiquid
     def self.instance
       @instance ||= new
     end
@@ -678,6 +680,7 @@ module LiquidIL
 
   # Range value for ranges
   class RangeValue
+    include IdentityToLiquid
     attr_reader :start_val, :end_val
 
     def initialize(start_val, end_val)

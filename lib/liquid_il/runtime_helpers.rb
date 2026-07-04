@@ -165,11 +165,16 @@ module LiquidIL
         case key
         when Integer then obj[key]
         else
-          case key.to_s
+          key_s = key.to_s
+          case key_s
           when "size", "length" then obj.length
           when "first" then obj.first
           when "last" then obj.last
-          else obj[key.to_i]
+          else
+            # Index only for numeric keys. A blanket to_i coerced any unknown
+            # property name ("class", "secret", ...) to 0 and leaked the
+            # first element — reference liquid returns nil here.
+            obj[key_s.to_i] if key_s.match?(/\A-?\d+\z/)
           end
         end
       when LiquidIL::ForloopDrop, LiquidIL::TablerowloopDrop

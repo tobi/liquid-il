@@ -5,6 +5,7 @@ require "set"
 module LiquidIL
   # Forloop drop - provides iteration metadata
   class ForloopDrop
+    include IdentityToLiquid
     attr_reader :name, :length, :parentloop
     attr_accessor :index0
 

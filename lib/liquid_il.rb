@@ -20,7 +20,15 @@ module LiquidIL
 
   class Error < StandardError; end
 
+  # Raised by Object#to_liquid / #to_liquid_value for objects that never
+  # opted into the Liquid protocol — the drop-protocol security boundary.
+  # Subclasses ::NoMethodError for reference-liquid parity (there the raise
+  # is a genuine dispatch failure); bare `rescue NoMethodError` inside
+  # LiquidIL code must therefore write ::NoMethodError explicitly.
+  class NoMethodError < ::NoMethodError; end
+
   class ErrorMarker
+    include IdentityToLiquid
     attr_reader :message, :location
     def initialize(message, location)
       @message = message

@@ -566,7 +566,7 @@ module LiquidIL
             item[property]
           rescue TypeError
             raise_property_error(property)
-          rescue NoMethodError
+          rescue ::NoMethodError
             return nil unless item.respond_to?(:[])
             raise
           end
@@ -585,7 +585,7 @@ module LiquidIL
             item[property].nil?
           rescue TypeError
             raise_property_error(property)
-          rescue NoMethodError
+          rescue ::NoMethodError
             return nil unless item.respond_to?(:[])
             raise
           end
@@ -655,7 +655,11 @@ module LiquidIL
         options = args.last.is_a?(Hash) ? args.last : {}
         allow_false = options["allow_false"]
 
-        liquid_input = input.to_liquid
+        liquid_input = begin
+          input.to_liquid
+        rescue LiquidIL::NoMethodError
+          input
+        end
         liquid_value = liquid_input.to_liquid_value
         false_check = allow_false ? liquid_input.nil? : !liquid_truthy?(liquid_value)
         false_check || (liquid_input.respond_to?(:empty?) && liquid_input.empty?) ? default_value : liquid_input
@@ -772,7 +776,7 @@ module LiquidIL
           end
         rescue TypeError
           raise_property_error(property)
-        rescue NoMethodError
+        rescue ::NoMethodError
           return nil unless item.respond_to?(:[])
           raise
         end
@@ -868,7 +872,13 @@ module LiquidIL
 
       def each
         @input.each do |e|
-          e = e.to_liquid
+          # Elements unwrap when they opt into the protocol; plain objects
+          # pass through (reference liquid iterates without raising).
+          e = begin
+            e.to_liquid
+          rescue LiquidIL::NoMethodError
+            e
+          end
           e.context = @context if @context && e.respond_to?(:context=)
           yield(e)
         end
