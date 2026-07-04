@@ -1905,26 +1905,13 @@ module LiquidIL
       needs_error_handling = has_offset || has_limit
       needs_slicing = limit_expr || offset_expr || offset_continue
 
-      # Fast path: simple loops use direct while loop — no block yield overhead
+      # Fast path: simple loops emit one _H.ei block — the driver (coerce,
+      # length, index walk) lives in the already-jitted runtime, saving ~190B
+      # of ISeq per loop vs the six-statement while machinery; render cost is
+      # identical under YJIT. {% continue %} compiles to `next` in the block.
       if !needs_forloop && !needs_scope_sync && !needs_catch && !needs_error_handling &&
          !reversed && !needs_slicing && !offset_continue && else_code.empty?
-        coll_var_name = "__coll#{depth}__"
-        idx_var_name = "__i#{depth}__"
-        len_var_name = "__len#{depth}__"
-        code << "#{prefix}#{coll_var_name} = #{coll_ruby}\n"
-        # For simple hash lookups, ||= [] is faster than _H.ti() since Arrays/nils dominate
-        if coll_ruby.match?(/\A_[a-z]\d+__\["[^"]+"\]\z/) || coll_ruby.match?(/\A_cache_\w+__\z/)
-          code << "#{prefix}#{coll_var_name} ||= []\n"
-        else
-          code << "#{prefix}#{coll_var_name} = _H.tia(#{coll_var_name})\n"
-        end
-        code << "#{prefix}#{len_var_name} = #{coll_var_name}.length\n"
-        code << "#{prefix}#{idx_var_name} = 0\n"
-        code << "#{prefix}while #{idx_var_name} < #{len_var_name}\n"
-        code << "#{prefix}  #{item_var_internal} = #{coll_var_name}[#{idx_var_name}]\n"
-        # Increment BEFORE the body: {% continue %} compiles to `next`, which
-        # would skip a trailing increment and loop forever.
-        code << "#{prefix}  #{idx_var_name} += 1\n"
+        code << "#{prefix}_H.ei(#{coll_ruby}) do |#{item_var_internal}|\n"
         if @has_resource_limits
           code << "#{prefix}  _S.increment_render_score!\n"
           code << "#{prefix}  _S.check_output_limit!(_O)\n"

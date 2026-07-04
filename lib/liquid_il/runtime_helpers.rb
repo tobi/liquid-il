@@ -99,6 +99,21 @@ module LiquidIL
       value.is_a?(Array) ? value : to_iterable(value)
     end
 
+    # ei: simple-loop driver — coerce + iterate, for loops that need no
+    # forloop drop, break, limit/offset, or else branch. One emitted block
+    # replaces the six-statement while machinery (~190B of ISeq per loop);
+    # render cost is identical under YJIT. {% continue %} compiles to
+    # `next`, which works inside the yield block.
+    def self.ei(collection)
+      coll = collection.is_a?(Array) ? collection : to_iterable(collection)
+      i = 0
+      len = coll.length
+      while i < len
+        yield coll[i]
+        i += 1
+      end
+    end
+
     # rolf/rolp: raw text + looked-up value in one send — the raw/lookup/raw
     # sandwich is the most common statement pair in real templates.
     def self.rolf(output, raw, obj, key)
