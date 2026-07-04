@@ -58,7 +58,7 @@ Every render in production falls into one of three cache scenarios, and every be
 | liquid_vm | 427µs | 109µs | 92µs | 1.7KB |
 | liquid_vm_ssa | 985µs | 111µs | 93µs | 1.8KB |
 
-remote-hit is the production workload and the primary target; in-process shows the ceiling of the generated code; cache-miss is the cost of a cold fleet. Artifact size is the main lever on remote-hit — it is where LiquidIL still trails liquid-vm's compact bytecode.
+remote-hit is the production workload and the primary target; in-process shows the ceiling of the generated code; cache-miss is the cost of a cold fleet. Artifact size is the main lever on remote-hit — it is where LiquidIL still trails liquid-vm's compact bytecode. The plan to win all four columns is [docs/win_all_scenarios.md](docs/win_all_scenarios.md).
 
 ### Runtime environment assumptions
 

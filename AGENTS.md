@@ -28,7 +28,7 @@ Every render is one of three cache scenarios; benchmarks report all three plus a
 | **remote-hit → render** | artifact string (memcache/DB) → load → render — **the production workload** | artifact size (~3µs/KB ISeq load) |
 | **in-process → render** | already-loaded template → render | generated-code quality under JIT |
 
-`rake bench` prints this table vs reference liquid; `rake liquid_vm:scenarios` adds liquid-vm. Current standing: LiquidIL wins remote-hit and in-process; artifact size (vs liquid-vm's compact bytecode) and cache-miss parse time are the open gaps.
+`rake bench` prints this table vs reference liquid; `rake liquid_vm:scenarios` adds liquid-vm. Current standing: LiquidIL wins remote-hit and in-process; artifact size (vs liquid-vm's compact bytecode) and cache-miss parse time are the open gaps. The active plan to win every column on every spec — emitted-bytes reduction as the master lever — is [docs/win_all_scenarios.md](docs/win_all_scenarios.md); read it before perf work.
 
 The hot path is **deserialize → callable proc → first render**, not warm re-render. Two consequences govern every codegen change:
 
