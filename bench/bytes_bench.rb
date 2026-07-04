@@ -21,6 +21,12 @@
 # Usage:
 #   bundle exec ruby bench/bytes_bench.rb [spec_name ...]
 #   rake bench:bytes
+#
+# Caveat: specs are compiled against their own `filesystem:` block only.
+# The liquid-spec bench harness additionally merges suite-shared partials
+# (e.g. storefront's product-card), so absolute sizes here can undershoot
+# `rake bench`'s artifact column — trust the deltas, and use the scenario
+# benches for absolute numbers.
 
 require "yaml"
 require "json"
@@ -48,8 +54,20 @@ PATTERNS = {
 }.freeze
 
 def load_specs(only_names)
-  yml = YAML.safe_load(File.read(File.expand_path("../specs/partials/partials.yml", __dir__)), aliases: true)
-  specs = yml["specs"].select { |s| s["name"]&.start_with?("bench_") }
+  files = [File.expand_path("../specs/partials/partials.yml", __dir__)]
+  # Also cover the liquid-spec gem's benchmark suites (the rake bench /
+  # liquid_vm:scenarios corpus) when the gem is available.
+  begin
+    gem_root = Gem::Specification.find_by_name("liquid-spec").gem_dir
+    files.concat(Dir.glob(File.join(gem_root, "specs", "benchmarks", "*.yml")))
+  rescue Gem::MissingSpecError
+    warn "liquid-spec gem not found; local suite only"
+  end
+  specs = files.flat_map do |f|
+    (YAML.unsafe_load_file(f)["specs"] rescue []).to_a.select { |s| s.is_a?(Hash) && s["name"]&.start_with?("bench_") && s["template"] }
+  end
+  seen = {}
+  specs = specs.reject { |s| seen.key?(s["name"]).tap { seen[s["name"]] = true } }
   specs = specs.select { |s| only_names.include?(s["name"]) } unless only_names.empty?
   specs
 end
