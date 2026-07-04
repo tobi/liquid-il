@@ -153,6 +153,7 @@ module LiquidIL
       len = instructions.length
       w = 0            # instructions[0...w] is the compacted output
       path_at = -1     # index of a LOOKUP_CONST_PATH this scan created (safe to extend)
+      merged_at = -1   # index of a WRITE_RAW whose string this scan created (safe to mutate)
       known = p14 ? {} : nil  # var name -> const instruction (straight-line only)
       @peephole_substituted = false
       i = 0
@@ -200,12 +201,16 @@ module LiquidIL
 
         case opcode
         when IL::WRITE_VALUE
-          # Pass 20: FIND_VAR(_PATH) + WRITE_VALUE → WRITE_VAR(_PATH)
+          # Pass 20: FIND_VAR(_PATH) + WRITE_VALUE → WRITE_VAR(_PATH).
+          # Rewrite the opcode in place: FIND_VAR/WRITE_VAR and
+          # FIND_VAR_PATH/WRITE_VAR_PATH have identical operand arity, and
+          # operand-carrying instruction arrays are always freshly allocated
+          # (only zero-arg opcodes use frozen singletons).
           if p20 && prev_op == IL::FIND_VAR
-            instructions[w - 1] = [IL::WRITE_VAR, prev[1]]
+            prev[0] = IL::WRITE_VAR
             next
           elsif p20 && prev_op == IL::FIND_VAR_PATH
-            instructions[w - 1] = [IL::WRITE_VAR_PATH, prev[1], prev[2]]
+            prev[0] = IL::WRITE_VAR_PATH
             next
           elsif p3 && prev && (cv = const_value(prev))
             # Pass 3: CONST + WRITE_VALUE → WRITE_RAW, cascading into a
@@ -214,17 +219,27 @@ module LiquidIL
             if p9 && w > 1 && instructions[w - 2][0] == IL::WRITE_RAW
               instructions[w - 2] = [IL::WRITE_RAW, instructions[w - 2][1] + raw]
               w -= 1
+              merged_at = w - 1
             elsif p13 && raw.empty?
               w -= 1
+              merged_at = -1
             else
               instructions[w - 1] = [IL::WRITE_RAW, raw]
             end
             next
           end
         when IL::WRITE_RAW
-          # Pass 9: merge consecutive WRITE_RAW
+          # Pass 9: merge consecutive WRITE_RAW. The first merge of a run
+          # allocates a private string; later merges append in place. Only
+          # strings this scan created are mutated (merged_at) — original
+          # payloads may be frozen literals or aliased const values.
           if p9 && prev_op == IL::WRITE_RAW
-            instructions[w - 1] = [IL::WRITE_RAW, prev[1] + inst[1]]
+            if merged_at == w - 1
+              prev[1] << inst[1]
+            else
+              instructions[w - 1] = [IL::WRITE_RAW, prev[1] + inst[1]]
+              merged_at = w - 1
+            end
             next
           end
         when IL::IS_TRUTHY
@@ -289,11 +304,11 @@ module LiquidIL
             next_inst = instructions[i + 1]
             case next_inst[0]
             when IL::IS_TRUTHY
-              instructions[i] = truthy ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+              instructions[i] = truthy ? IL::I_CONST_TRUE : IL::I_CONST_FALSE
               instructions.delete_at(i + 1)
               next
             when IL::BOOL_NOT
-              instructions[i] = truthy ? [IL::CONST_FALSE] : [IL::CONST_TRUE]
+              instructions[i] = truthy ? IL::I_CONST_FALSE : IL::I_CONST_TRUE
               instructions.delete_at(i + 1)
               next
             when IL::IF
@@ -337,7 +352,7 @@ module LiquidIL
               when IL::COMPARE
                 result = safe_compare(val1, val2, inst3[1])
                 if result != nil
-                  instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+                  instructions[i] = result ? IL::I_CONST_TRUE : IL::I_CONST_FALSE
                   instructions.delete_at(i + 2)
                   instructions.delete_at(i + 1)
                   next
@@ -345,7 +360,7 @@ module LiquidIL
               when IL::CASE_COMPARE
                 result = safe_case_compare(val1, val2)
                 if result != nil
-                  instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+                  instructions[i] = result ? IL::I_CONST_TRUE : IL::I_CONST_FALSE
                   instructions.delete_at(i + 2)
                   instructions.delete_at(i + 1)
                   next
@@ -353,7 +368,7 @@ module LiquidIL
               when IL::CONTAINS
                 result = safe_contains(val1, val2)
                 if result != nil
-                  instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+                  instructions[i] = result ? IL::I_CONST_TRUE : IL::I_CONST_FALSE
                   instructions.delete_at(i + 2)
                   instructions.delete_at(i + 1)
                   next
@@ -363,7 +378,7 @@ module LiquidIL
                 r = const_truthiness(val2)
                 if l != nil && r != nil
                   result = inst3[0] == IL::BOOL_AND ? l && r : l || r
-                  instructions[i] = result ? [IL::CONST_TRUE] : [IL::CONST_FALSE]
+                  instructions[i] = result ? IL::I_CONST_TRUE : IL::I_CONST_FALSE
                   instructions.delete_at(i + 2)
                   instructions.delete_at(i + 1)
                   next
