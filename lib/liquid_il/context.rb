@@ -5,7 +5,8 @@ module LiquidIL
   # Optimized for hot-path performance with direct ivars instead of hash lookups
   class RenderScope
     attr_accessor :file_system, :render_errors, :current_file,
-                  :strict_variables, :strict_filters, :custom_filters, :resource_limits
+                  :strict_variables, :strict_filters, :custom_filters, :resource_limits,
+                  :dynamic_name_cache
     attr_reader :strict_errors, :user_registers
 
     def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true, locals: nil)
@@ -204,7 +205,8 @@ module LiquidIL
     attr_reader :strict_errors, :static_environments
     def scopes; @scopes || [@root_scope]; end
     attr_accessor :file_system, :disable_include, :render_errors, :current_file,
-                  :strict_variables, :strict_filters, :custom_filters, :resource_limits
+                  :strict_variables, :strict_filters, :custom_filters, :resource_limits,
+                  :dynamic_name_cache
 
     MAX_RENDER_DEPTH = 100
 

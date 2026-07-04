@@ -30,14 +30,22 @@ class DynamicPartialsPerformanceTest < Minitest::Test
     # Warmup
     5.times { template.render(assigns) }
 
+    expected = "[" + (1..60).to_a.join("][") + "]"
+    assert_equal expected, template.render(assigns)
+
+    reads_before = fs.reads["item"]
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     120.times { template.render(assigns) }
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
 
-    # 120 renders * 60 items = 7200 dynamic partial executions.
-    # Keep threshold generous to avoid flake; catches order-of-magnitude regressions.
+    # 120 renders * 60 items = 7200 dynamic partial executions, but the source
+    # is resolved to a compiled template once per render (name-keyed scope
+    # cache), so the file_system is read at most once per render — not once per
+    # execution. Assert the cache holds: reads must be bounded by render count,
+    # never the execution count.
     assert_operator elapsed, :<, 3.0, "dynamic partial runtime path too slow: #{elapsed.round(3)}s"
-    assert_operator fs.reads["item"], :>=, 7_200
+    assert_operator fs.reads["item"] - reads_before, :<=, 120,
+      "dynamic partial source should be read at most once per render"
   end
 
   def test_dynamic_include_vs_static_include_order_of_magnitude

@@ -2457,15 +2457,18 @@ module LiquidIL
     # Register a frozen array constant for compile-time-known filter args.
     # Returns the variable name to use in generated code.
     # Deduplicates: same arg list → same constant.
-    # Emit a standard filter dispatch call (cff, cf, or ccf)
+    # Emit a standard filter dispatch call (cff, cf, or ccf).
+    # The "cff" (fast, compile-time-known filter) path is emitted as the
+    # flattened single-frame _F.ff dispatcher; cf/ccf stay on _H.
     def emit_filter_dispatch(dispatcher, name, input, args, line)
+      recv = dispatcher == "cff" ? "_F.ff" : "_H.#{dispatcher}"
       if args.empty?
-        "_H.#{dispatcher}(#{name.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, #{@current_file_lit.inspect}, #{line})"
+        "#{recv}(#{name.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, #{@current_file_lit.inspect}, #{line})"
       elsif args.all? { |a| a.match?(/\A(?:-?\d+(?:\.\d+)?|"[^"]*")\z/) }
         frozen_name = register_frozen_array(args)
-        "_H.#{dispatcher}(#{name.inspect}, #{input}, #{frozen_name}, _S, #{@current_file_lit.inspect}, #{line})"
+        "#{recv}(#{name.inspect}, #{input}, #{frozen_name}, _S, #{@current_file_lit.inspect}, #{line})"
       else
-        "_H.#{dispatcher}(#{name.inspect}, #{input}, [#{args.join(', ')}], _S, #{@current_file_lit.inspect}, #{line})"
+        "#{recv}(#{name.inspect}, #{input}, [#{args.join(', ')}], _S, #{@current_file_lit.inspect}, #{line})"
       end
     end
 
@@ -2521,10 +2524,12 @@ module LiquidIL
       # plus:0/times:1 coerce strings to numbers (e.g. "6-3" | plus:0 => 6).
       # Do not skip them based only on literal arguments.
 
-      # If an earlier filter in this chain went through a dispatcher, its
-      # result may be an ErrorMarker. Keep the rest of the chain in
-      # dispatcher-land so the marker short-circuits through untouched.
-      chain_may_error = input_ruby.include?("_H.cf")
+      # If an earlier filter in this chain went through a dispatcher (_F.ff for
+      # known filters, _H.cf/_H.ccf for unknown/custom), its result may be an
+      # ErrorMarker. Keep the rest of the chain in dispatcher-land so the
+      # marker short-circuits through untouched (and so numeric filters like
+      # round don't take the lossy inline .to_f path on a real filter result).
+      chain_may_error = input_ruby.include?("_H.cf") || input_ruby.include?("_F.ff(")
 
       if !chain_may_error && SAFE_DIRECT_FILTERS[filter_name]
         # Inline round/ceil/floor with integer-literal args: skip _F dispatch

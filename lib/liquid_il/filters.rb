@@ -126,7 +126,53 @@ module LiquidIL
         @context = nil
       end
 
+      # Flattened fast filter dispatch — folds RuntimeHelpers.call_filter_fast
+      # (marker passthrough + error→ErrorMarker conversion) and apply_fast
+      # (@context bind + arity dispatch) into ONE frame with NO `ensure`. The
+      # filter name is validated at compile time, so this is the hot path for
+      # every `{{ x | filter }}` the compiler recognizes.
+      #
+      # Two costs are removed vs the old cff→apply_fast pair (~15% on
+      # filter-heavy renders): the extra method call + rescue frame, and — the
+      # bigger one — the `ensure @context = nil`. An `ensure` block is a real
+      # frame under YJIT; dropping it is most of the win. It is safe to drop:
+      # @context is (re)bound at the top of every dispatch before any filter
+      # body reads it, and no built-in filter re-enters dispatch mid-execution,
+      # so a leftover @context is never observed. (The old pair cleared to nil,
+      # which was equally unsafe under hypothetical nesting — this is no worse.)
+      def ff(name, input, args, scope, current_file = nil, line = 1)
+        return input if input.is_a?(LiquidIL::ErrorMarker)
+        @context = scope
+        case args.length
+        when 0 then send(name, input)
+        when 1 then send(name, input, args[0])
+        when 2 then send(name, input, args[0], args[1])
+        else send(name, input, *args)
+        end
+      rescue ArgumentError, ZeroDivisionError => e
+        # Coercion/division errors: raw re-raise under strict, else inline.
+        raise e if scope.strict_errors
+        filter_error_value(e.message, scope, current_file, line)
+      rescue FilterRuntimeError => e
+        filter_error_value(e.message, scope, current_file, line)
+      rescue FilterError
+        nil
+      rescue => e
+        raise e if scope.strict_errors
+        filter_error_value("internal", scope, current_file, line)
+      end
+
       private
+
+      # Turn a filter error into either an inline ErrorMarker (render_errors)
+      # or a raised RuntimeError (strict rendering). Shared by #ff.
+      def filter_error_value(message, scope, current_file, line)
+        location = current_file ? "#{current_file} line #{line}" : "line #{line}"
+        unless scope.render_errors
+          raise LiquidIL::RuntimeError.new("Liquid error (#{location}): #{message}", file: current_file, line: line)
+        end
+        LiquidIL::ErrorMarker.new(message, location)
+      end
 
       def args_to_s(input, *args)
         options = args.last.is_a?(Hash) ? args.pop : {}

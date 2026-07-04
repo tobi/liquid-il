@@ -431,23 +431,40 @@ module LiquidIL
     # - read_template_file(name)
     # - read_template_file(name, context)
     # - read(name) (legacy)
+    # Read strategy per file_system object. `#method(:read_template_file).arity`
+    # allocates a Method every call, and dynamic partials call this once per
+    # include *plus* once per dependency revalidation — dozens of throwaway
+    # Method objects per render. The arity is stable for a given file_system,
+    # so resolve it once and cache by object identity.
+    @fs_read_arity = {}.compare_by_identity
+
     def self.read_partial_source(file_system, name, context = nil)
       return nil unless file_system
 
       if file_system.respond_to?(:read_template_file)
+        arity = @fs_read_arity[file_system]
+        if arity.nil?
+          arity = begin
+            file_system.method(:read_template_file).arity
+          rescue NameError
+            # Some proxies don't expose #method cleanly; fall back to trial call.
+            :trial
+          end
+          @fs_read_arity[file_system] = arity
+        end
+
         begin
-          arity = file_system.method(:read_template_file).arity
-          if arity == 1
+          case arity
+          when 1
             file_system.read_template_file(name)
+          when :trial
+            begin
+              file_system.read_template_file(name, context)
+            rescue ArgumentError
+              file_system.read_template_file(name)
+            end
           else
             file_system.read_template_file(name, context)
-          end
-        rescue NameError
-          # Some proxies don't expose #method cleanly; fall back to trial call.
-          begin
-            file_system.read_template_file(name, context)
-          rescue ArgumentError
-            file_system.read_template_file(name)
           end
         rescue StandardError
           nil
@@ -529,16 +546,29 @@ module LiquidIL
         raise LiquidIL::RuntimeError.new(message, file: scope.current_file, line: caller_line)
       end
 
-      # Load source
-      source = read_partial_source(fs, name, scope)
-      unless source
-        message = "Could not find asset #{name}"
-        if scope.render_errors
-          location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
-          output << "Liquid error (#{location}): #{message}"
-          return
+      # Per-render name→compiled cache. Dynamic includes re-resolve the name to
+      # source on every invocation purely to hash it for the process-wide
+      # compile cache, so an include inside a loop (product_card × N items)
+      # re-reads and re-hashes the same file N times. The file_system is
+      # immutable within a single render and `scope` is fresh per render, so a
+      # name-keyed cache on the scope lets repeat includes skip the fs read,
+      # the hash, and the dep revalidation — while the FIRST include of each
+      # name per render still reads + validates, catching cross-render drift.
+      name_cache = scope.respond_to?(:dynamic_name_cache) ? (scope.dynamic_name_cache ||= {}) : nil
+      cached_template = name_cache && name_cache[name]
+
+      unless cached_template
+        # Load source
+        source = read_partial_source(fs, name, scope)
+        unless source
+          message = "Could not find asset #{name}"
+          if scope.render_errors
+            location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
+            output << "Liquid error (#{location}): #{message}"
+            return
+          end
+          raise LiquidIL::RuntimeError.new(message, file: scope.current_file, line: caller_line)
         end
-        raise LiquidIL::RuntimeError.new(message, file: scope.current_file, line: caller_line)
       end
 
       # Compile and execute
@@ -553,7 +583,8 @@ module LiquidIL
       end
 
       begin
-        compiled = compile_dynamic_partial(source, fs, scope)
+        compiled = cached_template || compile_dynamic_partial(source, fs, scope)
+        name_cache[name] = compiled if name_cache && !cached_template
         child_scope = isolated ? scope.isolated : scope
         assigns.each { |k, v| child_scope.assign(k, v) }
         child_scope.file_system = fs
@@ -586,20 +617,23 @@ module LiquidIL
 
     # Process-wide cache of dynamically compiled partials. Dynamic partial
     # names resolve at render time, but the SOURCES are stable — recompiling
-    # per render cost 100-800µs where a cache hit costs ~1µs. Keyed by source
-    # hash; a hit is only valid while the sources of the nested static
-    # partials baked into the compiled body are unchanged (checked against
-    # the caller's file_system, so multi-tenant processes can't serve one
-    # tenant's nested content to another).
+    # per render cost 100-800µs where a cache hit costs ~1µs. Keyed by the
+    # source string itself (not its .hash): Ruby hashes the key internally at
+    # the same cost, but confirms hits with #eql?, so two distinct sources that
+    # happen to collide in the 64-bit hash space can never serve one another's
+    # compiled template. A hit is only valid while the sources of the nested
+    # static partials baked into the compiled body are unchanged (checked
+    # against the caller's file_system, so multi-tenant processes can't serve
+    # one tenant's nested content to another).
     DYNAMIC_TEMPLATE_CACHE_MAX = 500
     @dynamic_template_cache = {}
 
     def self.compile_dynamic_partial(source, fs, scope)
-      key = source.hash
+      key = source
       entry = @dynamic_template_cache[key]
       if entry
-        valid = entry[:deps].all? do |dep_name, dep_hash|
-          read_partial_source(fs, dep_name, scope)&.hash == dep_hash
+        valid = entry[:deps].all? do |dep_name, dep_source|
+          read_partial_source(fs, dep_name, scope) == dep_source
         end
         return entry[:template] if valid
         @dynamic_template_cache.delete(key)
@@ -615,11 +649,13 @@ module LiquidIL
         args = inst[2] || {}
         next if args["__dynamic_name__"]
         dep_source = read_partial_source(fs, inst[1], scope)
-        deps[inst[1]] = dep_source.hash if dep_source
+        deps[inst[1]] = dep_source if dep_source
       end
 
       @dynamic_template_cache.clear if @dynamic_template_cache.size >= DYNAMIC_TEMPLATE_CACHE_MAX
-      @dynamic_template_cache[key] = { template: template, deps: deps }
+      # Freeze the key so a later in-place mutation of the caller's source
+      # string can't silently corrupt the lookup.
+      @dynamic_template_cache[key.frozen? ? key : key.dup.freeze] = { template: template, deps: deps }
       template
     end
 

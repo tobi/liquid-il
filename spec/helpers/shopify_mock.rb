@@ -41,8 +41,18 @@ module LiquidIL
         assigns
       end
 
+      # Theme files are static on disk for the lifetime of a bench/spec run, so
+      # cache reads by path. content_for_header re-reads dozens of theme files
+      # per render otherwise, which dominated the adapter render measurement.
       def theme_source(path)
         path = path.to_s
+        cache = (@theme_source_cache ||= {})
+        return cache[path] if cache.key?(path)
+
+        cache[path] = compute_theme_source(path)
+      end
+
+      def compute_theme_source(path)
         path = "#{path}.liquid" unless path.end_with?(".liquid", ".json")
         full_path = File.join(STOREFRONT_DAWN_ROOT, path)
         return File.read(full_path) if File.file?(full_path)
@@ -327,7 +337,13 @@ module LiquidIL
       parts.join(" ")
     end
 
-    def self.normalize_shopify_drop_urls!(value, seen = {}.compare_by_identity)
+    # `seen` defaults to a persistent module-level identity set. The bench passes
+    # a fresh shallow `env.dup` each render, but its nested containers (e.g. the
+    # 500KB theme_database) are shared objects — normalization mutates them in
+    # place and is idempotent, so once a container is fully walked it never needs
+    # re-walking. Persisting `seen` across calls turns the per-render cost from
+    # "walk the whole tree" into "walk only the freshly-dup'd top level".
+    def self.normalize_shopify_drop_urls!(value, seen = (@normalize_seen ||= {}.compare_by_identity))
       return value if seen.key?(value)
 
       case value
@@ -591,15 +607,22 @@ module LiquidIL
     end
 
     def self.rendered_snippet_names_with(tag_name)
-      Dir[File.join(STOREFRONT_DAWN_ROOT, "snippets", "*.liquid")].filter_map do |path|
+      cache = (@snippet_names_cache ||= {})
+      return cache[tag_name] if cache.key?(tag_name)
+
+      cache[tag_name] = Dir[File.join(STOREFRONT_DAWN_ROOT, "snippets", "*.liquid")].filter_map do |path|
         name = File.basename(path, ".liquid")
         name if raw_definition_tag?("snippets/#{name}", tag_name)
       end
     end
 
     def self.raw_definition_tag?(template_path, tag_name)
+      cache = (@definition_tag_cache ||= {})
+      key = "#{template_path}\0#{tag_name}"
+      return cache[key] if cache.key?(key)
+
       source = theme_source(template_path)
-      source&.match?(/\{%[-]?\s*#{Regexp.escape(tag_name)}\b/)
+      cache[key] = source ? source.match?(/\{%[-]?\s*#{Regexp.escape(tag_name)}\b/) : nil
     end
 
     def self.compiled_script_tag(id, data_attr, names, asset_name)
