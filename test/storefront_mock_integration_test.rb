@@ -178,6 +178,165 @@ class StorefrontMockIntegrationTest < Minitest::Test
   end
 
   # ---------------------------------------------------------------------------
+  # External partials (steps g–i): the lazy per-file-artifact model. The entry
+  # references one SMALL partial (inlined, folded into the composite key) and two
+  # LARGE partials (external, their own per-file artifacts) — one large partial
+  # sits behind a runtime-falsy condition and is NEVER rendered. The condition is
+  # a variable (not the literal {% if false %}, which the compiler dead-code
+  # prunes) so the external call site IS emitted and 'megafooter' is a genuine
+  # external dependency — the laziness is proven at RENDER time, not compile
+  # time. Standard-Liquid only, so the reference engine stays a byte-for-byte
+  # oracle for every step.
+  #
+  # NOTE: external partials use {% render %} (isolated), never {% include %} with
+  # {% cycle %} — caller cycle state is not shared across the external boundary
+  # (documented limitation), so that combination is deliberately absent here.
+  # ---------------------------------------------------------------------------
+  SMALL_SNIPPET = "<b>{{ note }}</b>"                                  # tiny -> inline
+  BIG_HERO   = "<section class='hero'>#{"H" * 800}{{ title | upcase }}</section>"  # >512 -> external
+  BIG_FOOTER = "<footer class='big'>#{"F" * 800}{{ year }}</footer>"              # >512 -> external
+  EXT_ENTRY  = <<~LIQ
+    <main>
+    {% render 'note', note: title %}
+    {% render 'hero', title: title %}
+    {% if show_mega %}{% render 'megafooter', year: year %}{% endif %}
+    </main>
+  LIQ
+
+  def build_ext_theme(fleet, id)
+    theme = fleet.new_theme(id)
+    theme.set_asset("entry", EXT_ENTRY)
+    theme.set_asset("note", SMALL_SNIPPET)
+    theme.set_asset("hero", BIG_HERO)
+    theme.set_asset("megafooter", BIG_FOOTER)
+    theme
+  end
+
+  def test_external_partials_lazy_edit_and_fingerprint_warming
+    fleet = Fleet.new
+    theme = build_ext_theme(fleet, "ext-shop")
+    entry = EntryRef.new(theme, "entry")
+    fp = "route:ext"
+    timings = {}
+
+    # Disposition sanity: note inlines (in the composite key), the two big ones
+    # externalize (NOT in the composite key — they version independently).
+    tmpl = LiquidIL::Context.new(file_system: RecordingFileSystem.new(theme),
+                                 partial_index: ThemePartialIndex.new(theme))
+      .parse(theme.load_named("entry"))
+    deps = tmpl.partial_dependencies
+    assert_equal :inline,   deps["note"][:disposition]
+    assert_equal :external, deps["hero"][:disposition]
+    assert_equal :external, deps["megafooter"][:disposition]
+
+    # control oracle
+    control_proc = fleet.spawn_process
+    control_out, = control_proc.render_request(control_proc.ruby_adapter, entry, ctx)
+
+    # === (g) cold: entry compiles WITHOUT fetching the large bodies; only the =
+    #         one large partial actually rendered ('hero') is fetched, once.
+    p1 = fleet.spawn_process
+    fleet.bodies.reset_fetches!
+    out_g = nil
+    ev_g = nil
+    timings[:g_cold_external] = micros do
+      out_g, ev_g = p1.render_request(p1.il_adapter, entry, ctx, fingerprint_key: fp)
+    end
+
+    assert_equal 1, ev_g[:compile], "(g) the entry compiles once on a cold miss"
+    assert_equal 1, ev_g[:partial_compile], "(g) exactly one external partial compiles — 'hero'"
+    # entry body + inlined 'note' body + rendered 'hero' body = 3 fetches, no more
+    assert_equal 3, fleet.bodies.fetch_count, "(g) large bodies are not fetched at compile time"
+    assert_includes fleet.bodies.fetches, theme.digest_for("hero"), "(g) rendered external IS fetched"
+    refute_includes fleet.bodies.fetches, theme.digest_for("megafooter"),
+      "(g) the dead-branch external body is NEVER fetched"
+    refute fleet.remote.key?(il_key(theme.digest_for("megafooter"))),
+      "(g) NO per-file artifact is written for the never-rendered external partial"
+    assert fleet.remote.key?(il_key(theme.digest_for("hero"))),
+      "(g) the rendered external partial DID get its own per-file artifact"
+    assert_equal control_out, out_g, "(g) external-partial output is byte-identical to reference"
+
+    # === (h) partial edit: editing a LARGE external body changes ONLY that ====
+    #         partial's artifact key; the entry composite key is UNCHANGED.
+    key_before = composite_key(theme, "entry")
+    hero_before = theme.digest_for("hero")
+    theme.set_asset("hero", "<section class='hero'>#{"Z" * 900}{{ title | downcase }}</section>")
+    refute_equal hero_before, theme.digest_for("hero"), "(h) the edited external re-hashes"
+    assert_equal key_before, composite_key(theme, "entry"),
+      "(h) entry composite key is UNCHANGED — external deps are not in the key"
+
+    control_edit, = control_proc.render_request(control_proc.ruby_adapter, entry, ctx)
+    p2 = fleet.spawn_process
+    fleet.bodies.reset_fetches!
+    out_h = nil
+    ev_h = nil
+    timings[:h_partial_edit] = micros do
+      out_h, ev_h = p2.render_request(p2.il_adapter, entry, ctx, fingerprint_key: fp)
+    end
+
+    assert_equal 0, ev_h[:compile], "(h) the entry does NOT recompile — its key never changed"
+    assert_operator ev_h[:store_hit], :>=, 1, "(h) the entry artifact loads from the store"
+    assert_equal 1, ev_h[:partial_compile], "(h) only the edited external partial recompiles"
+    assert_equal 1, fleet.bodies.fetch_count, "(h) only the new 'hero' body is fetched"
+    assert_includes fleet.bodies.fetches, theme.digest_for("hero")
+    assert fleet.remote.key?(il_key(theme.digest_for("hero"))), "(h) the new external artifact is written"
+    assert fleet.remote.key?(il_key(hero_before)), "(h) the old external artifact still coexists"
+    assert_equal control_edit, out_h, "(h) the edited external renders correctly, parity holds"
+    refute_equal out_g, out_h, "(h) output reflects the new external body"
+
+    # === (i) fingerprint warming covers partials: a fresh process warms entry ==
+    #         AND external partials in one batch — zero compiles, zero fetches.
+    p3 = fleet.spawn_process
+    p3.store.reset_stats!
+    fleet.bodies.reset_fetches!
+    out_i = nil
+    ev_i = nil
+    timings[:i_warm_external] = micros do
+      out_i, ev_i = p3.render_request(p3.il_adapter, entry, ctx, fingerprint_key: fp)
+    end
+
+    assert_equal 0, ev_i[:compile], "(i) zero entry compiles — warmed by the fingerprint"
+    assert_equal 0, ev_i[:partial_compile], "(i) zero external-partial compiles — warmed too"
+    assert_operator ev_i[:partial_store_hit], :>=, 1, "(i) the external partial loads from preload/store"
+    assert_equal 0, fleet.bodies.fetch_count, "(i) NO body fetches — external partials included"
+    assert_equal 1, p3.store.remote.read_multi_calls, "(i) one batch read_multi warms entry + partials"
+    assert_equal control_edit, out_i, "(i) warmed output is byte-identical to reference"
+    assert_equal out_h, out_i
+
+    print_timings(timings)
+  end
+
+  # ---------------------------------------------------------------------------
+  # The native CompiledArtifact#render_to_output_buffer path: appends into the
+  # caller's preallocated buffer (SFR's 16KB-per-request buffer) AND resolves
+  # external partials via the provider parked on registers. Output byte-identical
+  # to the reference and to a plain render.
+  # ---------------------------------------------------------------------------
+  def test_render_to_output_buffer_appends_and_resolves_externals
+    fleet = Fleet.new
+    theme = build_ext_theme(fleet, "buf-shop")
+    entry = EntryRef.new(theme, "entry")
+
+    control_proc = fleet.spawn_process
+    control_out, = control_proc.render_request(control_proc.ruby_adapter, entry, ctx)
+
+    proc = fleet.spawn_process
+    cache = proc.il_cache
+    cache.begin_request(nil)
+    context = ctx
+    context.registers["partial_provider"] = cache.partial_provider(entry)
+    renderable = proc.il_adapter.parse(entry, {})
+
+    buf = +"PREFIX-"
+    ret = renderable.render_to_output_buffer(context, buf)
+    cache.end_request
+
+    assert_same buf, ret, "render_to_output_buffer returns the SAME buffer object"
+    assert_equal "PREFIX-#{control_out}", buf,
+      "native buffered render appends the (externally-resolved) output to the caller buffer"
+  end
+
+  # ---------------------------------------------------------------------------
   # (f) The verifier gate on its own: many assign shapes, both engines diffed.
   # ---------------------------------------------------------------------------
   def test_verifier_diff_is_byte_identical_across_assign_shapes
@@ -288,14 +447,26 @@ class StorefrontMockIntegrationTest < Minitest::Test
   private
 
   # Recompute the composite cache key the way the coder does — used only to
-  # assert key equality/inequality in the tests.
+  # assert key equality/inequality in the tests. Compiles with the same
+  # partial_index the coder uses, so only INLINED partials (not external ones)
+  # count toward the key — exactly the coder's composite-key discipline.
   def composite_key(theme, entry_name)
     coder = LiquidIlCoder.new
     ref = EntryRef.new(theme, entry_name)
     fs = RecordingFileSystem.new(theme)
-    LiquidIL::Context.new(file_system: fs).parse(theme.load_named(entry_name))
+    index = ThemePartialIndex.new(theme)
+    template = LiquidIL::Context.new(file_system: fs, partial_index: index)
+      .parse(theme.load_named(entry_name))
     ed = coder.entry_digest(ref)
-    coder.composite_digest(ed, ref, fs.inlined_names)
+    coder.composite_digest(ed, ref, coder.inlined_names(template))
+  end
+
+  # Reconstruct a full tier cache key for an arbitrary content digest — used to
+  # assert that a NEVER-rendered external partial has NO per-file artifact.
+  def il_key(content_digest, parse_options = {})
+    coder = LiquidIlCoder.new
+    "#{coder.slug}:#{coder.format_epoch}:#{coder.format_digest}:" \
+      "#{RUBY_VERSION}-#{RUBY_PLATFORM}:#{content_digest}:#{coder.vary_key(parse_options)}"
   end
 
   def print_timings(timings)
