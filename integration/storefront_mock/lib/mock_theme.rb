@@ -57,10 +57,15 @@ module StorefrontMock
       @id = id
       @bodies = bodies
       @names_to_digest = {}
+      @names_to_bytesize = {}
     end
 
-    # Register/replace an asset body; returns its (new) digest.
+    # Register/replace an asset body; returns its (new) digest. The byte size is
+    # recorded alongside the digest — both are metadata a real theme carries at
+    # publish time (Theme#assets_by_name, asset content_length), so the
+    # inline-vs-external census can SIZE a partial without fetching its body.
     def set_asset(name, body)
+      @names_to_bytesize[name] = body.bytesize
       @names_to_digest[name] = @bodies.put(body)
     end
 
@@ -71,6 +76,12 @@ module StorefrontMock
 
     def digest_for(name)
       @names_to_digest[name]
+    end
+
+    # Byte size of an asset from metadata — NO body fetch. Feeds the census's
+    # size threshold (small -> inline, large -> external per-file artifact).
+    def bytesize_for(name)
+      @names_to_bytesize[name]
     end
 
     def asset?(name)

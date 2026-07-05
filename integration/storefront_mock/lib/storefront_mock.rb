@@ -65,12 +65,17 @@ module StorefrontMock
       adapter.equal?(@il_adapter) ? @il_cache : @ruby_cache
     end
 
-    # Drive one request through a chosen adapter: open the request layers,
-    # parse (compile-or-load), render, close the request (save fingerprint).
-    # Returns [output, events].
+    # Drive one request through a chosen adapter: open the request layers, park
+    # the external-partial PartialProvider on the context registers, parse
+    # (compile-or-load), render, close the request (save fingerprint). Returns
+    # [output, events]. The provider resolves external partials lazily through
+    # the same cache tiers, so the keys it touches join the request fingerprint.
     def render_request(adapter, entry_ref, context, fingerprint_key: nil, parse_options: {})
       cache = cache_for(adapter)
       cache.begin_request(fingerprint_key)
+      if (provider = cache.partial_provider(entry_ref, parse_options))
+        context.registers["partial_provider"] = provider
+      end
       renderable = adapter.parse(entry_ref, parse_options)
       output = renderable.render(context)
       events = cache.end_request

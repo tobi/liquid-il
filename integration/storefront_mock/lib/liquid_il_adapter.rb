@@ -24,8 +24,17 @@ module StorefrontMock
     # Build the engine Scope from the host context and wrap it in the shim.
     # This is the exact scope shape CompiledArtifact#render builds internally,
     # so render_scope output is byte-identical to a plain .render(assigns).
+    #
+    # The external-partial PartialProvider rides in on registers["partial_provider"]
+    # (parked there by AppProcess#render_request) exactly like SFR passes
+    # cross-cutting request state; Scope#initialize picks it up so external
+    # `{% render/include %}` sites resolve their per-file artifacts at render time.
     def wrap_context(context)
-      scope = LiquidIL::Scope.new(context.assigns)
+      registers = {}
+      if context.registers && (provider = context.registers["partial_provider"])
+        registers["partial_provider"] = provider
+      end
+      scope = LiquidIL::Scope.new(context.assigns, registers: registers)
       scope.render_errors = true
       scope.resource_limits = context.resource_limits if context.resource_limits
       global = LiquidIL::Filters.global_registry
@@ -62,13 +71,14 @@ module StorefrontMock
       @artifact.render_scope(shim.scope)
     end
 
-    # TODO(external-partials branch): swap for native
-    # CompiledArtifact#render_to_output_buffer(scope, output) that appends into
-    # the caller's preallocated 16KB buffer instead of allocating a fresh String.
-    # v1 appends the rendered String to preserve the contract shape.
+    # Native buffered render: CompiledArtifact#render_to_output_buffer appends
+    # directly into the caller's preallocated buffer (the storefront renderer's
+    # 16KB-per-request buffer) instead of allocating a fresh String and copying.
+    # The external-partial provider rides in on registers["partial_provider"],
+    # so external `{% render %}` sites resolve at render time here too.
     def render_to_output_buffer(context, output)
-      output << render(context)
-      output
+      provider = context.registers && context.registers["partial_provider"]
+      @artifact.render_to_output_buffer(context.assigns, output, partial_provider: provider)
     end
   end
 end

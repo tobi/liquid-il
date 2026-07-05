@@ -5,7 +5,7 @@ module StorefrontMock
   # counters. Two of these get composed into a TieredStore below (node_local ->
   # remote), mirroring Sonic's CacheStore two-tier memcached.
   class MockKeyValueStore
-    attr_reader :name, :hits, :misses, :reads, :writes
+    attr_reader :name, :hits, :misses, :reads, :writes, :read_multi_calls
 
     def initialize(name)
       @name = name
@@ -30,8 +30,10 @@ module StorefrontMock
     end
 
     # Batch fetch — the fingerprint preloader's primitive. Missing keys are
-    # simply absent from the result hash.
+    # simply absent from the result hash. Counts BATCHES (not per-key reads) so
+    # a test can prove the whole fingerprint warms in ONE round trip.
     def read_multi(keys)
+      @read_multi_calls += 1
       out = {}
       keys.each do |k|
         @reads += 1
@@ -54,6 +56,7 @@ module StorefrontMock
       @misses = 0
       @reads = 0
       @writes = 0
+      @read_multi_calls = 0
     end
 
     def stats

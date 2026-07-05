@@ -3,19 +3,14 @@
 require "digest"
 
 module StorefrontMock
-  # File system handed to the LiquidIL compiler. Reads partial bodies from the
-  # theme (counting each fetch) and records the set of partials it inlined.
-  # That recorded set is the entry artifact's dependency list — the mock's
-  # stand-in for the storefront's `partial_cache_deps` tracking. Its digests are
-  # folded into the cache key (composite key), so a partial-body edit changes
-  # the key at EVERY tier.
-  #
-  # TODO(external-partials branch): when the compiler accepts a digest index +
-  # PartialProvider (name -> content_digest at compile time, callable at render
-  # time), the census would split partials into INLINE (fetched here, folded
-  # into the composite key) vs EXTERNAL (never fetched here — a provider call
-  # site emitted, the partial its own per-file artifact loaded lazily and warmed
-  # by the fingerprint preloader). This recorder is the inline half of that split.
+  # File system handed to the LiquidIL compiler — the INLINE half of the census.
+  # Reads the bodies of the SMALL partials the compiler decides to inline (a
+  # `partial_index` externalizes the large ones without ever calling here). Every
+  # fetch is counted; the inlined set is the entry artifact's inline-dependency
+  # list — its digests fold into the composite cache key, so a small-partial edit
+  # changes the key at EVERY tier. Large/EXTERNAL partials are never fetched here
+  # (see ThemePartialIndex + PartialProvider): they become their own per-file
+  # artifacts, loaded lazily at render and warmed by the fingerprint preloader.
   class RecordingFileSystem
     def initialize(theme)
       @theme = theme
@@ -32,6 +27,27 @@ module StorefrontMock
         raise LiquidIL::Error, "partial #{name.inspect} not in theme #{@theme.id}"
       @inlined[name] = digest
       @theme.load_body(digest) # counts a body fetch on the shared store
+    end
+  end
+
+  # The EXTERNAL half of the census: the LiquidIL `partial_index`. It answers,
+  # from theme metadata alone (NO body fetch), which partials exist (digest) and
+  # how big they are (bytesize). The compiler's default policy inlines partials
+  # whose body is <= RubyCompiler::INLINE_BODY_MAX_BYTES and EXTERNALIZES the
+  # larger ones — the exact "small snippets inline, big sections version on their
+  # own" split the storefront wants. A name the index does not know (digest nil)
+  # is not externalized: it falls through to the file_system path unchanged.
+  class ThemePartialIndex
+    def initialize(theme)
+      @theme = theme
+    end
+
+    def digest(name)
+      @theme.digest_for(name)
+    end
+
+    def bytesize(name)
+      @theme.bytesize_for(name)
     end
   end
 
@@ -84,13 +100,52 @@ module StorefrontMock
     end
 
     # Returns [artifact_bytes, inlined_names]. artifact_bytes is BOTH the KV
-    # value and the live-proc blob.
+    # value and the live-proc blob. The `partial_index` is built from theme
+    # metadata (name -> digest/bytesize, NO body fetch), so the compiler splits
+    # partials into INLINE (small — body fetched via RecordingFileSystem, folded
+    # into the composite key) and EXTERNAL (large — never fetched here; a
+    # provider call site is emitted). Only the INLINE digests belong in the
+    # composite key; external partials version independently as their own
+    # per-file artifacts (see #compile_partial / CompiledTemplateCache).
     def compile(ref, parse_options)
       body = ref.theme.load_named(ref.name) # counts the entry body fetch
       fs = RecordingFileSystem.new(ref.theme)
-      ctx = LiquidIL::Context.new(file_system: fs, error_mode: parse_options[:error_mode] || :lax)
+      index = ThemePartialIndex.new(ref.theme)
+      ctx = LiquidIL::Context.new(file_system: fs, partial_index: index,
+                                  error_mode: parse_options[:error_mode] || :lax)
       template = ctx.parse(body)
-      [template.to_artifact, fs.inlined_names]
+      [template.to_artifact, inlined_names(template)]
+    end
+
+    # The set of partials baked INTO this entry artifact (inline + shared
+    # lambda) — the digests that belong in the composite key. Read from
+    # Template#partial_dependencies, the compiler's authoritative disposition
+    # record; external partials are deliberately excluded (they are not in the
+    # key — that is what lets them version on their own).
+    def inlined_names(template)
+      deps = template.partial_dependencies
+      return [] unless deps
+      deps.reject { |_name, info| info[:disposition] == :external }.keys.sort
+    end
+
+    # Current digest of an external partial, from theme metadata — NO body
+    # fetch. This is the identity the provider keys its per-file artifact on, so
+    # a partial edit (new digest -> new key) is picked up at render time WITHOUT
+    # touching the entry artifact or its composite key.
+    def partial_digest(theme, name)
+      theme.digest_for(name)
+    end
+
+    # Compile ONE external partial into its own per-file artifact (fetching its
+    # body — the lazy cost paid only when its call site actually runs). Uses the
+    # same index so a nested large partial would externalize too.
+    def compile_partial(theme, name, parse_options)
+      body = theme.load_named(name) # counts the (lazy) body fetch
+      fs = RecordingFileSystem.new(theme)
+      index = ThemePartialIndex.new(theme)
+      ctx = LiquidIL::Context.new(file_system: fs, partial_index: index,
+                                  error_mode: parse_options[:error_mode] || :lax)
+      ctx.parse(body).to_artifact
     end
 
     def load(artifact_bytes)
@@ -189,7 +244,55 @@ module StorefrontMock
       @coder.load(blob)
     end
 
+    # Build the request's PartialProvider: a `->(name, digest) -> artifact`
+    # resolving external partials through the SAME tier stack as entries
+    # (live-proc -> preloaded -> memoized -> tiered KV -> compile-on-miss). It is
+    # called ONLY when an external `{% render/include %}` site actually executes,
+    # so a partial behind a dead branch is never asked for and never fetched. The
+    # keys it touches join @touched_keys, so the fingerprint warms entry AND its
+    # external partials in one read_multi next request. Returns nil for engines
+    # that do not compile per-file partials (the reference control engine).
+    def partial_provider(ref, parse_options = {})
+      return nil unless @coder.cacheable? && @coder.respond_to?(:compile_partial)
+
+      vary = @coder.vary_key(parse_options)
+      lambda do |name, _baked_digest|
+        # Resolve against the CURRENT theme metadata, not the digest baked into
+        # the caller at entry-compile time: external partials version on their
+        # own, so an edited body is picked up here even though the entry artifact
+        # (and its composite key) is unchanged.
+        digest = @coder.partial_digest(ref.theme, name)
+        next nil unless digest
+
+        key = build_key(digest, vary)
+        @touched_keys << key
+        if @live
+          @live.fetch(key) { resolve_partial_blob(key, ref.theme, name, parse_options) }
+        else
+          @coder.load(resolve_partial_blob(key, ref.theme, name, parse_options))
+        end
+      end
+    end
+
     private
+
+    # Framed bytes for one external partial's per-file artifact: layered read,
+    # else compile-on-miss (fetch body, compile, write back to KV). A key miss
+    # means first sight or an edited body (its digest is in the key) — recompile
+    # exactly this partial, nothing else.
+    def resolve_partial_blob(key, theme, name, parse_options)
+      stored = read_layered(key)
+      if stored
+        @events[:partial_store_hit] += 1
+        return stored
+      end
+
+      @events[:partial_compile] += 1
+      blob = @coder.compile_partial(theme, name, parse_options)
+      @store.set(key, blob)
+      @memoized[key] = blob
+      blob
+    end
 
     def reset_request!
       @memoized = {}
