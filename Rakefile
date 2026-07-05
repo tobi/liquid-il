@@ -569,7 +569,7 @@ namespace :fuzz do
     sh({ "RUBY_YJIT_ENABLE" => "1" }, "bundle", "exec", "ruby", "fuzz/rediscover.rb")
   end
 
-  desc "Export fuzz/findings/ as a clean liquid-spec suite at spec/fuzz.yml (each spec re-validated against reference liquid)"
+  desc "RAW export of fuzz/findings/ for editorial triage (fuzz/triage/raw_export.yml). spec/fuzz.yml is curated by hand — never overwrite it mechanically"
   task :export do
     sh("bundle", "exec", "ruby", "fuzz/export_spec.rb")
   end

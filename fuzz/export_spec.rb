@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
-# Export fuzzer findings as a clean liquid-spec-format suite (spec/fuzz.yml)
-# suitable for donation to Shopify/liquid-spec.
+# RAW export of fuzzer findings in liquid-spec shape — INPUT FOR EDITORIAL
+# TRIAGE ONLY (fuzz/triage/raw_export.yml). The donation-ready file is
+# spec/fuzz.yml, which is editorially curated (rules, not findings) and must
+# never be regenerated mechanically.
 #
 #   bundle exec rake fuzz:export
 #
@@ -21,7 +23,7 @@ module FuzzExport
   module_function
 
   FINDINGS_DIR = File.expand_path("findings", __dir__)
-  OUT_PATH = File.expand_path("../spec/fuzz.yml", __dir__)
+  OUT_PATH = File.expand_path("triage/raw_export.yml", __dir__)
 
   # Edge-case compatibility quirks sit late in the liquid-spec complexity ramp.
   COMPLEXITY = 800

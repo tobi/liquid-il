@@ -1,0 +1,121 @@
+# Curated spec candidates — batch3 (truncate/truncatewords/floor/round/ceil/abs/
+# times/divided_by/at_least/size/id fuzzer classes).
+#
+# Every entry was rendered against the reference `liquid` gem in strict mode and
+# its `expected` is exactly what reference produced. Rules were extracted from
+# ~97 findings; specs are generic (no fuzzer provenance in hints). See
+# summary.md for the finding-hash -> rule mapping and reference_bugs.md for the
+# divergences judged to be reference accidents rather than contracts.
+---
+- name: abs_non_numeric_string_is_zero
+  template: '{{ "abc" | abs }}'
+  expected: "0"
+  complexity: 340
+  hint: |
+    The numeric filters abs, ceil, floor, and round coerce their input to a
+    number before operating. A string that does not parse as a number coerces
+    to 0 (not an error, and not the string itself). So abs("abc") = abs(0) = 0.
+    The same rule gives {{ "abc" | ceil }}, {{ "abc" | floor }} and
+    {{ "abc" | round }} all equal to 0.
+
+- name: assign_swallows_filter_error
+  template: 'before{% assign v = "x" | truncate: nil %}after[{{ v }}]'
+  expected: "beforeafter[]"
+  complexity: 500
+  hint: |
+    A filter that raises during the expression of an {% assign %} does not
+    surface an error into the page. The assignment is abandoned, the target
+    variable is left undefined (renders as empty), and rendering continues.
+    Here `truncate: nil` would raise "invalid integer" in an output tag, but
+    inside {% assign %} it is swallowed. This differs from {{ ... }} and
+    {% echo ... %}, which render the "Liquid error: ..." text.
+
+- name: case_runs_every_matching_when
+  template: '{% case "a" %}{% when "a" %}A{% when "a" %}B{% endcase %}'
+  expected: "AB"
+  complexity: 600
+  hint: |
+    A {% case %} is not a C-style switch: it does not stop at the first
+    matching {% when %}. Every {% when %} clause whose value equals the case
+    subject renders its body, in order. With two clauses that both match, both
+    bodies render, producing "AB".
+
+- name: case_when_list_repeats_body_per_match
+  template: '{% case "a" %}{% when "a", "a" %}x{% endcase %}'
+  expected: "xx"
+  complexity: 620
+  hint: |
+    A comma-separated {% when a, b, c %} is treated as one independent match per
+    listed value, each attached to the same body. Every value that equals the
+    subject renders the body once. Because both listed values equal "a", the
+    body "x" renders twice.
+
+- name: ceil_non_numeric_string_is_zero
+  template: '{{ "abc" | ceil }}'
+  expected: "0"
+  complexity: 340
+  hint: |
+    ceil coerces its input to a number first. A non-numeric string parses as 0,
+    so ceil("abc") = 0. Numeric strings still work: {{ "5.1" | ceil }} is 6.
+    abs, floor, and round follow the same coerce-to-number rule.
+
+- name: raw_output_not_trimmed_by_following_tag
+  template: "{% raw %}a {% endraw %}{%- assign v = 1 -%}"
+  expected: "a "
+  complexity: 300
+  hint: |
+    Whitespace control ({%- ... -%}) trims literal template text adjacent to the
+    tag, but it does not reach into the rendered output of a preceding
+    {% raw %} block. The trailing space produced by the raw block survives the
+    {%- on the following tag, so the output is "a " (with the space).
+
+- name: scalar_property_lookup_returns_nil
+  template: "[{{ n.title }}]"
+  environment:
+    n: 5
+  expected: "[]"
+  complexity: 330
+  hint: |
+    Dot and bracket lookups on a scalar that is not a hash/array/drop (an
+    integer, float, string, boolean) resolve to nil, which renders as empty.
+    They must not raise. n.title and n["title"] on the integer 5 both yield
+    nil.
+
+- name: string_less_than_or_equal_ordering
+  template: '{% if "apple" <= "apple" %}yes{% else %}no{% endif %}'
+  expected: "yes"
+  complexity: 170
+  hint: |
+    The ordering operators <, >, <=, >= work between two strings using
+    lexicographic comparison. Equal strings satisfy <= and >=, so
+    "apple" <= "apple" is true. (Mixed number-vs-string ordering is a different
+    case and raises a comparison error.)
+
+- name: string_lexical_ordering
+  template: '{% if "apple" < "banana" %}yes{% else %}no{% endif %}'
+  expected: "yes"
+  complexity: 160
+  hint: |
+    Two strings compare lexicographically with <, >, <=, >=. "apple" sorts
+    before "banana", so "apple" < "banana" is true. This is ordinary string
+    ordering, distinct from == equality.
+
+- name: truncate_nil_input_skips_length_coercion
+  template: "{{ nil | truncate: nil }}"
+  expected: ""
+  complexity: 500
+  hint: |
+    truncate returns empty immediately when its input is nil, before it looks
+    at the length argument. Because the argument is never coerced, a nil (or
+    otherwise non-numeric) length does NOT raise "invalid integer" here. Only a
+    non-nil input reaches length coercion: {{ "hi" | truncate: nil }} does
+    raise.
+
+- name: truncatewords_nil_input_skips_length_coercion
+  template: "{{ nil | truncatewords: nil }}"
+  expected: ""
+  complexity: 500
+  hint: |
+    Like truncate, truncatewords short-circuits to empty on nil input before
+    coercing its word-count argument, so a nil argument does not raise. A
+    non-nil input with a non-numeric count still raises "invalid integer".

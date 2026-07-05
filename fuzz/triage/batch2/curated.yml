@@ -1,0 +1,78 @@
+# Curated specs distilled from differential-fuzzer findings in the
+# fuzz_if_* (63) and fuzz_case_* (36) classes. Each entry captures a
+# GENERIC behavior rule (not one spec per finding); every `expected` was
+# rendered against the reference gem (Shopify/liquid 5.12.0, error_mode:
+# strict) before being written here. Sorted by name.
+---
+- name: blank_control_flow_tag_swallows_render_errors
+  template: "{% if 5 > \"x\" %}{% endif %}"
+  render_errors: true
+  expected: ''
+  complexity: 700
+  hint: |
+    A control-flow tag (if/unless/for/case) whose body is blank
+    (empty or whitespace-only) SWALLOWS any render error raised while it is
+    evaluated: the error is recorded but nothing is written to the output.
+    The same error inside a NON-blank body renders as "Liquid error (...)"
+    text. This asymmetry is a deliberate backwards-compatibility rule -- an
+    erroring condition on a blank tag stays invisible. Here `5 > "x"` raises a
+    comparison error, but because the if body is empty the output is empty.
+
+- name: case_evaluates_all_when_clauses_without_break
+  template: "{% case \"a\" %}{% when \"a\" %}1{% when \"a\" %}2{% else %}E{% endcase %}"
+  expected: '12'
+  complexity: 520
+  hint: |
+    case does NOT stop at the first matching when clause. Every when clause
+    whose value matches the case subject renders its body, in order -- there is
+    no break. Here both `when "a"` clauses match, so the output is "12". The
+    else clause runs only when NO when clause matched at all (so it is skipped
+    here). This surprises implementers who model case as a switch that stops on
+    the first hit.
+
+- name: case_repeats_body_for_each_matching_when_value
+  template: "{% case \"a\" %}{% when \"a\", \"a\" %}M{% endcase %}"
+  expected: MM
+  complexity: 520
+  hint: |
+    Inside one when clause, each comma-separated value is matched
+    independently, and the body is rendered once PER matching value. A when
+    clause listing the same (or otherwise duplicate-matching) value twice
+    renders its body twice: `{% when "a", "a" %}` against subject "a" outputs
+    "MM". Contrast with a single match, which outputs the body once.
+
+- name: comparison_of_number_and_string_is_an_error
+  template: "{% if 5 > \"x\" %}hit{% endif %}"
+  render_errors: true
+  expected: 'Liquid error (line 1): comparison of Integer with String failed'
+  complexity: 520
+  hint: |
+    The ordering operators <, >, <=, >= are only valid between operands that
+    are mutually comparable. A number and a string are NOT: both respond to the
+    operator, so the comparison is attempted and fails, producing
+    "comparison of <NumberClass> with String failed". (Two numbers, or two
+    strings, compare fine.) The if body here is non-blank, so the error text is
+    rendered into the output.
+
+- name: comparison_with_non_ordered_type_is_false
+  template: "{% if 5 > true %}Y{% else %}N{% endif %}"
+  expected: 'N'
+  complexity: 520
+  hint: |
+    Ordering operators (<, >, <=, >=) silently yield false -- with NO error --
+    when either operand is a type that is not order-comparable at all, such as
+    a boolean, nil, an array, or a hash. Only operand pairs where BOTH respond
+    to the operator are actually compared. So `5 > true` is neither an error
+    nor true: it is false, and the else branch runs. (Note the contrast with a
+    number-vs-string comparison, which DOES raise, because a string is
+    order-comparable.)
+
+- name: strings_compare_lexicographically
+  template: "{% if \"apple\" < \"banana\" %}Y{% else %}N{% endif %}"
+  expected: 'Y'
+  complexity: 160
+  hint: |
+    The ordering operators <, >, <=, >= work on two strings, comparing them
+    lexicographically (byte/codepoint order), the same way Ruby's String#<=>
+    does. `"apple" < "banana"` is true. String-vs-string comparison must not be
+    rejected as a type error.

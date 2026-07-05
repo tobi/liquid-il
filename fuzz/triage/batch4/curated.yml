@@ -1,0 +1,142 @@
+# Batch 4 curated specs -- string/array/coercion filter families.
+# Each entry's `expected` was rendered against the reference liquid gem
+# (Liquid::Template.parse(src, error_mode: :strict).render(env)) before writing.
+# One spec per underlying rule (not per finding); see summary.md for the
+# finding-hash -> rule mapping and reference_bugs.md for the bug candidates.
+---
+- name: array_filter_reverse_wraps_scalar
+  template: '{{ 5 | reverse }}'
+  expected: "5"
+  complexity: 335
+  hint: |
+    Array filters accept a non-array input by treating it as a single-element
+    array. `reverse` of the one-item array [5] is [5], and an array renders by
+    concatenating its elements with no separator, so the output is "5" -- not
+    a bracketed "[5]". The same coercion applies to sort, uniq, and compact.
+
+- name: array_filter_uniq_wraps_scalar
+  template: '{{ 5 | uniq | join: "," }}'
+  expected: "5"
+  complexity: 330
+  hint: |
+    Filters in the array family (uniq, sort, compact, reverse, first, last,
+    join) wrap a scalar input in a one-element array before operating. Here
+    `uniq` sees [5]; `join` then produces "5". Do not error on a non-array
+    input and do not render the array with brackets.
+
+- name: bracket_access_on_number_returns_nil
+  template: 'a{{ n["title"] }}b'
+  environment:
+    n: 5
+  expected: "ab"
+  complexity: 205
+  hint: |
+    Bracket access on a number (or any scalar that is not a string, array,
+    hash, or drop) yields nil, which renders as empty -- it is not an error.
+    A number does not respond to key lookup, so n["title"] is nil. Resolve
+    property/key access on unsupported types to nil rather than raising.
+
+- name: case_when_duplicate_value_renders_body_twice
+  template: "{% case 1 %}{% when 1 %}a{% when 1 %}b{% endcase %}"
+  expected: "ab"
+  complexity: 500
+  hint: |
+    `case` does not stop at the first matching `when`. Each `when` clause whose
+    value equals the case subject renders its body, in source order. With two
+    clauses that both match 1, both "a" and "b" are emitted. `case` is a chain
+    of independent conditions, not a switch that breaks on first match.
+
+- name: case_when_multiple_matching_clauses_all_render
+  template: "{% case x %}{% when 1, 2 %}A{% when 2 %}B{% endcase %}"
+  environment:
+    x: 2
+  expected: "AB"
+  complexity: 505
+  hint: |
+    A comma-separated `when` matches if any of its values equals the subject,
+    and every matching clause runs -- there is no fall-through break. With
+    x = 2, the `when 1, 2` clause and the `when 2` clause both match, so the
+    output is "AB". An else clause only runs when no `when` matched at all.
+
+- name: filter_missing_required_argument_raises
+  template: '{{ "a-b-c" | split }}'
+  expected: "Liquid error: wrong number of arguments (given 1, expected 2)"
+  render_errors: true
+  complexity: 500
+  hint: |
+    A filter with a required positional argument raises a render error when
+    invoked without one; it is not a silent no-op. `split` requires a pattern,
+    so `| split` with no argument fails. The error is caught and rendered
+    inline. (The "given 1" counts the piped input as the first argument.)
+
+- name: filter_missing_required_argument_raises_remove
+  template: '{{ "abcabc" | remove }}'
+  expected: "Liquid error: wrong number of arguments (given 1, expected 2)"
+  render_errors: true
+  complexity: 505
+  hint: |
+    Same required-argument rule as split: filters that need an argument
+    (remove, append, prepend, replace, modulo, ...) raise a render error when
+    called with none, rather than returning the input unchanged. Missing
+    required filter arguments are errors, not defaults.
+
+- name: property_access_on_number_returns_nil
+  template: 'a{{ n.title }}b'
+  environment:
+    n: 5
+  expected: "ab"
+  complexity: 200
+  hint: |
+    Dotted property access on a number yields nil (rendered as empty), not an
+    error. Only strings, arrays, hashes, and drops expose members; every other
+    type resolves any member access to nil. This keeps `{{ number.anything }}`
+    safe instead of raising a type error.
+
+- name: truncate_nil_input_skips_length_argument
+  template: '[{{ nil | truncate: "xyz" }}]'
+  expected: "[]"
+  complexity: 540
+  hint: |
+    `truncate` returns immediately for nil input, before its length argument is
+    coerced to an integer. So a nil input yields empty output even when the
+    length would otherwise be invalid (here the non-numeric "xyz" is never
+    inspected). Guard on nil input first; validate arguments only afterward.
+
+- name: truncatewords_nil_input_skips_word_count_argument
+  template: '[{{ nil | truncatewords: "xyz" }}]'
+  expected: "[]"
+  complexity: 545
+  hint: |
+    Like truncate, `truncatewords` short-circuits on nil input before its
+    word-count argument is coerced. A nil input produces empty output
+    regardless of the argument, so an otherwise-invalid count ("xyz") raises
+    nothing. Order matters: the nil-input guard runs before argument coercion.
+
+- name: unknown_filter_in_chain_passes_through
+  template: '{{ "hello" | no_such_filter | upcase }}'
+  expected: "HELLO"
+  complexity: 205
+  hint: |
+    An unrecognized filter passes its input through unchanged, so it composes
+    transparently in a chain: `no_such_filter` leaves "hello" untouched and the
+    following `upcase` sees "hello". Unknown filters are no-ops, not chain
+    breakers.
+
+- name: unknown_filter_on_number_returns_input
+  template: '{{ 42 | made_up_filter }}'
+  expected: "42"
+  complexity: 205
+  hint: |
+    The unknown-filter passthrough is type-agnostic: a non-string input is also
+    returned unchanged. `made_up_filter` is not registered, so the number 42
+    flows through and renders as "42".
+
+- name: unknown_filter_returns_input_unchanged
+  template: '{{ "hello" | no_such_filter }}'
+  expected: "hello"
+  complexity: 200
+  hint: |
+    By default Liquid does not error on an undefined filter: it returns the
+    input unchanged. `no_such_filter` is not registered, so "hello" is emitted
+    as-is. (Environments that opt into strict filters may instead raise; the
+    default and the specs here use lenient passthrough.)
