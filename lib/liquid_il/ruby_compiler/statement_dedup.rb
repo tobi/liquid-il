@@ -91,9 +91,13 @@ module LiquidIL
       end
 
       def dedup_enabled?
-        # A backend optimization: off under optimize:false, and off when the
-        # LIQUID_DEDUP=0 kill switch is set (A/B measurement). On by default.
-        @optimize && ENV["LIQUID_DEDUP"] != "0"
+        # OFF BY DEFAULT (2026-07-05): the pass's candidate matching costs
+        # ~8x compile time on real templates (storefront set 9.6ms → 75ms;
+        # order_email alone +48ms) for artifact wins worth single-digit
+        # microseconds of remote-hit — a bad trade for the cache-miss
+        # column. LIQUID_DEDUP=1 re-enables for development until the
+        # matcher is made linear; the correctness tests run with it set.
+        @optimize && ENV["LIQUID_DEDUP"] == "1"
       end
 
       # Entry point — called from generate_ruby BEFORE compute_hoisted_lookups.
