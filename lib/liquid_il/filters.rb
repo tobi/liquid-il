@@ -331,6 +331,7 @@ module LiquidIL
       end
 
       def truncate(input, length = 50, ellipsis = "...")
+        return nil if input.nil?
         str = Utils.to_s(input)
         length = to_integer(length)
         ellipsis_safe = ellipsis.respond_to?(:html_safe?) && ellipsis.html_safe?
@@ -342,6 +343,7 @@ module LiquidIL
       end
 
       def truncatewords(input, words = 15, ellipsis = "...")
+        return nil if input.nil?
         words = [to_integer(words), 1].max  # At least 1 word
         ellipsis = Utils.to_s(ellipsis)
         input_str = Utils.to_s(input)
@@ -361,7 +363,7 @@ module LiquidIL
         end
       end
 
-      def split(input, delimiter = " ")
+      def split(input, delimiter)
         Utils.to_s(input).split(Utils.to_s(delimiter))
       end
 
