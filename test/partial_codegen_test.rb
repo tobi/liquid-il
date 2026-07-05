@@ -87,6 +87,17 @@ class PartialCodegenTest < Minitest::Test
     assert_equal "abab", render("{% for i in (1..4) %}{% cycle 'a','b' %}{% endfor %}")
   end
 
+  # Partial-body rewrites are string-level gsubs over generated code; they
+  # must skip string literals or raw text containing "_S" corrupts
+  # (PRICE_START became PRICE__partial_scope__TART).
+  def test_partial_raw_text_containing_scope_var_name_is_not_rewritten
+    partials = { "chunk" => "PRICE_START {{ x }} _S.lookup OK_END" }
+    assert_equal "PRICE_START 42 _S.lookup OK_END",
+                 render("{% render 'chunk', x: 42 %}", partials: partials)
+    assert_equal "PRICE_START 7 _S.lookup OK_END",
+                 render("{% include 'chunk' %}", { "x" => 7 }, partials: partials)
+  end
+
   # Lexer positions are byte offsets — multibyte characters before markup
   # must not shift tag detection (String#byteindex, not String#index).
   def test_multibyte_text_before_markup

@@ -481,13 +481,26 @@ module LiquidIL
     # Cache for indented partial body with assign key replacements
     @@indent_partial_body_cache = {}
 
+    # Emitted string literals come exclusively from String#inspect (double-
+    # quoted, escapes, never a raw newline) plus a few simple single-quoted
+    # names ('paginate'). Match them so body rewrites never touch template
+    # text embedded in a literal — raw text like "PRICE_START" contains "_S".
+    EMITTED_STRING_LITERAL = /"(?:[^"\\\n]|\\.)*"|'[^'\n]*'/
+
+    # gsub over generated code that skips string literals. The plain-string
+    # pattern is matched at identifier boundaries.
+    def code_gsub(body, pattern, replacement)
+      re = /(#{EMITTED_STRING_LITERAL.source})|(?<![A-Za-z0-9_])#{Regexp.escape(pattern)}(?![A-Za-z0-9_])/
+      body.gsub(re) { $1 || replacement }
+    end
+
     def indent_partial_body(body, spaces, assign_keys: [], arg_expressions: nil)
       indent = " " * spaces
       cache_key = [body.hash, assign_keys.sort, spaces, arg_expressions&.hash]
       return @@indent_partial_body_cache[cache_key] if @@indent_partial_body_cache.key?(cache_key)
 
       # Replace _S with __partial_scope__ to avoid closure issues
-      body = body.gsub("_S", "__partial_scope__")
+      body = code_gsub(body, "_S", "__partial_scope__")
       # For inlined isolated partials, replace __partial_scope__.lookup(key) with direct access
       if arg_expressions
         # Use temp variables instead of __partial_args__ hash — eliminates hash overhead
@@ -497,20 +510,20 @@ module LiquidIL
             # For constant String args, skip .to_s (String#to_s returns self)
             is_const_string = arg_expressions[key].is_a?(String) && arg_expressions[key] =~ /\A".*"\z/
             if is_const_string
-              body = body.gsub("_H.oa(_O, __partial_args__[#{key.inspect}])", "_O << #{temp_var}")
-              body = body.gsub("_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << #{temp_var}")
+              body = code_gsub(body, "_H.oa(_O, __partial_args__[#{key.inspect}])", "_O << #{temp_var}")
+              body = code_gsub(body, "_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << #{temp_var}")
             else
               # Inline .to_s for oa calls with temp variables (avoids method dispatch)
-              body = body.gsub("_H.oa(_O, __partial_args__[#{key.inspect}])", "_O << (#{temp_var}.to_s)")
-              body = body.gsub("_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << (#{temp_var}.to_s)")
+              body = code_gsub(body, "_H.oa(_O, __partial_args__[#{key.inspect}])", "_O << (#{temp_var}.to_s)")
+              body = code_gsub(body, "_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << (#{temp_var}.to_s)")
             end
-            body = body.gsub("__partial_args__[#{key.inspect}]", temp_var)
-            body = body.gsub("__partial_scope__.lookup(#{key.inspect})", temp_var)
+            body = code_gsub(body, "__partial_args__[#{key.inspect}]", temp_var)
+            body = code_gsub(body, "__partial_scope__.lookup(#{key.inspect})", temp_var)
           end
         end
       elsif assign_keys.length > 0
         assign_keys.each do |key|
-          body = body.gsub("__partial_scope__.lookup(#{key.inspect})", "__partial_args__[#{key.inspect}]")
+          body = code_gsub(body, "__partial_scope__.lookup(#{key.inspect})", "__partial_args__[#{key.inspect}]")
         end
       end
       result = body.lines.map { |l| l.strip.empty? ? l : "#{indent}#{l}" }.join
