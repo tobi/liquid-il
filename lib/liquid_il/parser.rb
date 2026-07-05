@@ -1067,12 +1067,18 @@ module LiquidIL
     def parse_when_clause_with_flag(case_value_temp, case_flag_temp)
       when_values_str = extract_tag_args
 
-      # Build the condition as an OR chain of CASE_COMPAREs. Each value is
-      # parsed into a throwaway builder so a mid-expression SyntaxError can't
-      # leave partial instructions (and an unbalanced stack) behind.
-      cond_count = 0
-
-      # Split on commas or "or" and check each value
+      # Reference semantics: the parser creates ONE condition block per
+      # when-VALUE (Case#record_when_condition splits on "," / "or"), all
+      # sharing the SAME body; at render every block whose value matches runs
+      # that body. So `{% when 'a','a' %}M` yields two blocks → "MM", and a
+      # single duplicate value fires its side effects (cycle, increment) once
+      # per occurrence. We reproduce this by emitting one structured IF per
+      # value in source order, DUPLICATING the body IL under each guard.
+      #
+      # Each value is parsed into a throwaway builder so a mid-expression
+      # SyntaxError can't leave partial instructions (and an unbalanced stack)
+      # behind. Invalid values are skipped (never produce a block).
+      value_ils = []
       when_values_str.split(/\s*(?:,|\bor\b)\s*/).each do |val_str|
         val_str = val_str.strip
         next if val_str.empty?
@@ -1085,34 +1091,84 @@ module LiquidIL
           @builder.load_temp(case_value_temp)   # Load case value
           parse_expression(expr_lexer)          # Push when value
           @builder.case_compare                 # Case-specific compare
-          value_builder = @builder
+          value_ils << @builder.instructions
         rescue SyntaxError
           # Skip invalid when expressions
-          next
         ensure
           @builder = saved_builder
         end
-
-        @builder.emit_from(value_builder)
-        @builder.bool_or if cond_count > 0
-        cond_count += 1
       end
 
-      # No valid values: condition is constant false (body still parsed, never runs)
-      @builder.const_false if cond_count.zero?
+      advance_template
 
+      # No valid values: constant-false guard, body parsed once (never runs).
+      if value_ils.empty?
+        @builder.const_false
+        @builder.if_start
+        @builder.const_true
+        @builder.store_temp(case_flag_temp)
+        end_tag, body_blank, body_raws = parse_block_body(%w[when else endcase])
+        @builder.end_if
+        return [end_tag, body_blank, body_raws]
+      end
+
+      # First value: emit its guard and parse the body inline, so the blank/raw
+      # and effects machinery observes the body exactly as it does elsewhere.
+      first_cond = value_ils.shift
+      @builder.instructions.concat(first_cond)
       @builder.if_start
-
-      # Set the "any_when_matched" flag to true
       @builder.const_true
       @builder.store_temp(case_flag_temp)
-
-      advance_template
+      body_start = @builder.instructions.length
       end_tag, body_blank, body_raws = parse_block_body(%w[when else endcase])
-
+      body_end = @builder.instructions.length
       @builder.end_if
 
-      [end_tag, body_blank, body_raws]
+      body_slice = @builder.instructions[body_start...body_end]
+      combined_raws = body_raws ? body_raws.dup : []
+
+      # Remaining values: each gets an independent guard wrapping a fresh copy
+      # of the body (labels remapped so duplicated loops stay linkable). The
+      # blank-raw indices of the original body are re-projected onto each copy
+      # so a wholly-blank case still strips every duplicated whitespace raw.
+      value_ils.each do |cond_il|
+        @builder.instructions.concat(cond_il)
+        @builder.if_start
+        @builder.const_true
+        @builder.store_temp(case_flag_temp)
+        copy_base = @builder.instructions.length
+        @builder.instructions.concat(dup_il_with_fresh_labels(body_slice))
+        @builder.end_if
+        body_raws&.each { |idx| combined_raws << (idx - body_start + copy_base) }
+      end
+
+      [end_tag, body_blank, combined_raws]
+    end
+
+    # Deep-copy a run of IL instructions, allocating fresh label ids for every
+    # LABEL definition and jump/loop reference so the copy can be emitted
+    # alongside the original without the linker collapsing shared label ids.
+    # Non-label instructions are dup'd (fresh outer array) so a later link()
+    # mutation of one copy never bleeds into the other.
+    def dup_il_with_fresh_labels(slice)
+      label_map = {}
+      fresh = ->(old) { label_map[old] ||= @builder.new_label }
+      slice.map do |inst|
+        case inst[0]
+        when IL::LABEL
+          [IL::LABEL, fresh.call(inst[1])]
+        when IL::JUMP, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT
+          [inst[0], fresh.call(inst[1])]
+        when IL::FOR_NEXT, IL::TABLEROW_NEXT
+          [inst[0], fresh.call(inst[1]), fresh.call(inst[2])]
+        when IL::FOR_INIT
+          copy = inst.dup
+          copy[7] = fresh.call(copy[7]) if copy[7]
+          copy
+        else
+          inst.dup
+        end
+      end
     end
 
     def parse_else_clause_with_flag(case_flag_temp)
