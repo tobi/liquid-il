@@ -49,6 +49,31 @@ module LiquidIL
     def render!(assigns = {}, **options)
       render(assigns, render_errors: false, **options)
     end
+
+    # Render against a caller-supplied, fully-configured Scope instead of
+    # building one from assigns. This is the storefront context-bridge seam:
+    # a host ContextShim owns the Scope (scope reads/writes, registers,
+    # resource accounting, filters, file_system) and hands it to the engine
+    # to execute the loaded artifact's proc. Errors are formatted inline
+    # exactly like #render when scope.render_errors is true.
+    def render_scope(scope)
+      if @partial_constants
+        @proc.call(scope, @partial_constants)
+      else
+        @proc.call(scope)
+      end
+    rescue LiquidIL::ResourceLimitError => e
+      raise unless scope.render_errors
+      (e.partial_output || "") + "Liquid error: #{LiquidIL.clean_error_message(e.message)}"
+    rescue LiquidIL::RuntimeError => e
+      raise unless scope.render_errors
+      output = e.partial_output || ""
+      location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
+      output + "Liquid error (#{location}): #{e.message}"
+    rescue StandardError => e
+      raise unless scope.render_errors
+      "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
+    end
   end
 
   # Memory-bounded LRU cache of loaded artifacts, for processes that render
