@@ -791,6 +791,14 @@ module LiquidIL
           code << "#{prefix}  _O << __captured__\n"
           code << "#{prefix}end\n"
           code
+        elsif @instructions[@pc]&.[](0) == IL::CALL_FILTER && @instructions[@pc][2] == 0 &&
+              @instructions[@pc + 1]&.[](0) == IL::WRITE_VALUE
+          # Capture → filter → output: the custom-tag protocol for tags that
+          # transform their captured body (e.g. the mock stylesheet wrapper).
+          filter_inst = @instructions[@pc]
+          @pc += 2
+          filtered = emit_filter_call(filter_inst[1], "__captured__", [], filter_inst[3] || 1)
+          "#{prefix}__captured__ = _O; _O = _cst.pop; _H.oa(_O, #{filtered})\n"
         else
           # Fallback - just restore output (captured value is lost)
           "#{prefix}_O = _cst.pop\n"
@@ -989,7 +997,19 @@ module LiquidIL
     # Emit a template-derived string as a safe Ruby string literal.
     # This is the single codegen primitive for string-literal emission.
     def lit(str)
-      str.to_s.inspect
+      s = str.to_s
+      src = s.inspect
+      # Compiled source is UTF-8, so a bare literal inherits that encoding.
+      # Constants that aren't valid UTF-8 (e.g. a folded base64_decode
+      # result) must be re-tagged or downstream string ops raise
+      # "invalid byte sequence in UTF-8" at render time.
+      if s.valid_encoding? && (s.encoding == Encoding::UTF_8 || s.ascii_only?)
+        src
+      elsif s.encoding == Encoding::BINARY
+        "#{src}.b.freeze"
+      else
+        "#{src}.b.force_encoding(#{s.encoding.name.inspect}).freeze"
+      end
     end
 
     # Escape a template-derived string for safe embedding in a generated
@@ -1418,7 +1438,7 @@ module LiquidIL
           end
           @pc += 1
         when IL::CONST_STRING
-          stack << inst[1].inspect
+          stack << lit(inst[1])
           @pc += 1
         when IL::CONST_TRUE
           stack << "true"
@@ -2735,7 +2755,11 @@ module LiquidIL
     APPEND_LINE = /\A_O << ("(?:[^"\\]|\\.)*"|\w+|\(.*\))( unless _S\.has_interrupt\?)?\z/
 
     def self.compact_source(src)
-      out = String.new(capacity: src.bytesize)
+      # UTF-8 explicitly: String.new defaults to BINARY, and the buffer's
+      # encoding becomes the compiled file's — every string literal in the
+      # template would otherwise be ASCII-8BIT (breaks encoding-sensitive
+      # filters like unicode normalization in handleize).
+      out = String.new(capacity: src.bytesize, encoding: Encoding::UTF_8)
       parts = nil   # chained append parts; last-literal juxtaposition applies
       guard = nil
       flush = lambda do

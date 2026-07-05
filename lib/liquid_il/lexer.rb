@@ -638,8 +638,15 @@ module LiquidIL
         return advance
       end
 
-      # Find closing quote
-      while (b = @source.getbyte(@scanner.pos)) && b != quote_byte
+      # Find closing quote. A quote immediately followed by a letter or digit
+      # is an interior apostrophe, not a terminator ('Women's T-Shirt' parses
+      # as one string) — reference liquid gets this via its anchored greedy
+      # /\A'(.*)'\z/ full-match of the whole value segment.
+      while (b = @source.getbyte(@scanner.pos))
+        if b == quote_byte
+          nb = @source.getbyte(@scanner.pos + 1)
+          break unless nb && (nb >= 97 && nb <= 122 || nb >= 65 && nb <= 90 || nb >= 48 && nb <= 57)
+        end
         @scanner.pos += 1
       end
 
