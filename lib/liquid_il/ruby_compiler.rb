@@ -2,12 +2,14 @@
 
 require_relative "runtime_helpers"
 require_relative "ruby_compiler/expression_helpers"
+require_relative "ruby_compiler/statement_dedup"
 
 module LiquidIL
   # Compiles IL to Ruby with native control flow (if/else, each blocks)
   # and direct expressions (no stack). This generates YJIT-friendly code.
   class RubyCompiler
     include ExpressionHelpers
+    include StatementDedup
 
     OUTPUT_CAPACITY = 8192
 
@@ -53,7 +55,7 @@ module LiquidIL
     # INDENT so any INDENT[indent+k] index resolves identically.
     EMPTY_INDENT = Array.new(20) { "" }.freeze
 
-    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil, hoist_data: nil, pretty: false)
+    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil, hoist_data: nil, pretty: false, optimize: true)
       @instructions = instructions
       @context = context
       # Optimizer-provided hoisted-lookup census [counts, written, blocked],
@@ -65,6 +67,9 @@ module LiquidIL
       # built, so the compiled proc is byte-identical either way.
       @pretty = pretty
       @indent = pretty ? INDENT : EMPTY_INDENT
+      # Backend-level optimizations (currently the statement-run dedup) are
+      # gated on this so `optimize: false` yields a faithful un-deduped baseline.
+      @optimize = optimize
       @loop_depth = 0 # Track nested loop depth for parentloop support
       # Compile-time current file (nil for the main template, the partial
       # name inside partial compilations — see compile_partial). Baked into
@@ -94,6 +99,9 @@ module LiquidIL
       @inlined_partials = Set.new
       # Pre-built partial constant objects — injected via binding at eval time
       @partial_constants = {}
+      # Deduplicated statement-run lambdas registered by the StatementDedup pass
+      # (main template body only; see dedup_statement_runs).
+      @sequences = []
     end
 
     # Check if template uses break/continue
@@ -359,6 +367,12 @@ module LiquidIL
       # Ensure shared helpers are initialized (once, at first use)
       RuntimeHelpers.init
 
+      # Dedup repeated statement runs into artifact-local lambdas BEFORE hoisting
+      # (so CALL_SEQ arg operands contribute reads/writes to the hoist scan) and
+      # before codegen (so the body emits CALL_SEQ sites). Rewrites @instructions
+      # and populates @sequences.
+      dedup_statement_runs
+
       # Decide hoisted lookups from the IL before any code exists —
       # emission consults @hoisted_lookups through scope_lookup. The optimizer
       # already walked every instruction and handed us the census (@hoist_data);
@@ -368,6 +382,11 @@ module LiquidIL
       else
         compute_hoisted_lookups
       end
+
+      # Sequence lambda definitions (emitted below, near the frozen-array
+      # constants). Generated before the body so its per-site effects merge and
+      # inline decisions are already settled.
+      seq_code = generate_sequence_lambdas
 
       # Generate body first so inlining info is available for partial lambdas
       body_code = generate_body  # also sets @uses_cycles, @uses_captures, @uses_ifchanged, @inlined_partials
@@ -382,16 +401,17 @@ module LiquidIL
         code << "proc do |_S|\n"
       end
       code << "  _H = LiquidIL::RuntimeHelpers\n"
-      code << "  _U = LiquidIL::Utils\n" if body_code.include?("_U.") || partial_code.include?("_U.")
-      code << "  _F = LiquidIL::Filters\n" if body_code.include?("_F") || partial_code.include?("_F")
-      # Frozen array constants must be declared before partial lambdas
-      # (lambdas are closures that capture these variables)
+      code << "  _U = LiquidIL::Utils\n" if body_code.include?("_U.") || partial_code.include?("_U.") || seq_code.include?("_U.")
+      code << "  _F = LiquidIL::Filters\n" if body_code.include?("_F") || partial_code.include?("_F") || seq_code.include?("_F")
+      # Frozen array constants and sequence lambdas must be declared before
+      # partial lambdas and the body (all are closures that capture them).
       code << generate_frozen_array_constants
+      code << seq_code
       code << partial_code
       code << "  _O = +\"\"\n"
       # Pre-initialize filter caches to avoid ||= check per iteration
       FILTER_CACHE.each_value do |cache_var|
-        code << "  #{cache_var} = {}\n" if body_code.include?(cache_var)
+        code << "  #{cache_var} = {}\n" if body_code.include?(cache_var) || seq_code.include?(cache_var)
       end
       code << "  _cs = {}\n" if @uses_cycles
       code << "  _cst = []\n" if @uses_captures || @uses_ifchanged
@@ -451,6 +471,17 @@ module LiquidIL
         when IL::ASSIGN, IL::ASSIGN_LOCAL, IL::INCREMENT, IL::DECREMENT,
              IL::FOR_INIT, IL::TABLEROW_INIT
           (written ||= {})[inst[1]] = true
+        when IL::CALL_SEQ
+          # A deduped run's args: :input reads its base name; :name writes an
+          # assign-target name. Kind-2 target names are dynamic inside the body,
+          # so conservatively mark every passed name as written.
+          inst[2].each do |arg|
+            if arg[0] == :input
+              counts[arg[1]] += 1
+            else
+              (written ||= {})[arg[1]] = true
+            end
+          end
         when :PAGINATE_SETUP
           w = (written ||= {})
           w["paginate"] = true
@@ -552,11 +583,20 @@ module LiquidIL
     # scope_lookup_pathed, whose callers record parentloop use only when
     # the path actually touches it.
     def scope_lookup(name)
+      return seq_ref_local(name) if name.is_a?(StatementDedup::SeqRef)
       record_parentloop_use if name == "forloop"
       scope_lookup_pathed(name)
     end
 
+    # Inside a deduped-sequence body a variable read is a parameter, not a scope
+    # lookup: an :input value binds to _sqp{slot}__, an assign target read back
+    # in the run binds to its dual local _sqv{slot}__.
+    def seq_ref_local(ref)
+      ref.kind == :local ? "_sqv#{ref.slot}__" : "_sqp#{ref.slot}__"
+    end
+
     def scope_lookup_pathed(name)
+      return seq_ref_local(name) if name.is_a?(StatementDedup::SeqRef)
       if (alias_var = @loop_var_aliases[name])
         @effects.last.uses_forloop = true if name == "forloop"
         alias_var
@@ -566,6 +606,53 @@ module LiquidIL
         record_scope_read(name)
         "_S.lookup(#{name.inspect})"
       end
+    end
+
+    # Emit the artifact-local sequence lambdas registered by StatementDedup.
+    # Placed after frozen-array constants and before partial lambdas so their
+    # bodies (which may reference _fa constants and _H/_F helpers) resolve.
+    def generate_sequence_lambdas
+      return "" if @sequences.empty?
+      code = String.new
+      code << "\n  # Deduplicated statement-run lambdas\n"
+      @sequences.each do |seq|
+        params = seq[:param_locals].join(", ")
+        sig = params.empty? ? "->(_O, _S)" : "->(_O, _S, #{params})"
+        code << "  #{seq[:name]} = #{sig} {\n"
+        # Dual locals for assign targets read back inside the run.
+        seq[:dual_slots].each { |slot| code << "    _sqv#{slot}__ = nil\n" }
+        code << seq[:body]
+        code << "  }\n"
+      end
+      code
+    end
+
+    # Emit a CALL_SEQ site: pass input args by value (through scope_lookup so
+    # loop aliases / hoisted locals apply) and target-name args as name strings,
+    # and merge the sequence body's recorded effects into the current frame.
+    def emit_call_seq(inst, indent)
+      seq = @sequences[inst[1]]
+      merge_seq_effects(seq[:effects])
+      args = inst[2].map do |arg|
+        if arg[0] == :input
+          arg[2].empty? ? scope_lookup(arg[1]) : generate_var_path_expr(arg[1], arg[2])
+        else
+          lit(arg[1])
+        end
+      end
+      argstr = args.empty? ? "" : ", #{args.join(", ")}"
+      "#{INDENT[indent]}#{seq[:name]}.call(_O, _S#{argstr})\n"
+    end
+
+    # Fold a sequence body's effects into the enclosing frame (same merge logic
+    # as pop_effects, applied per call site instead of once at compile).
+    def merge_seq_effects(child)
+      parent = @effects.last
+      return unless parent && child
+      parent.dynamic ||= child.dynamic
+      parent.open_call ||= child.open_call
+      parent.uses_parentloop ||= child.uses_parentloop
+      (parent.reads ||= Set.new).merge(child.reads) if child.reads
     end
 
     # Scan instructions for partials and compile them
@@ -867,6 +954,10 @@ module LiquidIL
       when IL::NOOP
         @pc += 1
         ""
+
+      when IL::CALL_SEQ
+        @pc += 1
+        emit_call_seq(inst, indent)
 
       when IL::WRITE_RAW
         @pc += 1
@@ -1186,25 +1277,46 @@ module LiquidIL
         temp_code + inline_output_append(expr_ruby, prefix, guard_interrupt: @uses_interrupts)
       when :assign
         var = @instructions[@pc - 1][1]
-        # Assign of a single known-filter call fuses into one _H.aff send.
-        if expr_ruby.start_with?("_F.ff(") && expr_ruby.end_with?(")")
-          temp_code + "#{prefix}_H.aff(_S, #{var.inspect}, #{expr_ruby[6..-2]})\n"
-        else
-          temp_code + "#{prefix}_H.af(_S, #{var.inspect}, #{expr_ruby})\n"
-        end
+        emit_assign_statement(var, expr_ruby, prefix, temp_code, local: false)
       when :assign_local
         var = @instructions[@pc - 1][1]
-        if expr_ruby.start_with?("_F.ff(") && expr_ruby.end_with?(")")
-          temp_code + "#{prefix}_H.affl(_S, #{var.inspect}, #{expr_ruby[6..-2]})\n"
-        else
-          temp_code + "#{prefix}_H.afl(_S, #{var.inspect}, #{expr_ruby})\n"
-        end
+        emit_assign_statement(var, expr_ruby, prefix, temp_code, local: true)
       when :store_temp
         slot = @instructions[@pc][1]
         @pc += 1
         temp_code + "#{prefix}__temp_#{slot}__ = #{expr_ruby}\n"
       else
         temp_code + "#{prefix}#{expr_ruby}\n"
+      end
+    end
+
+    # Emit an assign statement. `var` is a template name string in the normal
+    # case; inside a deduped sequence body it is a SeqRef target, in which case
+    # the assign uses the parameter NAME local (_sqp{slot}__) and, when the
+    # target is read back inside the run, also binds the dual value local
+    # (_sqv{slot}__) — computing the value once and mirroring scope state.
+    def emit_assign_statement(var, expr_ruby, prefix, temp_code, local:)
+      if var.is_a?(StatementDedup::SeqRef)
+        name_l = "_sqp#{var.slot}__"
+        af = local ? "afl" : "af"
+        if var.dual
+          vl = "_sqv#{var.slot}__"
+          return temp_code + "#{prefix}#{vl} = #{expr_ruby}\n#{prefix}_H.#{af}(_S, #{name_l}, #{vl})\n"
+        elsif expr_ruby.start_with?("_F.ff(") && expr_ruby.end_with?(")")
+          aff = local ? "affl" : "aff"
+          return temp_code + "#{prefix}_H.#{aff}(_S, #{name_l}, #{expr_ruby[6..-2]})\n"
+        else
+          return temp_code + "#{prefix}_H.#{af}(_S, #{name_l}, #{expr_ruby})\n"
+        end
+      end
+
+      # Normal named assign: single known-filter call fuses into one _H.aff send.
+      if expr_ruby.start_with?("_F.ff(") && expr_ruby.end_with?(")")
+        aff = local ? "affl" : "aff"
+        temp_code + "#{prefix}_H.#{aff}(_S, #{var.inspect}, #{expr_ruby[6..-2]})\n"
+      else
+        af = local ? "afl" : "af"
+        temp_code + "#{prefix}_H.#{af}(_S, #{var.inspect}, #{expr_ruby})\n"
       end
     end
 
@@ -1861,7 +1973,7 @@ module LiquidIL
           prev = i > 0 ? insts[i - 1] : nil
           return nil unless prev && prev[0] == IL::DUP
         when IL::FOR_INIT, IL::HALT, IL::WRITE_VALUE, IL::WRITE_RAW,
-             IL::ASSIGN, IL::ASSIGN_LOCAL, IL::ELSE, IL::END_IF
+             IL::ASSIGN, IL::ASSIGN_LOCAL, IL::ELSE, IL::END_IF, IL::CALL_SEQ
           # These terminate the expression without being a header
           return nil
         else
@@ -3117,7 +3229,8 @@ module LiquidIL
           instructions,
           context: context,
           hoist_data: result[:hoist],
-          pretty: pretty
+          pretty: pretty,
+          optimize: opts.fetch(:optimize, true)
         )
         if options[:template_name]
           ruby_compiler.instance_variable_set(:@current_file_lit, options[:template_name])

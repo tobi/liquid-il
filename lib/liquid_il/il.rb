@@ -114,6 +114,14 @@ module LiquidIL
     # No-op (for comments, etc.)
     NOOP = :NOOP                     # [:NOOP]
 
+    # Deduplicated statement run (synthetic — produced by the Ruby backend's
+    # StatementDedup pass, consumed only by its codegen). Calls an
+    # artifact-local lambda that replays a repeated run of statements.
+    #   [:CALL_SEQ, seq_id, [arg_descriptor, ...]]
+    # arg_descriptor: [:input, name, path] (value passed at the call site) or
+    #                 [:name, str] (an assign-target name string).
+    CALL_SEQ = :CALL_SEQ
+
     # Pre-frozen zero-arg instruction arrays
     I_WRITE_VALUE = [WRITE_VALUE].freeze
     I_PUSH_CAPTURE = [PUSH_CAPTURE].freeze
