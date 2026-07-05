@@ -91,16 +91,36 @@ module LiquidIL
       end
 
       def dedup_enabled?
-        # OFF BY DEFAULT. The discovery was rewritten near-linear
-        # (2026-07-05: two-stage fingerprint bucketing replaced the all-
-        # windows enumeration — storefront-set compile 75ms → 12.2ms,
-        # byte-identical group selection), but even at ~+34% compile the
-        # trade is wrong while the wins are main-body-only artifact bytes
-        # worth single-digit microseconds of remote-hit: cache-miss is the
-        # scoreboard column LiquidIL still loses. Revisit the default when
-        # v2 (in-loop dedup) multiplies the artifact win. LIQUID_DEDUP=1
-        # opts in; the correctness tests set it explicitly.
-        @optimize && ENV["LIQUID_DEDUP"] == "1"
+        # ON by default (LIQUID_DEDUP=0 kills it for A/B measurement). The
+        # discovery is two-stage fingerprint bucketing (near-linear; the
+        # original all-windows enumeration cost 75ms on the storefront set)
+        # and its result is cached class-level by IL content hash below, so
+        # repeat compiles of the same template skip discovery entirely —
+        # the same treatment @@iseq_cache gives generated source.
+        @optimize && ENV["LIQUID_DEDUP"] != "0"
+      end
+
+      # Discovery is a pure function of the final IL: cache groups by
+      # @instructions content hash (same keying discipline as @@iseq_cache's
+      # source.hash). Cache hits skip find_dedup_groups; selection, sequence
+      # build, and the rewrite still run against the current (content-equal)
+      # instruction array — build_sequence re-derives the abstract body from
+      # positions, which are valid on any content-equal IL.
+      DISCOVERY_CACHE_MAX = 500
+      @@discovery_cache = {}
+      DISCOVERY_CACHE_MUTEX = Mutex.new
+
+      def cached_dedup_groups
+        key = @instructions.hash
+        cached = DISCOVERY_CACHE_MUTEX.synchronize { @@discovery_cache[key] }
+        return cached if cached
+
+        groups = find_dedup_groups
+        DISCOVERY_CACHE_MUTEX.synchronize do
+          @@discovery_cache.clear if @@discovery_cache.size >= DISCOVERY_CACHE_MAX
+          @@discovery_cache[key] = groups
+        end
+        groups
       end
 
       # Entry point — called from generate_ruby BEFORE compute_hoisted_lookups.
@@ -113,7 +133,7 @@ module LiquidIL
         # not want to reproduce inside a lambda. Skip wholesale — cheap and safe.
         return if @uses_interrupts
 
-        groups = find_dedup_groups
+        groups = cached_dedup_groups
         return if groups.empty?
 
         len = @instructions.length
@@ -182,30 +202,52 @@ module LiquidIL
         blocks = []
         each_eligible_region { |lo, hi| collect_blocks(lo, hi, blocks) }
 
+        # Repetition pre-pass: a window can only occur >= MIN_OCCURRENCES
+        # times if EVERY statement in it has a fingerprint occurring >=
+        # MIN_OCCURRENCES times (fingerprints are position-independent), so
+        # the window loop only needs to run inside maximal runs of such
+        # "repeating" statements. Templates without template-authored
+        # repetition fall through in O(statements).
+        all_fps = blocks.map do |stmts|
+          Array.new(stmts.length) { |i| statement_fingerprint(stmts[i][0], stmts[i][1]) }
+        end
+        freq = Hash.new(0)
+        all_fps.each { |fps| fps.each { |fp| freq[fp] += 1 } }
+
         # Integer-only bucketing: the bucket key packs the window hash and its
         # statement length into one Integer, and each window packs [start, end)
         # into one Integer — no per-window array allocation.
         buckets = {}
-        blocks.each do |stmts|
+        blocks.each_with_index do |stmts, bi|
+          fps = all_fps[bi]
           n = stmts.length
-          fps = Array.new(n) { |i| statement_fingerprint(stmts[i][0], stmts[i][1]) }
-          i = 0
-          while i < n
-            h = 0
-            max_l = [MAX_WINDOW_STATEMENTS, n - i].min
-            start = stmts[i][0]
-            l = 0
-            while l < max_l
-              h = ((h * 1_000_003) ^ fps[i + l]) & 0x3ff_ffff_ffff_ffff
-              endx = stmts[i + l][1]
-              # Instruction-count floor is a candidacy filter, not correctness.
-              if endx - start >= MIN_INSTRUCTIONS
-                key = (h << 4) | l
-                (buckets[key] ||= []) << ((start << 24) | endx)
+          run_start = 0
+          while run_start < n
+            # Find the next maximal run of repeating statements.
+            run_start += 1 while run_start < n && freq[fps[run_start]] < MIN_OCCURRENCES
+            break if run_start >= n
+            run_end = run_start
+            run_end += 1 while run_end < n && freq[fps[run_end]] >= MIN_OCCURRENCES
+
+            i = run_start
+            while i < run_end
+              h = 0
+              max_l = [MAX_WINDOW_STATEMENTS, run_end - i].min
+              start = stmts[i][0]
+              l = 0
+              while l < max_l
+                h = ((h * 1_000_003) ^ fps[i + l]) & 0x3ff_ffff_ffff_ffff
+                endx = stmts[i + l][1]
+                # Instruction-count floor is a candidacy filter, not correctness.
+                if endx - start >= MIN_INSTRUCTIONS
+                  key = (h << 4) | l
+                  (buckets[key] ||= []) << ((start << 24) | endx)
+                end
+                l += 1
               end
-              l += 1
+              i += 1
             end
-            i += 1
+            run_start = run_end
           end
         end
 

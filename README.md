@@ -53,12 +53,12 @@ Every render in production falls into one of three cache scenarios, and every be
 
 | adapter | cache-miss | remote-hit | in-process | artifact |
 |---|---:|---:|---:|---:|
-| liquid_il | 462–475µs | **95–99µs** | **60–67µs** | 6.8KB |
-| liquid_ruby | 430µs | — | 184µs | — |
-| liquid_vm | 423µs | 104µs | 88µs | 1.7KB |
-| liquid_vm_ssa | 990µs | 108µs | 91µs | 1.8KB |
+| liquid_il | 503µs | **104µs** | **68µs** | 7.5KB |
+| liquid_ruby | 455µs | — | 194µs | — |
+| liquid_vm | 441µs | 108µs | 92µs | 1.7KB |
+| liquid_vm_ssa | 1.04ms | 113µs | 94µs | 1.8KB |
 
-remote-hit is the production workload and the primary target; in-process shows the ceiling of the generated code; cache-miss is the cost of a cold fleet. LiquidIL wins remote-hit and in-process on the geomean and on every individual template except order_email's remote-hit (82 vs 75µs — its 14KB artifact vs liquid-vm's 5KB), is at parity with reference liquid on cache-miss (within ~10% of liquid-vm), and still trails liquid-vm's compact bytecode on artifact size — the remaining lever on the biggest templates. The plan to win all four columns, with per-tranche results, is [docs/win_all_scenarios.md](docs/win_all_scenarios.md).
+remote-hit is the production workload and the primary target; in-process shows the ceiling of the generated code; cache-miss is the cost of a cold fleet. LiquidIL wins remote-hit and in-process on the geomean (order_email's remote-hit, 84 vs 77µs, is the one remaining red row — its 13KB artifact vs liquid-vm's 5KB), trails liquid-vm on cache-miss by ~14% (an accepted trade: the statement-dedup pass spends compile time to shrink artifacts — the production-facing columns), and still trails liquid-vm's compact bytecode on artifact size — the remaining lever on the biggest templates. The plan to win all four columns, with per-tranche results, is [docs/win_all_scenarios.md](docs/win_all_scenarios.md).
 
 ### Runtime environment assumptions
 
