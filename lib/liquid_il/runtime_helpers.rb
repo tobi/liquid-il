@@ -94,6 +94,16 @@ module LiquidIL
       output_append(output, obj)
     end
 
+    # tri: tablerow attribute integer coercion — reference semantics are
+    # duck-typed to_i (Liquid::TableRow#to_integer): any String coerces
+    # ("bad" -> 0), nil -> 0; only values WITHOUT #to_i (booleans, hashes)
+    # raise "invalid integer". The for-loop keeps its stricter validation.
+    def self.tri(value, file = nil, line = 1)
+      value.to_i
+    rescue ::NoMethodError
+      raise LiquidIL::RuntimeError.new("invalid integer", file: file, line: line)
+    end
+
     # tia: coerce to iterable unless already an Array (for-loop preamble)
     def self.tia(value)
       value.is_a?(Array) ? value : to_iterable(value)
