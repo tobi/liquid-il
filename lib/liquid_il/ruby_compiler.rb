@@ -67,6 +67,7 @@ module LiquidIL
       # e.g. "i" => "_i0__", "forloop" => "_fl0__"
       @loop_var_aliases = {}
       @hoisted_lookups = EMPTY_HOISTS
+      @effects = [Effects.new]
       # Frozen array constants used by THIS compilation: { "[\"large\"]" => "_fa0__" }
       # (names come from the process-wide @@frozen_array_names registry)
       @frozen_arrays = {}
@@ -440,10 +441,90 @@ module LiquidIL
       hoisted || EMPTY_HOISTS
     end
 
+    # ── Effects frames ──────────────────────────────────────────
+    # One frame per loop body being generated. Emitters record scope
+    # effects at the moment they emit — which names the body reads through
+    # the scope, whether it calls a scope-reading (non-isolated) partial,
+    # whether it performs dynamic/whole-scope reads. generate_for then
+    # decides needs_scope_sync/needs_forloop from the frame instead of
+    # substring-matching its own generated text, so emission shapes and
+    # the sync decision can never drift apart. Isolated {% render %} calls
+    # don't set any flag: they cannot see caller locals, and their arg
+    # expressions record their own reads — loops containing only those
+    # stay on the plain ei/eif fast path.
+    Effects = Struct.new(:reads, :dynamic, :open_call, :uses_forloop, :uses_parentloop)
+
+    def push_effects
+      @effects << Effects.new
+    end
+
+    # Pop the loop's frame and fold it into the parent: scope reads and
+    # call/dynamic flags propagate (a grandchild's scope read can require
+    # the outer loop to sync); uses_forloop does not (it binds to the
+    # popped loop's own drop). uses_parentloop propagates conservatively:
+    # a chained forloop.parentloop.parentloop needs every enclosing drop
+    # to carry its parent.
+    def pop_effects
+      child = @effects.pop
+      parent = @effects.last
+      if parent
+        parent.dynamic ||= child.dynamic
+        parent.open_call ||= child.open_call
+        parent.uses_parentloop ||= child.uses_parentloop
+        if child.reads
+          (parent.reads ||= Set.new).merge(child.reads)
+        end
+      end
+      child
+    end
+
+    def record_scope_read(name)
+      f = @effects.last
+      (f.reads ||= Set.new) << name if f
+    end
+
+    # Whole-scope or computed-name reads ({{ [var] }}, {{ self }},
+    # tablerow internals): the enclosing loop must publish its bindings.
+    def record_dynamic_read
+      f = @effects.last
+      f.dynamic = true if f
+    end
+
+    # Partial invocations that read the caller scope at render time
+    # (include, dynamic include, sections).
+    def record_open_partial_call
+      f = @effects.last
+      f.open_call = true if f
+    end
+
+    # forloop.parentloop access (or the whole drop escaping — assigns,
+    # filters, {{ forloop }}): the loop's drop must carry its parent.
+    def record_parentloop_use
+      f = @effects.last
+      f.uses_parentloop = true if f
+    end
+
     # The single emission primitive for whole-variable reads: loop-var
-    # alias, hoisted local, or scope lookup.
+    # alias, hoisted local, or scope lookup. A whole-value read of the
+    # forloop drop lets it escape (assign/filter/partial arg), so its
+    # parentloop becomes reachable; pathed reads go through
+    # scope_lookup_pathed, whose callers record parentloop use only when
+    # the path actually touches it.
     def scope_lookup(name)
-      @loop_var_aliases[name] || @hoisted_lookups[name] || "_S.lookup(#{name.inspect})"
+      record_parentloop_use if name == "forloop"
+      scope_lookup_pathed(name)
+    end
+
+    def scope_lookup_pathed(name)
+      if (alias_var = @loop_var_aliases[name])
+        @effects.last.uses_forloop = true if name == "forloop"
+        alias_var
+      elsif (local = @hoisted_lookups[name])
+        local
+      else
+        record_scope_read(name)
+        "_S.lookup(#{name.inspect})"
+      end
     end
 
     # Scan instructions for partials and compile them
@@ -648,7 +729,7 @@ module LiquidIL
           code << generate_partial_call(inst, 1, isolated: isolated)
         when IL::ASSIGN_LOCAL
           @pc += 1
-          code << "  _S.assign_local(#{inst[1].inspect}, _S.lookup(#{inst[2].inspect}))\n"
+          code << "  _S.assign_local(#{inst[1].inspect}, #{scope_lookup(inst[2])})\n"
         when IL::JUMP_IF_INTERRUPT
           @pc += 1
           code << "  next if _S.has_interrupt?\n"
@@ -762,7 +843,8 @@ module LiquidIL
         # specialized inline paths. The base stays a textual _S.lookup(...)
         # so the partial-arg rewrites keep matching.
         if !@loop_var_aliases[inst[1]] && path.none? { |k| RuntimeHelpers::SPECIAL_KEYS[k.to_s] }
-          base = scope_lookup(inst[1])
+          record_parentloop_use if inst[1] == "forloop" && path.first.to_s == "parentloop"
+          base = scope_lookup_pathed(inst[1])
           guard = @uses_interrupts ? " unless _S.has_interrupt?" : ""
           if path.length == 1
             "#{prefix}_H.olf(_O, #{base}, #{path[0].to_s.inspect})#{guard}\n"
@@ -898,7 +980,7 @@ module LiquidIL
           if v.is_a?(Array)
             case v[0]
             when :lit then v[1].inspect
-            when :var then "_S.lookup(#{v[1].inspect})"
+            when :var then scope_lookup(v[1])
             else v.inspect
             end
           else
@@ -925,7 +1007,7 @@ module LiquidIL
           if v.is_a?(Array)
             case v[0]
             when :lit then v[1].inspect
-            when :var then "_S.lookup(#{v[1].inspect})"
+            when :var then scope_lookup(v[1])
             else v.inspect
             end
           else
@@ -937,9 +1019,9 @@ module LiquidIL
         # Identity is a variable - look it up at runtime
         # Handle empty values: cycle with 0 choices outputs nothing (empty string)
         if raw_values.empty?
-          "#{prefix}__cycle_key__ = _S.lookup(#{var_name.inspect}); _cs[__cycle_key__] = (_cs[__cycle_key__] || 0) + 1\n"
+          "#{prefix}__cycle_key__ = #{scope_lookup(var_name)}; _cs[__cycle_key__] = (_cs[__cycle_key__] || 0) + 1\n"
         else
-          "#{prefix}__cycle_key__ = _S.lookup(#{var_name.inspect}); __cycle_idx__ = _cs[__cycle_key__] ||= 0; _O << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; _cs[__cycle_key__] = __cycle_idx__ + 1\n"
+          "#{prefix}__cycle_key__ = #{scope_lookup(var_name)}; __cycle_idx__ = _cs[__cycle_key__] ||= 0; _O << [#{values_ruby.join(", ")}][__cycle_idx__ % #{raw_values.length}].to_s; _cs[__cycle_key__] = __cycle_idx__ + 1\n"
         end
 
       when IL::PUSH_INTERRUPT
@@ -1002,6 +1084,7 @@ module LiquidIL
 
       when :SHOPIFY_SECTION_RENDER
         @pc += 1
+        record_open_partial_call
         "#{INDENT[indent]}_H.render_shopify_section(#{inst[1].inspect}, _O, _S, #{@current_file_lit.inspect})\n"
 
       when :PAGINATE_SETUP
@@ -1011,7 +1094,7 @@ module LiquidIL
         prefix = INDENT[indent]
         # Generate runtime paginate setup using helper method
         parts = coll_path.split(".")
-        lookup = "_S.lookup(#{parts[0].inspect})"
+        lookup = scope_lookup(parts[0])
         parts[1..].each { |p| lookup = "_H.l(#{lookup}, #{p.inspect})" }
         # _pgc, not _pc: _pc is the proc's partial-constants parameter
         code = String.new
@@ -1113,6 +1196,7 @@ module LiquidIL
     # Generate a partial call (render or include)
     def generate_partial_call(inst, indent, isolated:)
       @pc += 1
+      record_open_partial_call unless isolated
       prefix = INDENT[indent]
       name = inst[1]
       # Cycle state suffix: only include if any partial uses cycles
@@ -1425,6 +1509,7 @@ module LiquidIL
 
       root = root_match[0]
       result = if root == "self"
+        record_dynamic_read
         "_S.lookup_self"
       else
         scope_lookup(root)
@@ -1517,12 +1602,14 @@ module LiquidIL
           stack << scope_lookup(inst[1])
           @pc += 1
         when IL::FIND_SELF
+          record_dynamic_read
           stack << "_S.lookup_self"
           @pc += 1
         when IL::FIND_VAR_PATH
           stack << generate_var_path_expr(inst[1], inst[2])
           @pc += 1
         when IL::FIND_VAR_DYNAMIC
+          record_dynamic_read
           name_ruby = stack.pop || "nil"
           stack << "_S.lookup(#{name_ruby})"
           @pc += 1
@@ -1656,7 +1743,8 @@ module LiquidIL
 
     # Generate variable path access (a.b.c)
     def generate_var_path_expr(var, path)
-      result = scope_lookup(var)
+      record_parentloop_use if var == "forloop" && path.first.to_s == "parentloop"
+      result = scope_lookup_pathed(var)
       path.each do |key|
         result = inline_lookup(result, key)
       end
@@ -1794,7 +1882,7 @@ module LiquidIL
             var_name = inst[1]
             slot = next_inst[1]
             @pc += 2
-            pre_loop_code << "#{prefix}__temp_#{slot}__ = _S.lookup(#{var_name.inspect})\n"
+            pre_loop_code << "#{prefix}__temp_#{slot}__ = #{scope_lookup(var_name)}\n"
           else
             break  # offset/limit expression starts here
           end
@@ -1866,6 +1954,10 @@ module LiquidIL
         @loop_var_aliases[liq_var] = ruby_var
       end
 
+      # Body emitters record scope effects into this frame; the sync
+      # decision below reads it instead of scanning body_code.
+      push_effects
+
       body_start = @pc
       body_code = String.new
 
@@ -1905,6 +1997,8 @@ module LiquidIL
           @loop_var_aliases.delete(liq_var)
         end
       end
+
+      body_effects = pop_effects
 
       # Consume cleanup and detect for-else pattern
       else_end_target = nil
@@ -1947,26 +2041,40 @@ module LiquidIL
       item_var_internal = "_i#{depth}__"
       idx_var = "_x#{depth}__"
 
-      # Get parent forloop reference (if nested)
-      # Always check scope for existing forloop - this handles:
-      # - parentloop access in includes (depth 0 with outer loop in scope)
-      # - for loops inside tablerows (depth > 0 but no _fl{depth-1}__ exists)
-      parent_forloop = "_S.lookup('forloop')"
-
-      # Check what the loop body actually needs. Partial invocations (ipc/
-      # rpf/ipf/dynamic/section) read the item and forloop through the
-      # scope; nested loops read the parent forloop from the scope.
-      needs_scope_sync = body_code.include?("_H.ipc(") ||
-                         body_code.include?("_H.rpf(") ||
-                         body_code.include?("_H.ipf(") ||
-                         body_code.include?("execute_dynamic_partial") ||
-                         body_code.include?("render_shopify_section") ||
-                         body_code.include?("ForloopDrop.new") ||
-                         body_code.include?("_S.lookup('forloop')") ||
-                         body_code.include?("_S.lookup(#{item_var.inspect})")
-      needs_forloop = body_code.include?(forloop_var) || needs_scope_sync
+      # Decide from the body's recorded effects (not its text): sync when
+      # something in the body reads the item or forloop through the scope —
+      # open partial calls (include/dynamic/section) read arbitrary names
+      # at render time, dynamic reads ({{ [v] }}, {{ self }}) resolve names
+      # at render time, and nested scope-reading loops propagate up.
+      # Isolated {% render %} calls set no flag: they cannot see caller
+      # locals, and their arg expressions resolve through loop-var aliases.
+      needs_scope_sync = body_effects.open_call ||
+                         body_effects.dynamic ||
+                         (body_effects.reads&.include?("forloop")) ||
+                         (body_effects.reads&.include?(item_var)) || false
+      needs_forloop = body_effects.uses_forloop || needs_scope_sync
       needs_error_handling = has_offset || has_limit
       needs_slicing = limit_expr || offset_expr || offset_continue
+
+      # Parent-forloop reference for this loop's drop. Only observable
+      # through forloop.parentloop (or when the drop escapes to scope
+      # readers under sync), so pass nil otherwise. Emitted AFTER the
+      # body's aliases are restored: inside an enclosing loop this
+      # resolves to the enclosing drop's local directly — no scope read,
+      # no sync forced on the enclosing loop.
+      parent_forloop = if body_effects.uses_parentloop || needs_scope_sync
+        scope_lookup("forloop")
+      else
+        "nil"
+      end
+
+      # eifs reads the previous item/forloop bindings through the scope
+      # (publish + restore protocol) — the enclosing loop must have
+      # published its own. The complex sync path does the same manually.
+      if needs_scope_sync
+        record_scope_read("forloop")
+        record_scope_read(item_var)
+      end
 
       # Fast path: simple and forloop-bearing loops emit one _H.ei/_H.eif
       # block — the driver (coerce, length, index walk, ForloopDrop
@@ -2121,6 +2229,7 @@ module LiquidIL
 
     # Generate a tablerow loop (called when FIND_VAR starts a tablerow sequence)
     def generate_tablerow(indent)
+      record_dynamic_read
       prefix = INDENT[indent]
 
       # Scan forward to find TABLEROW_INIT and determine what params it has
@@ -2174,7 +2283,7 @@ module LiquidIL
             var_name = inst[1]
             slot = next_inst[1]
             @pc += 2
-            pre_loop_code << "#{"  " * indent}__temp_#{slot}__ = _S.lookup(#{var_name.inspect})\n"
+            pre_loop_code << "#{"  " * indent}__temp_#{slot}__ = #{scope_lookup(var_name)}\n"
           else
             break
           end
@@ -2635,7 +2744,8 @@ module LiquidIL
         return nil if path.any? { |k| RuntimeHelpers::SPECIAL_KEYS[k.to_s] }
 
         @pc += 1
-        base = scope_lookup(nxt[1])
+        record_parentloop_use if nxt[1] == "forloop" && path.first.to_s == "parentloop"
+        base = scope_lookup_pathed(nxt[1])
         if path.length == 1
           "  _H.rolf(_O, #{raw.inspect}, #{base}, #{path[0].to_s.inspect})#{guard}\n"
         else
