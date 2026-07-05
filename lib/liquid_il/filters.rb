@@ -39,6 +39,9 @@ module LiquidIL
     #   LiquidIL::Filters.register(ShopifyFilters)
     #
     @global_registry = {}
+    FILTER_CONTEXT_KEY = :__liquid_il_filter_context__
+    RACTOR_GLOBAL_REGISTRY_KEY = :__liquid_il_global_filter_registry__
+    RACTOR_VALID_FILTERS_KEY = :__liquid_il_valid_filter_methods__
 
     class << self
       # Register a filter module globally. All new Contexts will inherit these.
@@ -53,7 +56,7 @@ module LiquidIL
 
         mod.instance_methods(false).each do |name|
           name_s = name.to_s
-          @global_registry[name_s] = {
+          global_registry[name_s] = {
             module: mod,
             pure: pure,
             method: mod.instance_method(name),
@@ -62,33 +65,27 @@ module LiquidIL
       end
 
       def global_registry
-        @global_registry
+        ractor_main? ? @global_registry : (Ractor.current[RACTOR_GLOBAL_REGISTRY_KEY] ||= {})
       end
 
       def global_filter_registered?(name)
-        @global_registry.key?(name.to_s)
+        global_registry.key?(name.to_s)
       end
 
       def clear_global_registry!
-        @global_registry.clear
+        global_registry.clear
       end
       # Cache of valid filter method names for O(1) dispatch.
       # Built lazily from the public methods added by the built-in filter
       # section below; host-registered filters stay dynamic via Scope.
       def valid_filter_methods
-        @valid_filter_methods ||= begin
-          own_methods = singleton_methods(false) - LiquidIL::Filters::FILTER_METHOD_BASELINE
-          set = {}
-          own_methods.each do |m|
-            set[m.to_s] = true
-          end
-          set["args_to_s"] = true
-          set.freeze
-        end
+        return (@valid_filter_methods ||= build_valid_filter_methods) if ractor_main?
+
+        Ractor.current[RACTOR_VALID_FILTERS_KEY] ||= build_valid_filter_methods
       end
 
       def apply(name, input, args, context)
-        @context = context
+        Thread.current[FILTER_CONTEXT_KEY] = context
         name = name.to_s unless name.is_a?(String)
         unless valid_filter_methods[name]
           return input  # Unknown filter, return input unchanged
@@ -109,14 +106,14 @@ module LiquidIL
         raise e if context.strict_errors || e.is_a?(FilterRuntimeError)
         raise FilterRuntimeError.new("internal")
       ensure
-        @context = nil
+        Thread.current[FILTER_CONTEXT_KEY] = nil
       end
 
       # Fast dispatch — caller has already validated the filter name exists.
       # Skips valid_filter_methods lookup and name.to_s conversion.
       # Used by ruby compiler for filters known at compile time.
       def apply_fast(name, input, args, context)
-        @context = context
+        Thread.current[FILTER_CONTEXT_KEY] = context
         case args.length
         when 0 then send(name, input)
         when 1 then send(name, input, args[0])
@@ -129,26 +126,23 @@ module LiquidIL
         raise e if context.strict_errors || e.is_a?(FilterRuntimeError)
         raise FilterRuntimeError.new("internal")
       ensure
-        @context = nil
+        Thread.current[FILTER_CONTEXT_KEY] = nil
       end
 
       # Flattened fast filter dispatch — folds RuntimeHelpers.call_filter_fast
       # (marker passthrough + error→ErrorMarker conversion) and apply_fast
-      # (@context bind + arity dispatch) into ONE frame with NO `ensure`. The
+      # (context bind + arity dispatch) into ONE frame with NO `ensure`. The
       # filter name is validated at compile time, so this is the hot path for
       # every `{{ x | filter }}` the compiler recognizes.
       #
-      # Two costs are removed vs the old cff→apply_fast pair (~15% on
-      # filter-heavy renders): the extra method call + rescue frame, and — the
-      # bigger one — the `ensure @context = nil`. An `ensure` block is a real
-      # frame under YJIT; dropping it is most of the win. It is safe to drop:
-      # @context is (re)bound at the top of every dispatch before any filter
-      # body reads it, and no built-in filter re-enters dispatch mid-execution,
-      # so a leftover @context is never observed. (The old pair cleared to nil,
-      # which was equally unsafe under hypothetical nesting — this is no worse.)
+      # NO ambient-context bind here at all: every name reachable through ff
+      # is a public valid_filter_methods built-in, none of which read the
+      # `context` getter (only registered/custom filters do — dispatched via
+      # apply/apply_fast, which bind the fiber-local context). Error handling
+      # takes `scope` explicitly. This keeps the hot path free of shared or
+      # fiber-local state — thread-safe by having nothing to share.
       def ff(name, input, args, scope, current_file = nil, line = 1)
         return input if input.is_a?(LiquidIL::ErrorMarker)
-        @context = scope
         case args.length
         when 0 then send(name, input)
         when 1 then send(name, input, args[0])
@@ -169,6 +163,20 @@ module LiquidIL
       end
 
       private
+
+      def ractor_main?
+        !defined?(Ractor) || (Ractor.respond_to?(:main?) && Ractor.main?)
+      end
+
+      def build_valid_filter_methods
+        own_methods = singleton_methods(false) - LiquidIL::Filters::FILTER_METHOD_BASELINE
+        set = {}
+        own_methods.each do |m|
+          set[m.to_s] = true
+        end
+        set["args_to_s"] = true
+        set.freeze
+      end
 
       # Turn a filter error into either an inline ErrorMarker (render_errors)
       # or a raised RuntimeError (strict rendering). Shared by #ff.
@@ -740,7 +748,7 @@ module LiquidIL
       end
 
       def context
-        @context
+        Thread.current[FILTER_CONTEXT_KEY]
       end
 
       def nil_safe_compare(a, b)

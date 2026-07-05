@@ -186,11 +186,11 @@ module LiquidIL
           end
 
           def read_current_tags(input)
-            (@context&.lookup("current_tags") || input)
+            (context&.lookup("current_tags") || input)
           end
 
           def read_template(input)
-            (@context&.lookup("template") || input)
+            (context&.lookup("template") || input)
           end
 
           def fakey(input)

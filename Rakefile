@@ -4,6 +4,7 @@ require "shellwords"
 require "fileutils"
 require "json"
 require "open3"
+require "yaml"
 
 task default: :test
 
@@ -20,6 +21,8 @@ TEST_FILES = %w[
   test/error_handling_test.rb
   test/dynamic_partials_runtime_test.rb
   test/dynamic_partials_performance_test.rb
+  test/concurrency_test.rb
+  test/ractor_render_test.rb
   test/iseq_cache_test.rb
   test/iseq_persistence_test.rb
   test/liquid_vm_optional_test.rb
@@ -251,6 +254,127 @@ module CacheScenarios
   end
 end
 
+module ThreadScenarios
+  module_function
+
+  THREAD_COUNTS = [1, 2, 4, 8].freeze
+  DEFAULT_ITERS = 4000
+
+  class BenchFS
+    def initialize(templates)
+      @templates = templates || {}
+    end
+
+    def read_template_file(name, _context = nil)
+      @templates[name.to_s]
+    end
+  end
+
+  def run!
+    specs = load_specs
+    same = specs.find { |spec| spec["name"] == "bench_nested_partials" } || specs.first
+    mixed = specs.first(4)
+    iters = Integer(ENV.fetch("THREAD_BENCH_ITERS", DEFAULT_ITERS))
+
+    liquid_il_same = build_liquid_il_entries([same])
+    liquid_il_mixed = build_liquid_il_entries(mixed)
+    liquid_ruby_same = build_liquid_ruby_entries([same])
+    liquid_ruby_mixed = build_liquid_ruby_entries(mixed)
+
+    puts "Thread render benchmark"
+    puts
+    puts "  Each template is parsed/compiled and loaded once before timing."
+    puts "  Each worker thread renders with its own assigns hash."
+    puts "  Iterations per thread: #{iters}"
+    puts
+    print_table("same template: #{same["name"]}", {
+      "liquid_il" => liquid_il_same,
+      "liquid_ruby" => liquid_ruby_same,
+    }, iters)
+    puts
+    print_table("mixed templates: #{mixed.map { |s| s["name"] }.join(", ")}", {
+      "liquid_il" => liquid_il_mixed,
+      "liquid_ruby" => liquid_ruby_mixed,
+    }, iters)
+  end
+
+  def load_specs
+    yml = YAML.safe_load(File.read("specs/partials/partials.yml"), aliases: true)
+    yml.fetch("specs").select { |spec| spec["name"]&.start_with?("bench_") && spec["template"] }
+  end
+
+  def build_liquid_il_entries(specs)
+    require_relative "lib/liquid_il"
+    specs.map do |spec|
+      fs = BenchFS.new(spec["filesystem"])
+      ctx = LiquidIL::Context.new(file_system: fs)
+      template = ctx.parse(spec["template"])
+      artifact = LiquidIL.load_artifact(template.to_artifact)
+      assigns = deep_dup(spec["environment"] || {})
+      expected = template.render(deep_dup(assigns))
+      actual = artifact.render(deep_dup(assigns))
+      abort "LiquidIL thread bench validation failed for #{spec["name"]}" unless actual == expected
+      { name: spec["name"], renderer: artifact, assigns: assigns, type: :liquid_il }
+    end
+  end
+
+  def build_liquid_ruby_entries(specs)
+    require "liquid"
+    specs.map do |spec|
+      fs = BenchFS.new(spec["filesystem"])
+      template = Liquid::Template.parse(spec["template"])
+      assigns = deep_dup(spec["environment"] || {})
+      actual = template.render(deep_dup(assigns), registers: { file_system: fs })
+      abort "liquid_ruby thread bench validation failed for #{spec["name"]}" if actual.nil?
+      { name: spec["name"], renderer: template, assigns: assigns, fs: fs, type: :liquid_ruby }
+    end
+  end
+
+  def print_table(title, adapters, iters)
+    puts title
+    puts "| adapter | threads | renders/sec | scaling | elapsed |"
+    puts "|---|---:|---:|---:|---:|"
+    adapters.each do |adapter, entries|
+      base = nil
+      THREAD_COUNTS.each do |threads|
+        elapsed = time_threads(entries, threads, iters)
+        rps = (threads * iters) / elapsed
+        base ||= rps
+        puts "| #{adapter} | #{threads} | #{format('%.0f', rps)} | #{format('%.2fx', rps / base)} | #{format('%.3fs', elapsed)} |"
+      end
+    end
+  end
+
+  def time_threads(entries, thread_count, iters)
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    threads = thread_count.times.map do |tid|
+      entry = entries[tid % entries.length]
+      Thread.new do
+        assigns = deep_dup(entry[:assigns])
+        assigns["thread_id"] = tid
+        iters.times do |i|
+          assigns["iteration"] = i
+          render_entry(entry, assigns)
+        end
+      end
+    end
+    threads.each(&:join)
+    Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+  end
+
+  def render_entry(entry, assigns)
+    if entry[:type] == :liquid_il
+      entry[:renderer].render(assigns)
+    else
+      entry[:renderer].render(assigns, registers: { file_system: entry[:fs] })
+    end
+  end
+
+  def deep_dup(value)
+    Marshal.load(Marshal.dump(value))
+  end
+end
+
 desc "Run full test suite"
 task :test do
   puts "\n#{"=" * 60}\nRunning unit tests\n#{"=" * 60}"
@@ -320,6 +444,11 @@ namespace :bench do
   desc "Cold-path stage breakdown: envelope decode / ISeq load / eval / first render (validated vs reference gem)"
   task :cold do
     system("RUBY_YJIT_ENABLE=1 bundle exec ruby bench/cold_bench.rb") || exit(1)
+  end
+
+  desc "Concurrent render throughput for loaded artifacts/templates across 1, 2, 4, and 8 threads"
+  task :threads do
+    ThreadScenarios.run!
   end
 
   desc "Artifact byte attribution: where compiled-artifact bytes come from, per codegen pattern"

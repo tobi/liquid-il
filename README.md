@@ -81,6 +81,58 @@ cache.render(key, blob, assigns)     # loads+caches on first use, reuses thereaf
 
 The budget is accounted by the summed size of the loaded artifacts; once it is exceeded, the least-recently-used templates are dropped. Each entry remembers its blob's CRC32, so republishing a template under the same key transparently reloads it.
 
+### Concurrency
+
+LiquidIL's render path is thread-safe and lock-free for the production shape: compile once, load an artifact, then render it many times. A single `Template` or `CompiledArtifact` may be shared by many Ruby threads; each render builds its own `Scope`, output buffer, cycle state, capture stack, counters, and ifchanged state. Partial lambdas created when an artifact is loaded are shared, but they are stateless closures over immutable compile-time constants.
+
+Compilation is also safe to run from multiple threads. The process-wide compile caches in `RubyCompiler` (`@@iseq_cache`, `@@partial_cache`, and `@@indent_partial_body_cache`) are guarded by compile-time mutexes, following the same pattern as `NAME_REGISTRY_MUTEX` for frozen-array names and partial loop-name bases. Those locks are not touched by `Template#render` or `CompiledArtifact#render`.
+
+For Ractors, do not share a proc created in another Ractor. Share the frozen artifact bytes and load/eval the ISeq inside each Ractor:
+
+```ruby
+template = LiquidIL.parse("{% for item in items %}{{ item | upcase }}{% endfor %}")
+artifact = template.to_artifact.freeze
+Ractor.make_shareable(artifact)
+
+ractor = Ractor.new(artifact) do |bytes|
+  require "liquid_il"
+  assigns = { "items" => %w[a b c] } # build assigns inside the Ractor
+  LiquidIL.load_artifact(bytes).render(assigns)
+end
+
+ractor.value # => "ABC"
+```
+
+Ractor v1 supports static compiled artifacts: the artifact bytes are shipped to each Ractor, and `RubyVM::InstructionSequence.load_from_binary(...).eval` runs inside that Ractor. Dynamic includes/render calls whose template name is resolved at render time are excluded for now because they compile partials during render and still touch runtime compile caches and file-system objects.
+
+`rake bench:threads` reports concurrent render throughput for loaded LiquidIL artifacts and pre-parsed reference Liquid templates. One local run (Ruby 4.0, YJIT, 4000 renders per worker) produced:
+
+same template: `bench_nested_partials`
+
+| adapter | threads | renders/sec | scaling |
+|---|---:|---:|---:|
+| liquid_il | 1 | 121591 | 1.00x |
+| liquid_il | 2 | 169428 | 1.39x |
+| liquid_il | 4 | 164791 | 1.36x |
+| liquid_il | 8 | 170472 | 1.40x |
+| liquid_ruby | 1 | 29699 | 1.00x |
+| liquid_ruby | 2 | 25411 | 0.86x |
+| liquid_ruby | 4 | 27209 | 0.92x |
+| liquid_ruby | 8 | 28312 | 0.95x |
+
+mixed templates: `bench_simple_product_listing`, `bench_render_with_params`, `bench_render_for_loop`, `bench_nested_partials`
+
+| adapter | threads | renders/sec | scaling |
+|---|---:|---:|---:|
+| liquid_il | 1 | 116713 | 1.00x |
+| liquid_il | 2 | 120142 | 1.03x |
+| liquid_il | 4 | 71311 | 0.61x |
+| liquid_il | 8 | 69189 | 0.59x |
+| liquid_ruby | 1 | 22939 | 1.00x |
+| liquid_ruby | 2 | 16115 | 0.70x |
+| liquid_ruby | 4 | 13394 | 0.58x |
+| liquid_ruby | 8 | 13009 | 0.57x |
+
 ### The artifact format
 
 `Template#to_artifact` produces a framed binary (`"LQIL"` magic, format version, Ruby version/platform stamp, content digest, length-prefixed segments — see `lib/liquid_il/artifact.rb`). Loading an artifact built by a different Ruby raises `LiquidIL::StaleArtifactError` (a mismatched ISeq binary can crash the VM, so it is never fed to `load_from_binary`); a damaged blob raises `LiquidIL::CorruptArtifactError`. In both cases the caller recompiles from its own copy of the source and re-persists.
@@ -103,6 +155,7 @@ All benchmarking runs through liquid-spec's harness (GC-disciplined timing, real
 - `rake bench:detail` — liquid-spec's detailed per-stage output (parse/render/load distributions, allocation counts, YJIT stats)
 - `rake bench:partials` — the partial-heavy matrix in `specs/partials/` (a local liquid-spec suite; its `expected:` blocks are generated from the reference liquid gem)
 - `rake bench:cold` — per-stage breakdown of the remote-hit load pipeline (envelope decode / `load_from_binary` / eval / first render), hard-validated against the reference gem
+- `rake bench:threads` — concurrent render throughput for shared loaded artifacts/templates at 1, 2, 4, and 8 threads
 - `rake liquid_vm:scenarios` — the same three-scenario table including Shopify/liquid-vm classic and SSA; `rake liquid_vm:bench` for their detailed output. This private repo is cloned to `/tmp/liquid-vm` by default and skipped by all default tasks; see [docs/liquid_vm.md](docs/liquid_vm.md).
 
 ## Quick Start

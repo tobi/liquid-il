@@ -119,7 +119,8 @@ module LiquidIL
         # literals, so cache identity must include the logical name as well as
         # source bytes.
         source_key = [name, partial_source].hash
-        if (cached = @@partial_cache[source_key]) && partial_cache_deps_valid?(cached, fs)
+        cached = PARTIAL_CACHE_MUTEX.synchronize { @@partial_cache[source_key] }
+        if cached && partial_cache_deps_valid?(cached, fs)
           @partials[name] = cached
           # The cached body references frozen-array constants and nested
           # partial lambdas from its original compilation — re-declare the
@@ -224,8 +225,10 @@ module LiquidIL
 
       # Cache for next compile of a template using this partial
       if source_key
-        @@partial_cache.clear if @@partial_cache.size >= PARTIAL_CACHE_MAX
-        @@partial_cache[source_key] = @partials[name].dup
+        PARTIAL_CACHE_MUTEX.synchronize do
+          @@partial_cache.clear if @@partial_cache.size >= PARTIAL_CACHE_MAX
+          @@partial_cache[source_key] = @partials[name].dup
+        end
       end
 
       @partial_names_in_progress.delete(name)
@@ -264,7 +267,7 @@ module LiquidIL
       return unless body
       names = body.scan(/_fa\d+__/)
       return if names.empty?
-      inverse = @@frozen_array_names.invert
+      inverse = NAME_REGISTRY_MUTEX.synchronize { @@frozen_array_names.invert }
       names.uniq.each do |constant_name|
         literal = inverse[constant_name]
         @frozen_arrays[literal] = constant_name if literal
@@ -640,6 +643,7 @@ module LiquidIL
 
     # Cache for indented partial body with assign key replacements
     @@indent_partial_body_cache = {}
+    INDENT_PARTIAL_BODY_CACHE_MUTEX = Mutex.new
 
     # Emitted string literals come exclusively from String#inspect (double-
     # quoted, escapes, never a raw newline) plus a few simple single-quoted
@@ -662,7 +666,8 @@ module LiquidIL
     def indent_partial_body(body, spaces, assign_keys: [], arg_expressions: nil)
       indent = " " * spaces
       cache_key = [body.hash, assign_keys.sort, spaces, arg_expressions&.hash]
-      return @@indent_partial_body_cache[cache_key] if @@indent_partial_body_cache.key?(cache_key)
+      cached = INDENT_PARTIAL_BODY_CACHE_MUTEX.synchronize { @@indent_partial_body_cache[cache_key] }
+      return cached if cached
 
       if arg_expressions
         body = code_gsub(body, "_S", "__partial_scope__")
@@ -682,7 +687,7 @@ module LiquidIL
         end
       end
       result = body.lines.map { |l| l.strip.empty? ? l : "#{indent}#{l}" }.join
-      @@indent_partial_body_cache[cache_key] = result
+      INDENT_PARTIAL_BODY_CACHE_MUTEX.synchronize { @@indent_partial_body_cache[cache_key] = result }
     end
 
     # Generate the template body
@@ -2611,8 +2616,17 @@ module LiquidIL
     # Emit a standard filter dispatch call (cff, cf, or ccf).
     # The "cff" (fast, compile-time-known filter) path is emitted as the
     # flattened single-frame _F.ff dispatcher; cf/ccf stay on _H.
+    # Filters that read the ambient (fiber-local) filter context. _F.ff is
+    # deliberately state-free — the hot path binds nothing — so these few
+    # names route through _H.cff, whose apply_fast binds the context.
+    AMBIENT_CONTEXT_FILTERS = { "read_current_tags" => true, "read_template" => true }.freeze
+
     def emit_filter_dispatch(dispatcher, name, input, args, line)
-      recv = dispatcher == "cff" ? "_F.ff" : "_H.#{dispatcher}"
+      recv = if dispatcher == "cff"
+        AMBIENT_CONTEXT_FILTERS[name] ? "_H.cff" : "_F.ff"
+      else
+        "_H.#{dispatcher}"
+      end
       if args.empty?
         "#{recv}(#{name.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, #{@current_file_lit.inspect}, #{line})"
       elsif args.all? { |a| a.match?(/\A(?:-?\d+(?:\.\d+)?|"[^"]*")\z/) }
@@ -2876,19 +2890,23 @@ module LiquidIL
     # Capped at 1000 entries to bound memory; LRU eviction via simple clear.
     ISEQ_CACHE_MAX = 1000
     @@iseq_cache = {}
+    ISEQ_CACHE_MUTEX = Mutex.new
 
     # Cache for compiled partials — keyed by source hash
     PARTIAL_CACHE_MAX = 500
     @@partial_cache = {}
+    PARTIAL_CACHE_MUTEX = Mutex.new
 
     def eval_ruby(source, partial_constants = nil)
       key = source.hash
-      if (bin = @@iseq_cache[key])
+      if (bin = ISEQ_CACHE_MUTEX.synchronize { @@iseq_cache[key] })
         RubyVM::InstructionSequence.load_from_binary(bin).eval
       else
         iseq = RubyVM::InstructionSequence.compile(RubyCompiler.compact_source(source), "(liquid_il_ruby)")
-        @@iseq_cache.clear if @@iseq_cache.size >= ISEQ_CACHE_MAX
-        @@iseq_cache[key] = iseq.to_binary.freeze
+        ISEQ_CACHE_MUTEX.synchronize do
+          @@iseq_cache.clear if @@iseq_cache.size >= ISEQ_CACHE_MAX
+          @@iseq_cache[key] = iseq.to_binary.freeze
+        end
         iseq.eval
       end
     rescue SyntaxError => e
@@ -2991,13 +3009,16 @@ module LiquidIL
     # Falls back to compiling + serializing if the cache was evicted.
     def self.iseq_binary_for(ruby_source)
       key = ruby_source.hash
-      @@iseq_cache[key] || begin
-        iseq = RubyVM::InstructionSequence.compile(compact_source(ruby_source), "(liquid_il_structured)")
-        bin = iseq.to_binary.freeze
+      cached = ISEQ_CACHE_MUTEX.synchronize { @@iseq_cache[key] }
+      return cached if cached
+
+      iseq = RubyVM::InstructionSequence.compile(compact_source(ruby_source), "(liquid_il_structured)")
+      bin = iseq.to_binary.freeze
+      ISEQ_CACHE_MUTEX.synchronize do
         @@iseq_cache.clear if @@iseq_cache.size >= ISEQ_CACHE_MAX
         @@iseq_cache[key] = bin
-        bin
       end
+      bin
     end
 
   end
