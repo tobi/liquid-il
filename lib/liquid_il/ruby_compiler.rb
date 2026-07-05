@@ -29,14 +29,17 @@ module LiquidIL
     ])
 
     class CompilationResult
-      attr_reader :proc, :source, :can_compile, :partials, :partial_constants
+      attr_reader :proc, :source, :can_compile, :partials, :partial_constants,
+                  :partial_dependencies
 
-      def initialize(proc:, source:, can_compile:, partials: {}, partial_constants: nil)
+      def initialize(proc:, source:, can_compile:, partials: {}, partial_constants: nil,
+                     partial_dependencies: nil)
         @proc = proc
         @source = source
         @can_compile = can_compile
         @partials = partials
         @partial_constants = partial_constants
+        @partial_dependencies = partial_dependencies
       end
     end
 
@@ -55,9 +58,23 @@ module LiquidIL
     # INDENT so any INDENT[indent+k] index resolves identically.
     EMPTY_INDENT = Array.new(20) { "" }.freeze
 
-    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil, hoist_data: nil, pretty: false, optimize: true)
+    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil, hoist_data: nil, pretty: false, optimize: true, partial_index: nil)
       @instructions = instructions
       @context = context
+      # Digest index (name -> content_digest, plus optional bytesize/inline?/
+      # external? hooks) for the external-partial compile mode. When present,
+      # partials the index knows about are resolved to EXISTENCE + identity
+      # WITHOUT a body fetch, and large/opaque ones become EXTERNAL provider
+      # call sites instead of being inlined/embedded. nil => today's behavior
+      # exactly (every static partial fetched + inlined/embedded); emission is
+      # byte-identical in that case.
+      @partial_index = partial_index || context&.partial_index
+      # {name => {digest:, disposition:}} surfaced on the result/Template so a
+      # host can build a composite cache key and know which external artifacts
+      # to prefetch. Metadata only — never affects emission.
+      @partial_dependencies = {}
+      # Memoized index.digest(name) lookups (also used as emitted literals).
+      @index_digests = {}
       # Optimizer-provided hoisted-lookup census [counts, written, blocked],
       # or nil to fall back to a fresh IL walk (compute_hoisted_lookups).
       @hoist_data = hoist_data
@@ -120,7 +137,57 @@ module LiquidIL
         source: code,
         can_compile: true,
         partial_constants: @partial_constants.empty? ? nil : @partial_constants.freeze,
+        partial_dependencies: @partial_dependencies.empty? ? nil : @partial_dependencies.freeze,
       )
+    end
+
+    # Digest the index reports for `name` (memoized). Existence probe for the
+    # external-partial decision and the identity baked into external call
+    # sites / partial_dependencies. Never triggers a body fetch.
+    def index_digest(name)
+      return nil unless @partial_index
+      @index_digests.fetch(name) { @index_digests[name] = @partial_index.digest(name) }
+    end
+
+    # Decide whether a static partial is compiled into THIS artifact (today's
+    # inline/lambda path, needs a body fetch) or referenced EXTERNALLY (no
+    # fetch; a provider supplies the compiled artifact at render time).
+    #
+    # Only active when a partial_index is present. A partial the index does not
+    # know (digest nil) is NOT externalized — it falls through to the
+    # file_system path (compile/inline, or the missing-partial error), so index
+    # mode never hides a genuinely-missing partial. For known partials the
+    # disposition is driven by the index's optional size/inline hooks:
+    #   external?(name)  -> authoritative boolean, if provided
+    #   inline?(name)    -> external = !inline?(name)
+    #   bytesize(name)   -> inline only when known and <= INLINE_BODY_MAX_BYTES
+    #   (none of these)  -> EXTERNAL: the body is not available without a fetch
+    # Small partials keep today's inline path (their body IS fetched, once).
+    def should_externalize?(name)
+      idx = @partial_index
+      return false unless idx
+      return false if index_digest(name).nil?
+      if idx.respond_to?(:external?)
+        !!idx.external?(name)
+      elsif idx.respond_to?(:inline?)
+        !idx.inline?(name)
+      elsif idx.respond_to?(:bytesize)
+        sz = idx.bytesize(name)
+        sz.nil? || sz > INLINE_BODY_MAX_BYTES
+      else
+        true
+      end
+    end
+
+    # Resolve one static partial reference: externalize (no fetch) or compile
+    # it into this artifact (today's path). Shared by every partial-scan site.
+    def handle_static_partial(name)
+      return if @partials[name]
+      if should_externalize?(name)
+        @partials[name] = { external: true, name: name, digest: index_digest(name) }
+      elsif @context&.file_system
+        compile_partial(name)
+      end
     end
 
     # Compile a partial and store it for later code generation
@@ -194,7 +261,8 @@ module LiquidIL
         partials: @partials,
         partial_names_in_progress: @partial_names_in_progress,
         hoist_data: result[:hoist],
-        pretty: @pretty
+        pretty: @pretty,
+        partial_index: @partial_index
       )
       # Share frozen array usage map so partial constants are declared in the parent proc
       ruby_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
@@ -351,9 +419,8 @@ module LiquidIL
           name = i[1]
           args = i[2] || {}
           next if args["__dynamic_name__"]
-          next unless @context&.file_system
-          next if @partials[name] && @partials[name][:compiled_body]
-          compile_partial(name)
+          next if @partials[name] && (@partials[name][:compiled_body] || @partials[name][:external])
+          handle_static_partial(name)
         end
       end
       # After all partials compiled, check if any uses cycles/captures/ifchanged
@@ -391,6 +458,10 @@ module LiquidIL
       # Generate body first so inlining info is available for partial lambdas
       body_code = generate_body  # also sets @uses_cycles, @uses_captures, @uses_ifchanged, @inlined_partials
       partial_code = generate_partial_lambdas  # skips lambda body for fully inlined partials
+
+      # Surface per-partial disposition (inline/lambda/external) + digests for
+      # composite cache keying / external prefetch. Metadata only.
+      @partial_dependencies = compute_partial_dependencies
 
       code = String.new
       has_pc = !@partial_constants.empty?
@@ -667,12 +738,12 @@ module LiquidIL
         when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
           name = inst[1]
           args = inst[2] || {}
-          # Skip dynamic/invalid/no-fs partials (handled at codegen)
+          # Skip dynamic/invalid partials (handled at codegen)
           next if args["__dynamic_name__"]
-          next unless @context&.file_system
           next if @partials[name]
-          # compile_partial will raise if mutual recursion detected
-          compile_partial(name)
+          # handle_static_partial externalizes (index mode, no fetch) or, with a
+          # file_system, compiles into this artifact (raises on mutual recursion).
+          handle_static_partial(name)
         end
       end
     end
@@ -729,7 +800,7 @@ module LiquidIL
       code << "\n  # Compiled partial lambdas\n" if @pretty
       # Forward-declare all lambda variables so mutual references work
       @partials.each do |name, info|
-        next if info[:recursive] || info[:syntax_error]
+        next if info[:recursive] || info[:syntax_error] || info[:external]
         code << "  #{partial_lambda_name(name)} = nil\n"
       end
       code << "\n"
@@ -1353,6 +1424,128 @@ module LiquidIL
       str.to_s.gsub("\n", "\\n")
     end
 
+    # Emit a call site for an EXTERNAL partial (index mode). Mirrors the
+    # lambda branch of generate_partial_call — same arg-hash build, include
+    # scope publication, with/for handling, and interrupt propagation — but
+    # routes through the render-time provider seam (_H.epc / external_partial_
+    # lambda + rpf/ipf) instead of an in-artifact lambda. @pc and the
+    # open-partial-call effect were already recorded by generate_partial_call.
+    def generate_external_partial_call(inst, indent, isolated:)
+      prefix = @indent[indent]
+      name = inst[1]
+      digest_lit = @partials[name][:digest].inspect
+      provider = "_S.partial_provider"
+      @partial_call_cycle_suffix ||= @uses_cycles ? ", _cs" : ""
+      args = inst[2] || {}
+      tag_type = isolated ? "render" : "include"
+      line_num = inst[3] || 1
+
+      with_expr = args["__with__"]
+      for_expr = args["__for__"]
+      as_alias = args["__as__"]
+      item_var = as_alias || name
+
+      code = String.new
+      code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (external)\n" if @pretty
+
+      unless isolated
+        code << "#{prefix}if _S.disable_include\n"
+        code << "#{prefix}  raise LiquidIL::RuntimeError.new(\"include usage is not allowed in this context\", file: #{@current_file_lit.inspect}, line: #{line_num})\n"
+        code << "#{prefix}else\n"
+        prefix = "  " * (indent + 1)
+      end
+
+      # include: look up with-value BEFORE keyword args mutate caller scope
+      if with_expr && !isolated
+        code << "#{prefix}__with_val__ = #{generate_var_lookup(with_expr)}\n"
+      end
+
+      code << "#{prefix}__partial_args__ = {}\n"
+      args.each do |k, v|
+        next if k.start_with?("__")
+        if v.is_a?(Hash) && v[:__var__]
+          var_path = v[:__var__]
+          expr = var_path.is_a?(Array) ? generate_var_lookup(var_path[0]) : generate_var_lookup(var_path)
+          code << "#{prefix}__partial_args__[#{k.inspect}] = #{expr}\n"
+        else
+          code << "#{prefix}__partial_args__[#{k.inspect}] = #{v.inspect}\n"
+        end
+        unless isolated
+          code << "#{prefix}_S.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
+        end
+      end
+
+      if for_expr
+        expr = generate_var_lookup(for_expr)
+        helper = isolated ? "rpf" : "ipf"
+        cycle_arg = @uses_cycles ? ", _cs" : ""
+        code << "#{prefix}__ext__ = _H.external_partial_lambda(#{provider}, #{name.inspect}, #{digest_lit}, _S)\n"
+        code << "#{prefix}if __ext__\n"
+        code << "#{prefix}  _H.#{helper}(__ext__, #{name.inspect}, #{item_var.inspect}, #{expr}, __partial_args__, _O, _S, #{line_num}#{cycle_arg})\n"
+        code << "#{prefix}else\n"
+        code << "#{prefix}  __partial_args__[#{item_var.inspect}] = #{expr}\n"
+        code << "#{prefix}  _H.execute_dynamic_partial(#{name.inspect}, __partial_args__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
+        code << "#{prefix}end\n"
+      elsif with_expr
+        if isolated
+          code << "#{prefix}__with_val__ = #{generate_var_lookup(with_expr)}\n"
+          code << "#{prefix}__partial_args__[#{item_var.inspect}] = __with_val__ unless __with_val__.nil?\n"
+          code << "#{prefix}_H.epc(#{provider}, #{name.inspect}, #{digest_lit}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
+        else
+          code << "#{prefix}if __with_val__.is_a?(Array)\n"
+          code << "#{prefix}  __with_val__.each do |_i_|\n"
+          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
+          code << "#{prefix}    _S.assign(#{item_var.inspect}, _i_)\n"
+          code << "#{prefix}    _H.epc(#{provider}, #{name.inspect}, #{digest_lit}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
+          code << "#{prefix}  end\n"
+          code << "#{prefix}else\n"
+          code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __with_val__\n"
+          code << "#{prefix}  _S.assign(#{item_var.inspect}, __with_val__)\n"
+          code << "#{prefix}  _H.epc(#{provider}, #{name.inspect}, #{digest_lit}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
+          code << "#{prefix}end\n"
+        end
+      else
+        code << "#{prefix}_H.epc(#{provider}, #{name.inspect}, #{digest_lit}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
+      end
+
+      if !isolated && @loop_depth > 0
+        code << "#{prefix}if _S.has_interrupt?\n"
+        code << "#{prefix}  break if _S.pop_interrupt == :break\n"
+        code << "#{prefix}  next\n"
+        code << "#{prefix}end\n"
+      end
+
+      unless isolated
+        code << "  " * indent << "end\n"
+      end
+
+      code
+    end
+
+    # {name => {digest:, disposition:}} for every static partial this template
+    # references. disposition: :inline / :lambda (baked into THIS artifact —
+    # its digest belongs in a composite cache key) or :external (a separate
+    # per-file artifact a host must prefetch and a provider must supply).
+    # Metadata only; computed after the body + lambdas so inline/lambda usage
+    # is settled. Never consulted by emission.
+    def compute_partial_dependencies
+      deps = {}
+      @partials.each do |name, info|
+        if info[:external]
+          disposition = :external
+        elsif @inlined_partials.include?(name)
+          disposition = :inline
+        elsif @lambda_called.include?(name)
+          disposition = :lambda
+        else
+          next
+        end
+        digest = info[:digest] || index_digest(name) || info[:source]&.hash
+        deps[name] = { digest: digest, disposition: disposition }
+      end
+      deps
+    end
+
     # Generate a partial call (render or include)
     def generate_partial_call(inst, indent, isolated:)
       @pc += 1
@@ -1367,6 +1560,12 @@ module LiquidIL
 
       if args["__dynamic_name__"]
         return generate_dynamic_partial(inst, indent, isolated: isolated)
+      end
+      # External partial (index mode): the body is not in this artifact; emit a
+      # render-time provider call. Handled before the no-file-system guard —
+      # index mode may supply partials with no file_system at all.
+      if @partials[name]&.[](:external)
+        return generate_external_partial_call(inst, indent, isolated: isolated)
       end
       if !@context&.file_system
         annot = @pretty ? "#{prefix}# #{tag_type} '#{comment_safe(name)}' (no file system)\n" : ""
@@ -3249,7 +3448,9 @@ module LiquidIL
           context: context,
           hoist_data: result[:hoist],
           pretty: pretty,
-          optimize: opts.fetch(:optimize, true)
+          optimize: opts.fetch(:optimize, true),
+          # Direct compile option wins over the context's; nil => today's path.
+          partial_index: options[:partial_index] || context&.partial_index
         )
         if options[:template_name]
           ruby_compiler.instance_variable_set(:@current_file_lit, options[:template_name])
