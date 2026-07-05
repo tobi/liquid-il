@@ -44,3 +44,4 @@ Gemfile.local
 spec/liquid_ruby_bench.rb
 parsing
 fuzz/triage/raw_export.yml
+.claude/worktrees/
