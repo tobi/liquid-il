@@ -1,0 +1,15 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_cb51acd5e73d
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 4, ref_ctx: "-1-2{\"product_na", lil_ctx:
+    "-1-2a,b,c,d813{\""}'
+  signature: 'output_mismatch::[{type: :cycle, values: [{type: :lit, value: "String"}]}]'
+  seed: 91144070
+  subprocess_confirmed: true
+template: '{% cycle "a,b,c,d813" %}'
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: a,b,c,d813

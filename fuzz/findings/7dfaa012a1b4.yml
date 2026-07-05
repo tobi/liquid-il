@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_7dfaa012a1b4
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 22, ref_ctx: "Liquid error: divided by",
+    lil_ctx: "Liquid error (line 9): d"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :output, expr: {type: :filter, target: {type: :filter, name: "truncate",
+    args: [{}]}, name: "url_decode"}}]}]'
+  seed: 806299091
+  subprocess_confirmed: true
+template: "{% for value in (nil..nil) %}{{ nil | truncate: nil | url_decode }}{% endfor
+  %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): invalid integer'

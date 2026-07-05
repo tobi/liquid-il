@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_efadb326a6aa
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "trueLiquid e", lil_ctx:
+    "  padded  Li"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: ">",
+    left: {type: :lit, value: "String"}, right: {type: :chain, base: "id"}}}]}]'
+  seed: 122460401
+  subprocess_confirmed: true
+template: '{% if "café" > product %}{% endif %}'
+environment:
+  product: 0
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): comparison of String with 0 failed'

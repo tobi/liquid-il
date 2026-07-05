@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_35db9f49f693
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 75, ref_ctx: \"904}emoji \U0001F600\\n[0]-1price:
+    \", lil_ctx: \"904}emoji \U0001F600\\nnull[0]-1pri\"}"
+  signature: 'output_mismatch::[{type: :case, whens: [{body: [{type: :output, expr:
+    {type: :filter, name: "json"}}]}]}]'
+  seed: 1356063251
+  subprocess_confirmed: true
+template: "{% case nil %}{% when nil %}{{ nil | json }}{% endcase %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'null'

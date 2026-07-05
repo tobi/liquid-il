@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_ff001cb22e82
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: rule=parse_disagreement detail=reference syntax_error=false liquidil syntax_error=true
+  signature: 'parse_disagreement::Liquid syntax error: Syntax Error in ''cy'
+  seed: 914869856
+  subprocess_confirmed: true
+template: "{% cycle  %}"
+environment: {}
+expected:
+complexity: 100
+_liquidil_actual: ''
+_reference_error: 'Liquid::SyntaxError: Liquid syntax error: Syntax Error in ''cycle''
+  - Valid syntax: cycle [name :] var [, var2, var3 ...] in ""'

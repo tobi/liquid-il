@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_2c93a9bc5d55
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 93, ref_ctx: \"1emoji \U0001F600\\n0.0}0>=\\\"a\\\"
+    ,esl\", lil_ctx: \"1emoji \U0001F600\\n0.0[\\\"}\\\",\\\"0\\\",\\\">\\\"\"}"
+  signature: 'output_mismatch::[{type: :if, else_body: [{type: :assign, name: "id",
+    expr: {type: :filter, name: "append"}}]}]'
+  seed: 628217479
+  subprocess_confirmed: true
+template: "{% if false %}{% else %}{% assign config = nil | append %}{% endif %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): wrong number of arguments (given 1, expected
+  2)'

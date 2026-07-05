@@ -1,0 +1,19 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_1d217bf59027
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: LiquidIL direct render disagreed with its own to_artifact -> Artifact.load
+    -> render roundtrip for the identical (template, environment) -- a serializer/codegen
+    bug, independent of reference liquid.
+  signature: 'artifact::[{type: :include, name: "id"}]'
+  seed: 55250430
+template: '{% include "footer" %}'
+environment: {}
+expected: 'Liquid error (line 1): Could not find asset footer'
+complexity: 100
+filesystem:
+  card: |-
+    {{- item[item[item[item[-0.5].title]]].count -}}{{ item.first }}{% if item.size contains item.id %}{% case 0.0 %}{% when item, item.count %}{% for elem in item %}{% endfor %}{% endcase %}stray { brace
+    {% elsif 4611686018427387904 == item.price %}{% endif %}
+_liquidil_actual: 'Liquid error (line 1): This liquid context does not allow includes.'

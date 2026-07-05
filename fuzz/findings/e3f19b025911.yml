@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_e3f19b025911
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 12, ref_ctx: "Liquid error: divided by",
+    lil_ctx: "Liquid error (line 4): d"}'
+  signature: 'output_mismatch::[{type: :case, whens: [{body: [{type: :cycle, values:
+    [{type: :lit, value: "FalseClass"}]}]}]}]'
+  seed: 758557153
+  subprocess_confirmed: true
+template: "{% case nil %}{% when nil %}{% cycle false %}{% endcase %}"
+environment: {}
+expected: 'false'
+complexity: 100
+_liquidil_actual: ''

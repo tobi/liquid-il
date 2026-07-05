@@ -1,0 +1,19 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_91f5377ca45d
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: LiquidIL direct render disagreed with its own to_artifact -> Artifact.load
+    -> render roundtrip for the identical (template, environment) -- a serializer/codegen
+    bug, independent of reference liquid.
+  signature: 'artifact::[{type: :render, name: "id"}]'
+  seed: 1367081837
+template: '{% render "aside" %}'
+environment: {}
+expected: 'Liquid syntax error (aside line 1): Unterminated string at position 0'
+complexity: 100
+filesystem:
+  aside: |-
+    {{ nil }}{% case -0.5 %}{% when "a,b,c,d" %}{{ "{{ not_a_tag }}589" | times: 0.0 | uniq }}{% when false, false %}50% off
+    {% endcase %}{% if nil > -1 %}{% assign data = 1.5 | append: true | url_encode %}{% elsif 3.14159 != true %}{% elsif true contains 1 %}{% else %}{% endif %}
+_liquidil_actual: 'Liquid error (line 1): This liquid context does not allow includes.'

@@ -1,0 +1,19 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_0787670ec1db
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 22, ref_ctx: "Liquid error: comparison",
+    lil_ctx: "Liquid error (line 1): c"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :lit, value:
+    "Float"}, body: [{type: :unless, branches: [{cond: {type: :binop, op: ">=", left:
+    {type: :lit, value: "Integer"}, right: {type: :chain, base: "id"}}}]}]}]}]'
+  seed: 388455117
+  subprocess_confirmed: true
+template: "{% if 0.0 %}{% unless -4611686018427387904 >= x %}{% endunless %}{% endif
+  %}"
+environment:
+  x: "{{ not_a_tag }}"
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): comparison of Integer with String failed'

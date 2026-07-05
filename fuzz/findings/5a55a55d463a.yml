@@ -1,0 +1,21 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_5a55a55d463a
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 130, ref_ctx: "Liquid error: invalid
+    in", lil_ctx: "Liquid error (row line 1"}'
+  signature: 'output_mismatch::[{type: :case, whens: [{values: [{}, {}], body: [{type:
+    :liquid_block, lines: [{type: :echo, expr: {type: :chain, base: "id"}}]}]}]}]'
+  seed: 787553212
+  subprocess_confirmed: true
+template: |-
+  {% case nil %}{% when nil, nil %}{% liquid
+  echo a
+  %}{% endcase %}
+environment:
+  a:
+  - {}
+expected: "{}{}"
+complexity: 100
+_liquidil_actual: "{}"

@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_3218f6e68c99
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 80, ref_ctx: "ce\ncafé 日本語\n日本語こんにちは<div",
+    lil_ctx: "ce\ncafé 日本語\n{\"key_40\" =>"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :cycle, values: [{type: :chain, accessors: [{bracket: {type: :chain, base:
+    "id"}}]}]}]}]'
+  seed: 1701729969
+  subprocess_confirmed: true
+template: "{% for elem in (nil..nil) %}{% cycle [forloop] %}{% endfor %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: ForloopDrop

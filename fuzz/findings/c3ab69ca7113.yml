@@ -1,0 +1,22 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_c3ab69ca7113
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "price: $9.99", lil_ctx:
+    "Liquid error"}'
+  signature: 'output_mismatch::[{type: :capture, name: "id", body: [{type: :render,
+    name: "id"}]}]'
+  seed: 689471276
+  subprocess_confirmed: true
+template: '{% capture list %}{% render "item_partial" %}{% endcapture %}'
+environment: {}
+expected: ''
+complexity: 100
+filesystem:
+  item_partial: |-
+    {% for row in (10..14) reversed limit: 1 %}{% liquid
+    echo -1 | uniq | downcase | rstrip
+    assign count = -317 | strip_newlines | remove: nil | truncate: value[count.count[false]], forloop.count
+    %}{%- if user.last[forloop[forloop]] contains false -%}{{ row[forloop.rindex][1] | truncatewords: true, data[true].price | capitalize | default: false }}{% elsif y[forloop.index] contains row.name and forloop[row][count] and row %}{% elsif 3.14159 != forloop.count.name %}{% else %}{% endif %}{% endfor %}{% for item in (11..21) reversed %}{{ nil | modulo: false | json }}{% endfor %}
+_liquidil_actual: 'Liquid error (line 1): no implicit conversion of String into Integer'

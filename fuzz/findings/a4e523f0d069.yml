@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_a4e523f0d069
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 12, ref_ctx: "Liquid error: divided by",
+    lil_ctx: "Liquid error (line 1): i"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :if, branches: [{cond: {type: :chain, accessors: [{bracket: {type: :chain,
+    base: "id", accessors: [{dot: "id"}]}}]}}]}]}]'
+  seed: 26837099
+  subprocess_confirmed: true
+template: "{% for node in (nil..nil) %}{% if [node.title] %}{% endif %}{% endfor %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): no implicit conversion of String into Integer'

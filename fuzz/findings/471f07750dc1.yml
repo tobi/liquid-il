@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_471f07750dc1
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 33, ref_ctx: "Liquid error: invalid in",
+    lil_ctx: "Liquid error (line 4): i"}'
+  signature: 'output_mismatch::[{type: :cycle, values: [{type: :chain, accessors:
+    [{bracket: {type: :lit, value: "Float"}}]}]}]'
+  seed: 888801313
+  subprocess_confirmed: true
+template: "{% cycle [3.14159] %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: '3.14159'

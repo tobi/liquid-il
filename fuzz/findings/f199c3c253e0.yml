@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_f199c3c253e0
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 1, ref_ctx: "0stray { brac", lil_ctx:
+    "0<tr class=\"r"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: ">=",
+    left: {type: :chain, base: "id"}, right: {type: :chain, base: "id"}}, body: [{type:
+    :for, var: "id", coll: {type: :range}, body: [{type: :case, whens: [{values: [{type:
+    :chain, base: "id", accessors: [{dot: "id"}]}]}]}]}]}]}]'
+  seed: 84747081
+  subprocess_confirmed: true
+template: "{% if user >= user %}{% for node in (nil..nil) %}{% case nil %}{% when
+  node.count %}{% endcase %}{% endfor %}{% endif %}"
+environment:
+  user: -4611686018427387904
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): no implicit conversion of String into Integer'

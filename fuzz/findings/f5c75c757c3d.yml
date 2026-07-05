@@ -1,0 +1,19 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_f5c75c757c3d
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 16, ref_ctx: "y % percent\n135791113Liq",
+    lil_ctx: "y % percent\nForloopDropF"}'
+  signature: 'output_mismatch::[{type: :case, whens: [{values: [{type: :chain, base:
+    "id", accessors: [{bracket: {type: :lit, value: "Integer"}}]}], body: [{type:
+    :raw, text: "id"}]}]}]'
+  seed: 815755504
+  subprocess_confirmed: true
+template: "{% case nil %}{% when nums[0] %}tab\there\n{% endcase %}"
+environment:
+  nums:
+    '0': true
+expected: "tab\there\n"
+complexity: 100
+_liquidil_actual: ''

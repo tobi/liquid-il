@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_d355b9673bbf
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 43, ref_ctx: \"1\\\">\\n</tr>\\n  0.0\\nemoji
+    \U0001F600\\n\", lil_ctx: \"1\\\">\\n</tr>\\n  null0.00.0\\ne\"}"
+  signature: 'output_mismatch::[{type: :if, else_body: [{type: :output, expr: {type:
+    :filter, name: "truncatewords", args: [{}]}}]}]'
+  seed: 1712445476
+  subprocess_confirmed: true
+template: "{% if false %}{% else %}{{ nil | truncatewords: nil }}{% endif %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): invalid integer'

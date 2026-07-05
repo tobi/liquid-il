@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_fefb34804d54
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 11, ref_ctx: "-1café 日本語\n", lil_ctx:
+    "-1café 日本語\nLiquid error"}'
+  signature: 'output_mismatch::[{type: :unless, branches: [{body: [{type: :if, branches:
+    [{cond: {type: :binop, op: "<=", left: {type: :chain, base: "id"}, right: {type:
+    :lit, value: "Integer"}}}]}]}]}]'
+  seed: 1347407157
+  subprocess_confirmed: true
+template: "{% unless nil %}{% if list <= -65 %}{% endif %}{% endunless %}"
+environment:
+  list: quote"inside
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): comparison of String with -65 failed'

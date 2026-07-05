@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_9b3c206aee37
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 40, ref_ctx: "rkup</div>\n0", lil_ctx:
+    "rkup</div>\n0null"}'
+  signature: 'output_mismatch::[{type: :assign, name: "id", expr: {type: :filter,
+    name: "json"}}, {type: :output, expr: {type: :filter, name: "default", args: [{type:
+    :chain, base: "id"}]}}]'
+  seed: 432026307
+  subprocess_confirmed: true
+template: "{% assign data = nil | json %}{{ nil | default: data }}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'null'

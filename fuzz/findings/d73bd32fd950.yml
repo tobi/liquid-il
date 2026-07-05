@@ -1,0 +1,19 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_d73bd32fd950
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 22, ref_ctx: "ART_99_END2450% off\nfals",
+    lil_ctx: "ART_99_END24PRICE_START_"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :unless, branches: [{body: [{type: :cycle, values: [{type: :chain, base:
+    "id", accessors: [{bracket: {}}]}]}]}]}]}]'
+  seed: 1168410374
+  subprocess_confirmed: true
+template: "{% for node in (nil..nil) %}{% unless nil %}{% cycle values[nil] %}{% endunless
+  %}{% endfor %}"
+environment:
+  values: -0.5
+expected: ''
+complexity: 100
+_liquidil_actual: "-0.5"

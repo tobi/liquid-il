@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_cb0d2f8ab7b6
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 13, ref_ctx: "Liquid error: divided by",
+    lil_ctx: "Liquid error (line 2): d"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: "contains",
+    left: {type: :chain, accessors: [{bracket: {type: :chain, accessors: [{bracket:
+    {type: :lit, value: "String"}}]}}]}}}, {body: [{type: :for, var: "id", body: [{type:
+    :if, branches: [{body: [{type: :echo}]}]}]}]}]}]'
+  seed: 332830335
+  subprocess_confirmed: true
+template: |-
+  {% if [["line1
+  line2"]] contains nil %}{% elsif nil %}{% for row in nil %}{% if nil %}{% echo nil %}{% endif %}{% endfor %}{% endif %}
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): Unknown operator line2"]]'

@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_e3ce6baf6527
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 34, ref_ctx: "arkup</div>\n50% off\nfals",
+    lil_ctx: "arkup</div>\n{\"product_na"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: "<",
+    left: {type: :chain, accessors: [{bracket: {type: :chain, accessors: [{bracket:
+    {type: :chain, accessors: [{bracket: {type: :chain, accessors: [{bracket: {type:
+    :lit, value: "String"}}]}}]}}]}}]}}, body: [{type: :cycle}]}]}]'
+  seed: 1707577364
+  subprocess_confirmed: true
+template: '{% if [[[["{{ not_a_tag }}"]]]] < nil %}{% cycle "" %}{% endif %}'
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): Unknown operator not_a_tag'

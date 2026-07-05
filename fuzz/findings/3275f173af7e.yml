@@ -1,0 +1,15 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_3275f173af7e
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 511, ref_ctx: "ray { brace\n3.141593.141",
+    lil_ctx: "ray { brace\n[3.14159, [["}'
+  signature: 'output_mismatch::[{type: :cycle, values: [{type: :lit, value: "FalseClass"}]}]'
+  seed: 1385882320
+  subprocess_confirmed: true
+template: "{% cycle false %}"
+environment: {}
+expected: 'false'
+complexity: 100
+_liquidil_actual: ''

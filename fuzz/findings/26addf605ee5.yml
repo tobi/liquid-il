@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_26addf605ee5
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "", lil_ctx: "Liquid error"}'
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, target: {type:
+    :filter, target: {type: :filter, name: "truncatewords", args: [{}]}, name: "last"},
+    name: "compact"}}]'
+  seed: 2144939031
+  subprocess_confirmed: true
+template: "{{ nil | truncatewords: nil | last | compact }}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): invalid integer'

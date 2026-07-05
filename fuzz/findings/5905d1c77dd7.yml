@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_5905d1c77dd7
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 18, ref_ctx: "本語\n0café 日本語\n8false0café",
+    lil_ctx: "本語\n0café 日本語8false0café "}'
+  signature: 'output_mismatch::[{type: :raw_tag, text: "id"}, {type: :for, var: "id",
+    ws: true}]'
+  seed: 111833731
+  subprocess_confirmed: true
+template: |-
+  {% raw %}café 日本語
+  {% endraw %}{%- for elem in nil -%}{% endfor %}
+environment: {}
+expected: 'café 日本語
+
+  '
+complexity: 100
+_liquidil_actual: café 日本語

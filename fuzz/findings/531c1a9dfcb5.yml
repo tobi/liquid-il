@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_531c1a9dfcb5
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 26, ref_ctx: "1415161718-15false2false",
+    lil_ctx: "1415161718-1ForloopDrop8"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :chain, base:
+    "id"}, body: [{type: :if, branches: [{cond: {type: :chain, base: "id"}, body:
+    [{type: :cycle, values: [{type: :lit, value: "FalseClass"}]}]}]}]}]'
+  seed: 2119625034
+  subprocess_confirmed: true
+template: "{% for row in c %}{% if forloop %}{% cycle false %}{% endif %}{% endfor
+  %}"
+environment:
+  c:
+    key_24: []
+expected: 'false'
+complexity: 100
+_liquidil_actual: ''

@@ -1,0 +1,19 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_7eafce296fe0
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 20, ref_ctx: "018427387904-46116860184",
+    lil_ctx: "018427387904True"}'
+  signature: 'output_mismatch::[{type: :case, whens: [{values: [{}, {}], body: [{type:
+    :liquid_block, lines: [{type: :echo, expr: {type: :lit, value: "Integer"}}]}]}]}]'
+  seed: 1020295461
+  subprocess_confirmed: true
+template: |-
+  {% case nil %}{% when nil, nil %}{% liquid
+  echo -4611686018427387904
+  %}{% endcase %}
+environment: {}
+expected: "-4611686018427387904-4611686018427387904"
+complexity: 100
+_liquidil_actual: "-4611686018427387904"

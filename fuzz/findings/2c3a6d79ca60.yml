@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_2c3a6d79ca60
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 14, ref_ctx: "0-0.5true0.0falseLiquid
+    ", lil_ctx: "0-0.5true0.0Liquid error"}'
+  signature: 'output_mismatch::[{type: :case, whens: [{values: [{}, {}], body: [{type:
+    :output, expr: {type: :lit, value: "TrueClass"}}]}]}]'
+  seed: 953330229
+  subprocess_confirmed: true
+template: "{% case nil %}{% when nil, nil %}{{ true }}{% endcase %}"
+environment: {}
+expected: truetrue
+complexity: 100
+_liquidil_actual: 'true'

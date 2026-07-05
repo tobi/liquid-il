@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_edca88f0ac4a
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 49, ref_ctx: \"ere\\n1emoji \U0001F600\\n1.5\",
+    lil_ctx: \"ere\\n1emoji \U0001F6001.5\"}"
+  signature: 'output_mismatch::[{type: :if, else_body: [{type: :raw_tag, text: "id"},
+    {type: :for, var: "id", ws: true}]}]'
+  seed: 103483827
+  subprocess_confirmed: true
+template: "{% if false %}{% else %}{% raw %}emoji \U0001F600\n{% endraw %}{%- for
+  item in nil -%}{% endfor %}{% endif %}"
+environment: {}
+expected: "emoji \U0001F600\n"
+complexity: 100
+_liquidil_actual: "emoji \U0001F600"

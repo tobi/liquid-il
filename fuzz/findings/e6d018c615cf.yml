@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_e6d018c615cf
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 46, ref_ctx: "Liquid error: invalid in",
+    lil_ctx: "Liquid error (line 3): i"}'
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, target: {type:
+    :filter, name: "json"}, name: "escape"}}]'
+  seed: 27312723
+  subprocess_confirmed: true
+template: "{{ nil | json | escape }}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'null'

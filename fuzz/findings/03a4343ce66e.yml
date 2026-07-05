@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_03a4343ce66e
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: rule=parse_disagreement detail=reference syntax_error=true liquidil syntax_error=false
+  signature: parse_disagreement::unexpected_id
+  seed: 1917206791
+  subprocess_confirmed: true
+template: "{% if nil %}{% if nil  nil %}{% endif %}{% endif %}"
+environment: {}
+expected:
+complexity: 100
+_liquidil_actual: ''
+_reference_error: 'Liquid::SyntaxError: Liquid syntax error: Expected end_of_string
+  but found id in "nil  nil"'

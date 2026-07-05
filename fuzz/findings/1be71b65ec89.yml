@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_1be71b65ec89
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: rule=parse_disagreement detail=reference syntax_error=true liquidil syntax_error=false
+  signature: 'parse_disagreement::Liquid syntax error: [:pipe, "|"] is not'
+  seed: 992445706
+  subprocess_confirmed: true
+template: "{{ nil | replace:  | minus }}"
+environment: {}
+expected:
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): wrong number of arguments (given 1, expected
+  2..3)'
+_reference_error: 'Liquid::SyntaxError: Liquid syntax error: [:pipe, "|"] is not a
+  valid expression in "{{ nil | replace:  | minus }}"'

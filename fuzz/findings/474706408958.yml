@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_474706408958
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "hello0{}0tab", lil_ctx:
+    "Liquid error"}'
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, target: {type:
+    :filter, name: "json"}, name: "size"}}]'
+  seed: 1002702255
+  subprocess_confirmed: true
+template: "{{ nil | json | size }}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: '4'

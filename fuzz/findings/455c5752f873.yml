@@ -1,0 +1,21 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_455c5752f873
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "price: $9.99", lil_ctx:
+    "_S_marker_st"}'
+  signature: 'output_mismatch::[{type: :assign, name: "id", expr: {type: :filter,
+    name: "json"}}, {type: :for, var: "id", coll: {type: :chain, base: "id"}, body:
+    [{type: :raw, text: "id"}]}]'
+  seed: 1122618194
+  subprocess_confirmed: true
+template: |-
+  {% assign a = nil | json %}{% for row in a %}stray { brace
+  {% endfor %}
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'stray { brace
+
+  '

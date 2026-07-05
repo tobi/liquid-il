@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_0b09309c4048
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 20, ref_ctx: "01842738790450% off\n",
+    lil_ctx: "018427387904-46116860184"}'
+  signature: 'output_mismatch::[{type: :cycle, values: [{type: :chain, accessors:
+    [{bracket: {type: :lit, value: "String"}}]}]}]'
+  seed: 1315831483
+  subprocess_confirmed: true
+template: '{% cycle ["日本語こんにちは"] %}'
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 日本語こんにちは

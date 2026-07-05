@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_8bcc70fe6a41
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: rule=parse_disagreement detail=reference syntax_error=true liquidil syntax_error=false
+  signature: parse_disagreement::unterminated_tag_markup
+  seed: 2113871560
+  subprocess_confirmed: true
+template: '{{ ["{% not_a_tag %}34"] | ceil | url_encode | uniq }}'
+environment: {}
+expected:
+complexity: 100
+_liquidil_actual: '["0"]'
+_reference_error: 'Liquid::SyntaxError: Liquid syntax error: Variable ''{{ ["{% not_a_tag
+  %}'' was not properly terminated with regexp: /\}\}/'

@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_6df9451ad69d
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 13, ref_ctx: "rice: $9.99\ntrue-1Hello,",
+    lil_ctx: "rice: $9.99\n-1Hello, Wor"}'
+  signature: 'output_mismatch::[{type: :raw, text: "id"}, {type: :comment}, {type:
+    :if, branches: [{}], ws: true}]'
+  seed: 510837209
+  subprocess_confirmed: true
+template: "tab\there\n{% comment %}{% endcomment %}{%- if nil -%}{% endif %}"
+environment: {}
+expected: "tab\there\n"
+complexity: 100
+_liquidil_actual: "tab\there"

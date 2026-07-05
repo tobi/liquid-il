@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_dae6f584e107
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "日本語こんにちは日本語こ", lil_ctx:
+    "Liquid error"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :cycle, values: [{type: :chain, base: "id"}]}]}]'
+  seed: 1338773453
+  subprocess_confirmed: true
+template: "{% for node in (nil..nil) %}{% cycle forloop %}{% endfor %}"
+environment: {}
+expected: Liquid::ForloopDrop
+complexity: 100
+_liquidil_actual: ForloopDrop

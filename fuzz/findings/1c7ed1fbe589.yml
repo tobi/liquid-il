@@ -1,0 +1,19 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_1c7ed1fbe589
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 7, ref_ctx: "3.141593.141593.141", lil_ctx:
+    "3.14159Liquid error"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: "<=",
+    left: {type: :chain, accessors: [{bracket: {type: :chain, accessors: [{bracket:
+    {type: :lit, value: "String"}}]}}]}}, body: [{type: :for, var: "id", body: [{type:
+    :for, var: "id", body: [{type: :raw, text: "id"}]}]}]}]}]'
+  seed: 1988898695
+  subprocess_confirmed: true
+template: "{% if [[\"Hello, World!535\"]] <= nil %}{% for node in nil %}{% for entry
+  in nil %}emoji \U0001F600\n{% endfor %}{% endfor %}{% endif %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): Unknown operator World!535"]]'

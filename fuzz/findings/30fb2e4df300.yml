@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_30fb2e4df300
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 26, ref_ctx: "y % percent\ntruetrueHell",
+    lil_ctx: "y % percent\nLiquid error"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :for, var: "id", coll: {type: :chain, base: "id"}, body: [{type: :echo,
+    expr: {type: :filter, name: "truncatewords", args: [{}]}}]}]}]'
+  seed: 108924910
+  subprocess_confirmed: true
+template: "{% for entry in (nil..nil) %}{% for node in forloop %}{% echo nil | truncatewords:
+  nil %}{% endfor %}{% endfor %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): invalid integer'

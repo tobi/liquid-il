@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_9b7d756705b5
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 13, ref_ctx: "tray { brace\n3.14159tab\t",
+    lil_ctx: "tray { brace3.14159tab\th"}'
+  signature: 'output_mismatch::[{type: :raw_tag, text: "id"}, {type: :if, else_body:
+    [], ws: true}]'
+  seed: 1872193455
+  subprocess_confirmed: true
+template: |-
+  {% raw %}stray { brace
+  {% endraw %}{%- if false -%}{% else %}{% endif %}
+environment: {}
+expected: 'stray { brace
+
+  '
+complexity: 100
+_liquidil_actual: stray { brace

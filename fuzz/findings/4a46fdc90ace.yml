@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_4a46fdc90ace
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 15, ref_ctx: \"ji \U0001F600\\n50% off\\n
+    tab\\there\\nc\", lil_ctx: \"ji \U0001F600\\n50% off tab\\there\\nca\"}"
+  signature: 'output_mismatch::[{type: :case, else_body: [{type: :raw_tag, text: "id"},
+    {type: :output, ws: true}]}]'
+  seed: 101308294
+  subprocess_confirmed: true
+template: |-
+  {% case nil %}{% else %}{% raw %}50% off
+  {% endraw %}{{- nil -}}{% endcase %}
+environment: {}
+expected: '50% off
+
+  '
+complexity: 100
+_liquidil_actual: 50% off

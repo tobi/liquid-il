@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_a5223b0ae001
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 19, ref_ctx: "01842738790401.5[\"0\"]5ta",
+    lil_ctx: "018427387904[\"0\"]1.5[\"0\""}'
+  signature: 'output_mismatch::[{type: :unless, branches: [{body: [{type: :liquid_block,
+    lines: [{type: :assign, name: "id", expr: {type: :filter, name: "sort"}}]}]}]},
+    {type: :cycle, values: [{type: :chain, base: "id"}]}]'
+  seed: 706754130
+  subprocess_confirmed: true
+template: |-
+  {% unless nil %}{% liquid
+  assign z = nil | sort
+  %}{% endunless %}{% cycle z %}
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: "[]"

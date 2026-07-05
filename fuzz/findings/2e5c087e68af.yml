@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_2e5c087e68af
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 9, ref_ctx: "0-1true-1\n日本語こんにちは211",
+    lil_ctx: "0-1true-1日本語こんにちは211c"}'
+  signature: 'output_mismatch::[{type: :raw_tag, text: "id"}, {type: :echo, ws: true}]'
+  seed: 1218682849
+  subprocess_confirmed: true
+template: |-
+  {% raw %}
+  {% endraw %}{%- echo nil -%}
+environment: {}
+expected: "\n"
+complexity: 100
+_liquidil_actual: ''

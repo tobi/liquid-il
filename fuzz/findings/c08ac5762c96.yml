@@ -1,0 +1,15 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_c08ac5762c96
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 7, ref_ctx: "a,b,c,d\n", lil_ctx: "a,b,c,dnull\n"}'
+  signature: 'output_mismatch::[{type: :echo, expr: {type: :filter, target: {type:
+    :filter, name: "json"}, name: "lstrip"}}]'
+  seed: 3108773
+  subprocess_confirmed: true
+template: "{% echo nil | json | lstrip %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'null'
