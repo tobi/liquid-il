@@ -98,7 +98,9 @@ end
 def compile(source, options)
   ctx = LiquidIL::Context.new
   ctx = LiquidIL::Optimizer.optimize(ctx) if options[:optimize]
-  ctx.parse(source)
+  # The CLI shows compiled_source to humans — emit readable indentation and
+  # comments (the production default strips both).
+  ctx.parse(source, pretty: true)
 end
 
 def cmd_render(input, env, options)

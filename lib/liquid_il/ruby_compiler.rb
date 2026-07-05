@@ -46,13 +46,25 @@ module LiquidIL
 
     # Cached indent strings to avoid repeated "  " * n allocations
     INDENT = Array.new(20) { |i| ("  " * i).freeze }.freeze
+    # Production (non-pretty) indent table: every level is "". compact_source
+    # strips all leading whitespace before the ISeq is compiled, so emitted
+    # indentation is pure human-readable formatting — skipping it avoids the
+    # per-line string building and the loop-body re-indent gsubs. Same length as
+    # INDENT so any INDENT[indent+k] index resolves identically.
+    EMPTY_INDENT = Array.new(20) { "" }.freeze
 
-    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil, hoist_data: nil)
+    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil, hoist_data: nil, pretty: false)
       @instructions = instructions
       @context = context
       # Optimizer-provided hoisted-lookup census [counts, written, blocked],
       # or nil to fall back to a fresh IL walk (compute_hoisted_lookups).
       @hoist_data = hoist_data
+      # Pretty mode emits human-readable indentation and comments into the
+      # generated source (for compiled_source / bin/liquidil). The production
+      # default skips both — compact_source discards them before the ISeq is
+      # built, so the compiled proc is byte-identical either way.
+      @pretty = pretty
+      @indent = pretty ? INDENT : EMPTY_INDENT
       @loop_depth = 0 # Track nested loop depth for parentloop support
       # Compile-time current file (nil for the main template, the partial
       # name inside partial compilations — see compile_partial). Baked into
@@ -173,7 +185,8 @@ module LiquidIL
         context: @context,
         partials: @partials,
         partial_names_in_progress: @partial_names_in_progress,
-        hoist_data: result[:hoist]
+        hoist_data: result[:hoist],
+        pretty: @pretty
       )
       # Share frozen array usage map so partial constants are declared in the parent proc
       ruby_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
@@ -279,7 +292,10 @@ module LiquidIL
     end
 
     def partial_lambda_name(name)
-      "__partial_#{name.gsub(/[^a-zA-Z0-9_]/, '_')}__"
+      @@partial_lambda_names[name] ||= begin
+        @@partial_lambda_names.clear if @@partial_lambda_names.size >= PARTIAL_LAMBDA_NAME_MAX
+        "__partial_#{name.gsub(/[^a-zA-Z0-9_]/, '_')}__"
+      end
     end
 
     private
@@ -623,7 +639,7 @@ module LiquidIL
       required = @lambda_called
 
       code = String.new
-      code << "\n  # Compiled partial lambdas\n"
+      code << "\n  # Compiled partial lambdas\n" if @pretty
       # Forward-declare all lambda variables so mutual references work
       @partials.each do |name, info|
         next if info[:recursive] || info[:syntax_error]
@@ -686,6 +702,10 @@ module LiquidIL
     # rewrite the body against an isolated __partial_scope__ with direct
     # temp-variable access for the passed args.
     def indent_partial_body(body, spaces, assign_keys: [], arg_expressions: nil)
+      # The indentation is cosmetic (compact_source strips it); only the
+      # arg_expressions rewrites below are semantic. Outside pretty mode treat
+      # the splice as unindented — the line-by-line re-indent is skipped.
+      spaces = 0 unless @pretty
       indent = " " * spaces
       cache_key = [body.hash, assign_keys.sort, spaces, arg_expressions&.hash]
       cached = INDENT_PARTIAL_BODY_CACHE_MUTEX.synchronize { @@indent_partial_body_cache[cache_key] }
@@ -708,8 +728,9 @@ module LiquidIL
           body = code_gsub(body, "__partial_scope__.lookup(#{key.inspect})", temp_var)
         end
       end
-      result = body.lines.map { |l| l.strip.empty? ? l : "#{indent}#{l}" }.join
+      result = spaces.zero? ? body : body.lines.map { |l| l.strip.empty? ? l : "#{indent}#{l}" }.join
       INDENT_PARTIAL_BODY_CACHE_MUTEX.synchronize { @@indent_partial_body_cache[cache_key] = result }
+      result
     end
 
     # Generate the template body
@@ -836,7 +857,7 @@ module LiquidIL
       inst = @instructions[@pc]
       return nil if inst.nil?
 
-      prefix = INDENT[indent]
+      prefix = @indent[indent]
 
       case inst[0]
       when IL::HALT
@@ -927,11 +948,11 @@ module LiquidIL
       when IL::ASSIGN
         @pc += 1
         # Need to look back for the expression
-        "#{prefix}# assign #{inst[1]} (complex)\n"
+        @pretty ? "#{prefix}# assign #{inst[1]} (complex)\n" : ""
 
       when IL::ASSIGN_LOCAL
         @pc += 1
-        "#{prefix}# assign_local #{inst[1]} (complex)\n"
+        @pretty ? "#{prefix}# assign_local #{inst[1]} (complex)\n" : ""
 
       when IL::INCREMENT
         @pc += 1
@@ -1112,13 +1133,13 @@ module LiquidIL
       when :SHOPIFY_SECTION_RENDER
         @pc += 1
         record_open_partial_call
-        "#{INDENT[indent]}_H.render_shopify_section(#{inst[1].inspect}, _O, _S, #{@current_file_lit.inspect})\n"
+        "#{@indent[indent]}_H.render_shopify_section(#{inst[1].inspect}, _O, _S, #{@current_file_lit.inspect})\n"
 
       when :PAGINATE_SETUP
         @pc += 1
         coll_path = inst[1]
         page_size = inst[2]
-        prefix = INDENT[indent]
+        prefix = @indent[indent]
         # Generate runtime paginate setup using helper method
         parts = coll_path.split(".")
         lookup = scope_lookup(parts[0])
@@ -1144,7 +1165,7 @@ module LiquidIL
     # Build expression until we hit STORE_TEMP
     # Generate an expression statement (expression followed by WRITE_VALUE or ASSIGN)
     def generate_expression_statement(indent)
-      prefix = INDENT[indent]
+      prefix = @indent[indent]
       @temp_assignments = nil
 
       # build_expression now returns Ruby string directly (not Expr)
@@ -1224,7 +1245,7 @@ module LiquidIL
     def generate_partial_call(inst, indent, isolated:)
       @pc += 1
       record_open_partial_call unless isolated
-      prefix = INDENT[indent]
+      prefix = @indent[indent]
       name = inst[1]
       # Cycle state suffix: only include if any partial uses cycles
       @partial_call_cycle_suffix ||= @uses_cycles ? ", _cs" : ""
@@ -1236,8 +1257,8 @@ module LiquidIL
         return generate_dynamic_partial(inst, indent, isolated: isolated)
       end
       if !@context&.file_system
-        return "#{prefix}# #{tag_type} '#{comment_safe(name)}' (no file system)\n" \
-               "#{prefix}_O << #{lit("Liquid error (line #{line_num}): This liquid context does not allow includes.")}\n"
+        annot = @pretty ? "#{prefix}# #{tag_type} '#{comment_safe(name)}' (no file system)\n" : ""
+        return "#{annot}#{prefix}_O << #{lit("Liquid error (line #{line_num}): This liquid context does not allow includes.")}\n"
       end
 
       # Missing/syntax-error partials use dynamic execution to surface the
@@ -1245,7 +1266,7 @@ module LiquidIL
       if @partials[name]&.[](:missing) || @partials[name]&.[](:syntax_error)
         code = String.new
         reason = @partials[name]&.[](:missing) ? "missing" : "syntax error"
-        code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (#{reason})\n"
+        code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (#{reason})\n" if @pretty
         code << "#{prefix}__dyn_assigns__ = {}\n"
         code << "#{prefix}_H.execute_dynamic_partial(#{name.inspect}, __dyn_assigns__, _O, _S, isolated: #{isolated}, tag_type: #{tag_type.inspect}, caller_line: #{line_num})\n"
         return code
@@ -1254,7 +1275,7 @@ module LiquidIL
       # Recursive partials use runtime resolution
       if @partials[name]&.[](:recursive)
         code = String.new
-        code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (recursive — runtime resolution)\n"
+        code << "#{prefix}# #{tag_type} '#{comment_safe(name)}' (recursive — runtime resolution)\n" if @pretty
         code << "#{prefix}__dyn_assigns__ = {}\n"
         args.each do |k, v|
           next if k.start_with?("__")
@@ -1275,7 +1296,7 @@ module LiquidIL
 
       lambda_name = partial_lambda_name(name)
       code = String.new
-      code << "#{prefix}# #{tag_type} '#{comment_safe(name)}'\n"
+      code << "#{prefix}# #{tag_type} '#{comment_safe(name)}'\n" if @pretty
 
       # Handle with/for expressions
       with_expr = args["__with__"]
@@ -1421,7 +1442,7 @@ module LiquidIL
 
     # Generate code for dynamic partial (name from variable)
     def generate_dynamic_partial(inst, indent, isolated:)
-      prefix = INDENT[indent]
+      prefix = @indent[indent]
       args = inst[2] || {}
       tag_type = isolated ? "render" : "include"
       line_num = inst[3] || 1
@@ -1854,7 +1875,7 @@ module LiquidIL
 
     # Generate a for loop
     def generate_for_loop(indent)
-      prefix = INDENT[indent]
+      prefix = @indent[indent]
 
       # Build collection expression (handles FIND_VAR, ranges, filter chains, etc.)
       coll_expr, _ = build_expression
@@ -1876,7 +1897,7 @@ module LiquidIL
 
     # Generate for loop body with expression
     def generate_for_loop_body_with_expr(coll_expr, end_pc, indent)
-      prefix = INDENT[indent]
+      prefix = @indent[indent]
       pre_loop_code = String.new
 
       # First, look ahead to find FOR_INIT and determine offset/limit presence
@@ -2128,8 +2149,10 @@ module LiquidIL
           code << "#{prefix}  _S.increment_render_score!\n"
           code << "#{prefix}  _S.check_output_limit!(_O)\n"
         end
-        # body_code is at INDENT[indent+3], needs INDENT[indent+1] (strip 4 spaces)
-        code << body_code.gsub(/^#{Regexp.escape(prefix)}      /, prefix + "  ")
+        # body_code is at INDENT[indent+3], needs INDENT[indent+1] (strip 4
+        # spaces) — cosmetic only, so skip the full-body gsub outside pretty mode
+        # (compact_source strips leading whitespace before the ISeq anyway).
+        code << (@pretty ? body_code.gsub(/^#{Regexp.escape(prefix)}      /, prefix + "  ") : body_code)
         code << "#{prefix}end\n"
         @loop_depth -= 1
         return code
@@ -2214,8 +2237,8 @@ module LiquidIL
         code << "#{inner_prefix}      _S.increment_render_score!\n"
         code << "#{inner_prefix}      _S.check_output_limit!(_O)\n"
       end
-      # Adjust body_code indentation if we have error handling
-      if needs_error_handling
+      # Adjust body_code indentation if we have error handling (cosmetic only)
+      if needs_error_handling && @pretty
         body_code = body_code.gsub(/^/, "  ")
       end
       code << body_code
@@ -2232,8 +2255,8 @@ module LiquidIL
       # Add else block if present (for-else pattern)
       if !else_code.empty?
         code << "#{inner_prefix}else\n"
-        # Adjust else_code indentation if we have error handling
-        if needs_error_handling
+        # Adjust else_code indentation if we have error handling (cosmetic only)
+        if needs_error_handling && @pretty
           else_code = else_code.gsub(/^/, "  ")
         end
         code << else_code
@@ -2257,7 +2280,7 @@ module LiquidIL
     # Generate a tablerow loop (called when FIND_VAR starts a tablerow sequence)
     def generate_tablerow(indent)
       record_dynamic_read
-      prefix = INDENT[indent]
+      prefix = @indent[indent]
 
       # Scan forward to find TABLEROW_INIT and determine what params it has
       tablerow_init_idx = @pc
@@ -2331,7 +2354,7 @@ module LiquidIL
 
     # Generate tablerow body (called when expressions already built or at TABLEROW_INIT)
     def generate_tablerow_body(coll_expr, limit_expr, offset_expr, cols_expr, cols, has_limit, has_offset, item_var, loop_name, indent)
-      prefix = INDENT[indent]
+      prefix = @indent[indent]
 
       # If called directly from TABLEROW_INIT, get params from instruction
       if coll_expr.nil?
@@ -2554,7 +2577,7 @@ module LiquidIL
     # always properly nested, so this is a plain recursive-descent walk — no
     # jump-target analysis.
     def generate_if_statement(indent)
-      prefix = INDENT[indent]
+      prefix = @indent[indent]
 
       # Build condition expression
       @temp_assignments = nil
@@ -2661,6 +2684,14 @@ module LiquidIL
 
     # Process-wide loop-naming bases per partial source hash (append-only)
     @@partial_loop_bases = {}
+
+    # Process-wide memo for partial_lambda_name. Unlike the size-keyed
+    # registries below, the mapping name -> "__partial_<sanitized>__" is a pure
+    # idempotent function of `name`, so concurrent writers can only ever store
+    # the same value for a key — no mutex needed. Capped to bound growth across
+    # many distinct templates.
+    @@partial_lambda_names = {}
+    PARTIAL_LAMBDA_NAME_MAX = 4096
 
     # Process-wide literal → constant-name registry (append-only). Names are
     # unique per literal so partial bodies cached across compilations keep
@@ -3074,7 +3105,10 @@ module LiquidIL
           opts = opts.merge(error_mode: :strict2)
         end
         warnings = []
-        opts = opts.merge(warnings: warnings)
+        # pretty is a backend-only concern (human-readable source); keep it out
+        # of the IL compiler's options.
+        pretty = opts[:pretty] || false
+        opts = opts.merge(warnings: warnings).except(:pretty)
         compiler = Compiler.new(source, **opts)
         result = compiler.compile
         instructions = result[:instructions]
@@ -3082,7 +3116,8 @@ module LiquidIL
         ruby_compiler = RubyCompiler.new(
           instructions,
           context: context,
-          hoist_data: result[:hoist]
+          hoist_data: result[:hoist],
+          pretty: pretty
         )
         if options[:template_name]
           ruby_compiler.instance_variable_set(:@current_file_lit, options[:template_name])
