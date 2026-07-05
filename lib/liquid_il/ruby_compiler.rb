@@ -455,24 +455,23 @@ module LiquidIL
         next unless required.include?(name)
         lambda_name = partial_lambda_name(name)
         # All prologue/rescue/ensure bookkeeping lives in the (already-jitted)
-        # runtime helper _H.ip — zero artifact bytes per lambda for it.
+        # runtime wrapper _H.ipc at the call sites — zero artifact bytes per
+        # lambda for it, and no nested block ISeq inside the lambda.
         # Error locations inside the body are compile-time literals, so the
         # lambda carries no source/current-file state.
         code << "  #{lambda_name} = ->(assigns, _O, __parent_scope__, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
-        code << "    _H.ip(#{name.inspect}, __parent_scope__, isolated, caller_line, _O) {\n"
-        code << "      __partial_scope__ = isolated ? __parent_scope__.isolated_with(assigns) : __parent_scope__\n"
+        code << "    __partial_scope__ = isolated ? __parent_scope__.isolated_with(assigns) : __parent_scope__\n"
         # Only allocate cycle/capture/ifchanged state when the partial actually uses them
         if info[:uses_cycles]
-          code << "      _cs = isolated ? {} : (parent_cycle_state || {})\n"
+          code << "    _cs = isolated ? {} : (parent_cycle_state || {})\n"
         end
         if info[:uses_captures]
-          code << "      _cst = []\n"
+          code << "    _cst = []\n"
         end
         if info[:uses_ifchanged]
-          code << "      _ics = {}\n"
+          code << "    _ics = {}\n"
         end
-        code << indent_partial_body(info[:compiled_body], 6)
-        code << "    }\n"
+        code << indent_partial_body(info[:compiled_body], 4)
         code << "  }\n\n"
       end
       code
@@ -986,10 +985,19 @@ module LiquidIL
         temp_code + inline_output_append(expr_ruby, prefix, guard_interrupt: @uses_interrupts)
       when :assign
         var = @instructions[@pc - 1][1]
-        temp_code + "#{prefix}_H.af(_S, #{var.inspect}, #{expr_ruby})\n"
+        # Assign of a single known-filter call fuses into one _H.aff send.
+        if expr_ruby.start_with?("_F.ff(") && expr_ruby.end_with?(")")
+          temp_code + "#{prefix}_H.aff(_S, #{var.inspect}, #{expr_ruby[6..-2]})\n"
+        else
+          temp_code + "#{prefix}_H.af(_S, #{var.inspect}, #{expr_ruby})\n"
+        end
       when :assign_local
         var = @instructions[@pc - 1][1]
-        temp_code + "#{prefix}_H.afl(_S, #{var.inspect}, #{expr_ruby})\n"
+        if expr_ruby.start_with?("_F.ff(") && expr_ruby.end_with?(")")
+          temp_code + "#{prefix}_H.affl(_S, #{var.inspect}, #{expr_ruby[6..-2]})\n"
+        else
+          temp_code + "#{prefix}_H.afl(_S, #{var.inspect}, #{expr_ruby})\n"
+        end
       when :store_temp
         slot = @instructions[@pc][1]
         @pc += 1
@@ -1038,7 +1046,7 @@ module LiquidIL
       prefix = INDENT[indent]
       name = inst[1]
       # Cycle state suffix: only include if any partial uses cycles
-      @partial_call_cycle_suffix ||= @uses_cycles ? ", parent_cycle_state: _cs" : ""
+      @partial_call_cycle_suffix ||= @uses_cycles ? ", _cs" : ""
       args = inst[2] || {}
       tag_type = isolated ? "render" : "include"
       line_num = inst[3] || 1
@@ -1153,53 +1161,14 @@ module LiquidIL
       end
 
       if for_expr
-        # Render once per item in collection
-        # IMPORTANT: For include (non-isolated), ranges should NOT be iterated over - they're passed directly.
-        # Only arrays are iterated for include. For render (isolated), ranges ARE iterated.
+        # Render once per item in collection — the collection-type dispatch
+        # (Array/Range/enumerable/nil/scalar), per-item forloop drops, and
+        # include's scope publication + interrupt check all live in the
+        # _H.rpf/_H.ipf drivers, not at every call site.
         expr = generate_var_lookup(for_expr)
-        code << "#{prefix}__for_coll__ = #{expr}\n"
-        code << "#{prefix}if __for_coll__.is_a?(Array)\n"
-        code << "#{prefix}  __for_coll__.each_with_index do |_i_, _x_|\n"
-        code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
-        unless isolated
-          code << "#{prefix}    _S.assign(#{item_var.inspect}, _i_)\n"
-        end
-        if isolated
-          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __for_coll__.length).tap { |f| f.index0 = _x_ }\n"
-        end
-        code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
-        # Break out of include-for iteration if partial set interrupt
-        unless isolated
-          code << "#{prefix}    break if _S.has_interrupt?\n"
-        end
-        code << "#{prefix}  end\n"
-        if isolated
-          # render iterates over ranges
-          code << "#{prefix}elsif __for_coll__.is_a?(LiquidIL::RangeValue) || __for_coll__.is_a?(Range)\n"
-          code << "#{prefix}  __items__ = __for_coll__.to_a\n"
-          code << "#{prefix}  __items__.each_with_index do |_i_, _x_|\n"
-          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
-          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = _x_ }\n"
-          code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
-          code << "#{prefix}  end\n"
-          # Also handle other enumerables for render
-          code << "#{prefix}elsif !__for_coll__.is_a?(Hash) && !__for_coll__.is_a?(String) && __for_coll__.respond_to?(:each) && __for_coll__.respond_to?(:to_a)\n"
-          code << "#{prefix}  __items__ = __for_coll__.to_a\n"
-          code << "#{prefix}  __items__.each_with_index do |_i_, _x_|\n"
-          code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
-          code << "#{prefix}    __partial_args__['forloop'] = LiquidIL::ForloopDrop.new('forloop', __items__.length).tap { |f| f.index0 = _x_ }\n"
-          code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
-          code << "#{prefix}  end\n"
-        end
-        code << "#{prefix}elsif __for_coll__.nil?\n"
-        code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
-        code << "#{prefix}else\n"
-        code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __for_coll__\n"
-        unless isolated
-          code << "#{prefix}  _S.assign(#{item_var.inspect}, __for_coll__)\n"
-        end
-        code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
-        code << "#{prefix}end\n"
+        helper = isolated ? "rpf" : "ipf"
+        cycle_arg = @uses_cycles ? ", _cs" : ""
+        code << "#{prefix}_H.#{helper}(#{lambda_name}, #{name.inspect}, #{item_var.inspect}, #{expr}, __partial_args__, _O, _S, #{line_num}#{cycle_arg})\n"
       elsif with_expr
         # Render with a specific value
         # For isolated (render), we lookup here. For include, we already looked up above.
@@ -1207,7 +1176,7 @@ module LiquidIL
           expr = generate_var_lookup(with_expr)
           code << "#{prefix}__with_val__ = #{expr}\n"
           code << "#{prefix}__partial_args__[#{item_var.inspect}] = __with_val__ unless __with_val__.nil?\n"
-          code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
+          code << "#{prefix}_H.ipc(#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
         else
           # For include, __with_val__ was already looked up BEFORE keyword args modified scope
           # Assign the with-value to the current scope so the partial can see it
@@ -1215,12 +1184,12 @@ module LiquidIL
           code << "#{prefix}  __with_val__.each do |_i_|\n"
           code << "#{prefix}    __partial_args__[#{item_var.inspect}] = _i_\n"
           code << "#{prefix}    _S.assign(#{item_var.inspect}, _i_)\n"
-          code << "#{prefix}    #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
+          code << "#{prefix}    _H.ipc(#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
           code << "#{prefix}  end\n"
           code << "#{prefix}else\n"
           code << "#{prefix}  __partial_args__[#{item_var.inspect}] = __with_val__\n"
           code << "#{prefix}  _S.assign(#{item_var.inspect}, __with_val__)\n"
-          code << "#{prefix}  #{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
+          code << "#{prefix}  _H.ipc(#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
           code << "#{prefix}end\n"
         end
       else
@@ -1251,7 +1220,7 @@ module LiquidIL
           end
           code << indented_body
         else
-          code << "#{prefix}#{lambda_name}.call(__partial_args__, _O, _S, #{isolated}, caller_line: #{line_num}#{@partial_call_cycle_suffix})\n"
+          code << "#{prefix}_H.ipc(#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
         end
       end
 
@@ -1927,6 +1896,9 @@ module LiquidIL
 
       # Check what the loop body actually needs
       needs_scope_sync = body_code.include?(".call(") ||
+                         body_code.include?("_H.ipc(") ||
+                         body_code.include?("_H.rpf(") ||
+                         body_code.include?("_H.ipf(") ||
                          body_code.include?("execute_dynamic_partial") ||
                          body_code.include?("ForloopDrop.new") ||
                          body_code.include?("_S.lookup('forloop')") ||
@@ -1943,9 +1915,15 @@ module LiquidIL
       # {% continue %} is `next`, {% break %} is `break` — a break from the
       # yield block terminates the driver's loop with exactly the right
       # semantics, no throw/catch bookkeeping.
-      if !needs_scope_sync && !needs_error_handling &&
+      if !needs_error_handling &&
          !reversed && !needs_slicing && !offset_continue && else_code.empty?
-        if needs_forloop
+        if needs_scope_sync
+          # Scope-synced bodies (partial calls read the item/forloop through
+          # the scope): _H.eifs publishes them per iteration and restores the
+          # previous bindings — the whole prep/sync/restore protocol lives in
+          # the runtime instead of ~14 emitted lines per loop.
+          code << "#{prefix}_H.eifs(#{coll_ruby}, #{loop_name.inspect}, #{item_var.inspect}, _S) do |#{item_var_internal}, #{forloop_var}|\n"
+        elsif needs_forloop
           code << "#{prefix}_H.eif(#{coll_ruby}, #{loop_name.inspect}, #{parent_forloop}) do |#{item_var_internal}, #{forloop_var}|\n"
         else
           code << "#{prefix}_H.ei(#{coll_ruby}) do |#{item_var_internal}|\n"
@@ -2706,19 +2684,17 @@ module LiquidIL
       # So no need for || false — just use the expression directly
       # Simple expressions: identifier, __var__, or loop_var["key"]
       # Boolean expressions: comparisons, logical operators — already produce boolean result
-      is_simple = expr_ruby =~ /\A[a-zA-Z_][a-zA-Z0-9_.]*\z/ || expr_ruby =~ /\A__\w+__\z/ || expr_ruby =~ /\A_[a-z]\d+__\["[^"]+"\]\z/
       is_boolean = expr_ruby.include?("&&") || expr_ruby.include?("||") || expr_ruby =~ /\)[><]=?\s*\d+\s*\)\z/ || expr_ruby =~ /\)[><]=?\s*\)\z/ ||
         # Runtime helpers that already return a boolean — no truthy wrapper
         # needed (saves ~80 emitted bytes and two branches per condition)
         (expr_ruby.end_with?(")") && expr_ruby.start_with?("_H.cmp(", "_U.ce?(", "_H.ct("))
       if is_boolean
         "(#{expr_ruby})"
-      elsif is_simple
-        # Unwrap drops via to_liquid_value (BooleanDrop with false should be falsy)
-        "((_t = #{expr_ruby}); _t = _t.to_liquid_value; _t)"
       else
-        # Complex expression - use _t temp to avoid double evaluation
-        "((_t = #{expr_ruby}); _t = _t.to_liquid_value; _t)"
+        # Unwrap drops via to_liquid_value (BooleanDrop with false should be
+        # falsy) — one send instead of the inline _t temp shuffle (~40B of
+        # ISeq per condition).
+        "_H.t(#{expr_ruby})"
       end
     end
 

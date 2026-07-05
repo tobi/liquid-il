@@ -94,7 +94,13 @@ module LiquidVmRake
   end
 
   def liquid_spec_command(*argv)
-    liquid_spec_root = Gem.loaded_specs.fetch("liquid-spec").full_gem_path
+    # loaded_specs only sees activated gems; fall back to the lockfile
+    # resolution when liquid-spec hasn't been required in this process.
+    liquid_spec_root = Gem.loaded_specs["liquid-spec"]&.full_gem_path ||
+                       begin
+                         require "bundler"
+                         ::Bundler.load.specs.find { |s| s.name == "liquid-spec" }.full_gem_path
+                       end
     [
       "bundle", "exec", "ruby",
       "-I#{File.join(liquid_spec_root, "lib")}",

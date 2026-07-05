@@ -133,6 +133,98 @@ module LiquidIL
       end
     end
 
+    # eifs: like eif for scope-synced bodies — partial calls inside the loop
+    # read the item and forloop through the scope, so each iteration
+    # publishes them via assign_local and the previous bindings are restored
+    # afterwards. Mirrors the emitted complex-loop protocol exactly: index0
+    # is set BEFORE the body, forced to length after the loop (even on
+    # {% break %} — hence the ensure), and the loop's offset is recorded for
+    # a later `offset: continue`.
+    def self.eifs(collection, loop_name, item_name, scope)
+      coll = collection.is_a?(Array) ? collection : to_iterable(collection)
+      return if coll.empty?
+      prev_fl = scope.lookup("forloop")
+      prev_item = scope.lookup(item_name)
+      fl = LiquidIL::ForloopDrop.new(loop_name, coll.length, prev_fl)
+      len = coll.length
+      begin
+        i = 0
+        while i < len
+          item = coll[i]
+          fl.index0 = i
+          i += 1
+          scope.assign_local("forloop", fl)
+          scope.assign_local(item_name, item)
+          yield item, fl
+        end
+      ensure
+        fl.index0 = len
+        scope.set_for_offset(loop_name, len)
+        scope.assign_local("forloop", prev_fl)
+        scope.assign_local(item_name, prev_item)
+      end
+    end
+
+    # ipc: the single partial-invocation site — wraps the compiled lambda in
+    # the invoke_partial prologue/rescue/ensure. Living here (instead of an
+    # _H.ip block inside every lambda) saves one nested ISeq per partial.
+    def self.ipc(partial, name, assigns, output, scope, isolated, caller_line, cycle_state = nil)
+      ip(name, scope, isolated, caller_line, output) do
+        partial.call(assigns, output, scope, isolated, caller_line: caller_line, parent_cycle_state: cycle_state)
+      end
+    end
+
+    # rpf: driver for {% render 'x' for coll %} — the four-way collection
+    # dispatch and per-item forloop drops live in the runtime instead of
+    # ~28 emitted lines per call site. Isolated semantics: ranges and
+    # enumerables iterate, nil calls once without the item, scalars pass
+    # through as the item. Each item's call is separately error-wrapped
+    # (one item failing still renders the rest under render_errors).
+    def self.rpf(partial, name, item_name, coll, args, output, scope, caller_line, cycle_state = nil)
+      items = if coll.is_a?(Array)
+        coll
+      elsif coll.is_a?(LiquidIL::RangeValue) || coll.is_a?(Range)
+        coll.to_a
+      elsif !coll.is_a?(Hash) && !coll.is_a?(String) && coll.respond_to?(:each) && coll.respond_to?(:to_a)
+        coll.to_a
+      else
+        args[item_name] = coll unless coll.nil?
+        nil
+      end
+      if items
+        len = items.length
+        i = 0
+        while i < len
+          args[item_name] = items[i]
+          args["forloop"] = LiquidIL::ForloopDrop.new("forloop", len).tap { |f| f.index0 = i }
+          ipc(partial, name, args, output, scope, true, caller_line, cycle_state)
+          i += 1
+        end
+      else
+        ipc(partial, name, args, output, scope, true, caller_line, cycle_state)
+      end
+    end
+
+    # ipf: {% include 'x' for coll %} — include iterates Arrays only (ranges
+    # and other enumerables pass through as the item), publishes the item to
+    # the caller scope, and stops when the partial sets an interrupt.
+    def self.ipf(partial, name, item_name, coll, args, output, scope, caller_line, cycle_state = nil)
+      if coll.is_a?(Array)
+        coll.each do |item|
+          args[item_name] = item
+          scope.assign(item_name, item)
+          ipc(partial, name, args, output, scope, false, caller_line, cycle_state)
+          break if scope.has_interrupt?
+        end
+      elsif coll.nil?
+        ipc(partial, name, args, output, scope, false, caller_line, cycle_state)
+      else
+        args[item_name] = coll
+        scope.assign(item_name, coll)
+        ipc(partial, name, args, output, scope, false, caller_line, cycle_state)
+      end
+    end
+
     # rolf/rolp: raw text + looked-up value in one send — the raw/lookup/raw
     # sandwich is the most common statement pair in real templates.
     def self.rolf(output, raw, obj, key)
@@ -160,6 +252,25 @@ module LiquidIL
 
     def self.afl(scope, name, value)
       scope.assign_local(name, value) unless value.is_a?(LiquidIL::ErrorMarker)
+    end
+
+    # t: truthy unwrap for conditions — drops define to_liquid_value
+    # (BooleanDrop(false) must be falsy). One send instead of the inline
+    # _t temp shuffle.
+    def self.t(value)
+      value.to_liquid_value
+    end
+
+    # aff/affl: assign a known-filter result — _H.af(_S, k, _F.ff(...))
+    # fused into a single send; the ErrorMarker check lives here.
+    def self.aff(scope, name, fname, input, args, fscope, file, line)
+      v = LiquidIL::Filters.ff(fname, input, args, fscope, file, line)
+      scope.assign(name, v) unless v.is_a?(LiquidIL::ErrorMarker)
+    end
+
+    def self.affl(scope, name, fname, input, args, fscope, file, line)
+      v = LiquidIL::Filters.ff(fname, input, args, fscope, file, line)
+      scope.assign_local(name, v) unless v.is_a?(LiquidIL::ErrorMarker)
     end
 
     OUTPUT_STRING = ->(value) {
