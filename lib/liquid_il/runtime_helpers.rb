@@ -265,14 +265,26 @@ module LiquidIL
 
     # aff/affl: assign a known-filter result — _H.af(_S, k, _F.ff(...))
     # fused into a single send; the ErrorMarker check lives here.
+    #
+    # A filter error in an {% assign %} RHS never surfaces into the page:
+    # the assignment is abandoned, the target is left untouched, and
+    # rendering continues (reference treats assign as a blank tag whose
+    # error is recorded, not emitted). In render_errors mode ff hands back
+    # an ErrorMarker (skipped below); in raise mode it raises a
+    # RuntimeError, which we swallow here so the assign — unlike {{ }}/echo
+    # — produces no error text and does not abort the render.
     def self.aff(scope, name, fname, input, args, fscope, file, line)
       v = LiquidIL::Filters.ff(fname, input, args, fscope, file, line)
       scope.assign(name, v) unless v.is_a?(LiquidIL::ErrorMarker)
+    rescue LiquidIL::RuntimeError
+      nil
     end
 
     def self.affl(scope, name, fname, input, args, fscope, file, line)
       v = LiquidIL::Filters.ff(fname, input, args, fscope, file, line)
       scope.assign_local(name, v) unless v.is_a?(LiquidIL::ErrorMarker)
+    rescue LiquidIL::RuntimeError
+      nil
     end
 
     OUTPUT_STRING = ->(value) {
@@ -476,6 +488,15 @@ module LiquidIL
         return false if left == true || left == false || right == true || right == false
         return false if left.is_a?(Array) || left.is_a?(Hash) || right.is_a?(Array) || right.is_a?(Hash)
         return false if left.is_a?(LiquidIL::RangeValue) || right.is_a?(LiquidIL::RangeValue)
+
+        if left.is_a?(String) && right.is_a?(String)
+          case op
+          when :lt then return left < right
+          when :le then return left <= right
+          when :gt then return left > right
+          when :ge then return left >= right
+          end
+        end
 
         left_num = to_num(left)
         right_num = to_num(right)
