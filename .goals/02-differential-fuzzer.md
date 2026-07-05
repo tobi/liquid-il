@@ -29,39 +29,57 @@ liquid-spec is wrong, flag it; when we're wrong, fix us).
 
 ## Architecture — read this before writing code
 
-### The hardest part #1: process isolation of the two engines
+### The hardest part #1: running both engines in one process, safely
 
-LiquidIL monkeypatches core classes (lib/liquid_il/core_ext.rb):
-`Object#to_liquid` RAISES `LiquidIL::NoMethodError` for non-protocol objects,
-and an `IdentityToLiquid` mixin makes String/Numeric/Hash/Array/etc. return
-self. The reference gem, loaded into the same process, then sees a
-`to_liquid` method on EVERY object. For plain JSON-able data this happens to
-be benign (identity), which is why `rake bench` runs both in one process —
-but a fuzzer explores adversarial values where the divergence-of-environment
-becomes a false signal (you would be fuzzing the interaction of our
-monkeypatch with reference liquid, not reference liquid itself).
+Both engines run IN-PROCESS — throughput is the whole point of a fuzzer
+(target: thousands of cases/sec, which a per-case subprocess round-trip
+cannot deliver). `rake bench` and `rake bench:cold` already run reference
+liquid and LiquidIL in one process with byte-validated outputs; the fuzzer
+extends that precedent. But in-process coexistence is only safe inside a
+specific envelope — enforce it, don't assume it:
 
-Therefore: run the REFERENCE engine in a clean subprocess that never loads
-liquid_il. Protocol (keep it this simple):
-
-- Parent (fuzzer) spawns one worker: `bundle exec ruby fuzz/ref_worker.rb`.
-  The worker requires ONLY `liquid` and `json`, then loops over stdin lines:
-  `{"template": "...", "env": {...}, "error_mode": "strict"}` → renders →
-  writes one stdout line: `{"ok": true, "output": "..."}` or
-  `{"ok": false, "error_class": "...", "message": "..."}`.
-- Rendering in the worker, mirroring how liquid-spec's reference adapter does
-  it (see examples/liquid_ruby.rb in the liquid-spec checkout):
+- WHY it works: LiquidIL monkeypatches core classes (lib/liquid_il/
+  core_ext.rb): `Object#to_liquid` RAISES for non-protocol objects, and an
+  `IdentityToLiquid` mixin makes String/Symbol/Numeric/NilClass/TrueClass/
+  FalseClass/Array/Hash/Range/Time/Date/DateTime return self. Reference
+  liquid calls `value.to_liquid` when the value responds — for every type in
+  the identity list that is exactly the value reference would have used
+  anyway. Same for `to_liquid_value` (identity). So as long as environment
+  values stay WITHIN the IdentityToLiquid-covered types, reference behavior
+  is unchanged by our patches.
+- ENFORCE the envelope: the generator's value pool must produce only
+  identity-covered, JSON-able types (String/Integer/Float/nil/true/false/
+  Array/Hash). Add an assertion in the runner that walks every generated env
+  and rejects anything else — this is now a CORRECTNESS requirement, not
+  just a serialization convenience. Never generate custom objects or drops
+  in v1 (with our patches loaded, reference would raise on their `to_liquid`
+  where clean reference would have passed them through — a false signal).
+- Reference GLOBAL state must be reset per case: `Liquid::Template.
+  file_system` is process-global in the reference gem — set it for each case
+  that uses partials and restore the previous value in `ensure`. Check what
+  else the liquid-spec reference adapter (examples/liquid_ruby.rb in the
+  liquid-spec checkout) sets in setup and mirror it once at boot (e.g.
+  disabling liquid-c).
+- Rendering, mirroring the liquid-spec reference adapter:
   `Liquid::Template.parse(src, error_mode: mode.to_sym)` then
-  `template.render(env)` — note plain `render`, which embeds
-  `Liquid error (...)` messages in output, PLUS a second pass with `render!`
-  captured separately if you want strict-error comparison. Start with plain
-  `render` only; it is what the spec suite mostly pins.
-- Timeouts: wrap each worker request with a deadline (2s); on timeout, kill
-  and respawn the worker, record the template as a hang-finding (hangs are
-  findings too — e.g. pathological parse complexity).
-- LiquidIL side runs in-process:
-  `LiquidIL::Template.parse(src).render(env)` with exceptions caught and
-  normalized to the same JSON shape.
+  `template.render(env)` — plain `render`, which embeds
+  `Liquid error (...)` messages in output; that is what the spec suite pins.
+  LiquidIL side: `LiquidIL::Template.parse(src).render(env)` (or with a
+  `LiquidIL::Context` when the case has a filesystem). Catch exceptions from
+  both and normalize to {ok:, output:|error_class:, message:}.
+- Hangs: in-process means a pathological template blocks the run. Prevent
+  rather than kill: cap generated range literals (|a-b| ≤ 1000), collection
+  sizes, and nesting depth. Belt-and-braces: a watchdog thread that dumps
+  the current seed+case if a single case exceeds 2s, so a hang is diagnosable
+  and reproducible (then treat the hang itself as a finding).
+- SUBPROCESS CONFIRMATION (only on mismatch, off the hot path): before
+  recording a finding, re-run just that one case through a clean
+  `bundle exec ruby -rliquid -rjson fuzz/ref_check.rb` subprocess that never
+  loads liquid_il, and use ITS output as the reference ground truth. Cost is
+  irrelevant (findings are rare); it guarantees no recorded finding is an
+  artifact of in-process coexistence. If in-process reference output ever
+  disagrees with clean-subprocess reference output, that is a separate,
+  important finding about our core_ext — record it in its own bucket.
 
 ### The hardest part #2: the comparison oracle (noise control)
 
@@ -108,7 +126,8 @@ generated template must be built from constructs both engines parse.
   -1, 2**62, huge negative), floats (0.0, -0.5, NaN excluded — JSON),
   nil, booleans, nested arrays/hashes 1–3 deep, empty array/hash, hashes
   with integer keys and with symbol-looking string keys. Values must
-  round-trip JSON (the ref worker gets them via JSON).
+  round-trip JSON (the subprocess confirmation step ships them as JSON,
+  and JSON-ability doubles as the IdentityToLiquid-envelope check).
 - Template AST nodes with weights (start with these, tune by coverage):
   raw text (incl. multibyte + `{`-adjacent text), `{{ var }}`,
   `{{ a.b.c }}`, `{{ a[expr] }}`, `{{ self[expr] }}`, filters chained 1–3
@@ -123,8 +142,8 @@ generated template must be built from constructs both engines parse.
   `liquid` tag blocks, `render`/`include` (see next bullet).
 - Partials: generate a small filesystem (1–4 partials, possibly recursive to
   depth 2, possibly reading/assigning caller vars in include, args in
-  render, `render ... for/with`). The ref worker must accept a
-  `"filesystem": {...}` key and install a file system:
+  render, `render ... for/with`). Cases carry a
+  `filesystem` hash; for the reference side install it per case:
   in reference liquid that is
   `Liquid::Template.file_system = Liquid::StaticFileSystem.new(hash)` if
   available, else a tiny custom object with `read_template_file(name)`. Look
@@ -167,7 +186,7 @@ On mismatch, minimize BEFORE recording:
 - Seed the corpus by mutating 50 templates lifted from liquid-spec suites and
   confirm the fuzzer reports ZERO mismatches on unmutated spec templates
   (calibration: if it flags a template the suite passes, the oracle or the
-  worker env-handling is wrong — fix that first).
+  env handling is wrong — fix that first).
 - Re-inject a known historical bug to prove the tool works end-to-end: check
   out commit 2ab67c7 in a worktree, point the LiquidIL side at that lib, and
   verify the fuzzer finds a `self[...]`-in-nested-loops divergence within a
