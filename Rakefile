@@ -542,3 +542,30 @@ desc "Show available optimization passes"
 task :passes do
   system "bin/liquidil passes"
 end
+
+# Differential fuzzer vs reference liquid -- see .goals/02-differential-fuzzer.md
+# and fuzz/README.md. Pure tooling: never touches engine code, and both
+# engines run in-process for throughput (subprocess confirmation is only
+# used off the hot path, per mismatch, before a finding is recorded).
+desc "Differential fuzzer smoke run: 60s or 2000 cases vs reference liquid (exits nonzero on a NEW finding)"
+task :fuzz do
+  sh({ "RUBY_YJIT_ENABLE" => "1" }, "bundle", "exec", "ruby", "fuzz/run.rb")
+end
+
+namespace :fuzz do
+  desc "Differential fuzzer long run: 10 minutes or 100,000 cases (override with TIME=/CASES=)"
+  task :long do
+    env = { "RUBY_YJIT_ENABLE" => "1", "TIME" => ENV.fetch("TIME", "600"), "CASES" => ENV.fetch("CASES", "100000") }
+    sh(env, "bundle", "exec", "ruby", "fuzz/run.rb")
+  end
+
+  desc "Calibration: fuzzer must report ZERO mismatches on 50 unmutated liquid-spec templates"
+  task :calibrate do
+    sh({ "RUBY_YJIT_ENABLE" => "1" }, "bundle", "exec", "ruby", "fuzz/calibrate.rb")
+  end
+
+  desc "Rediscovery check: verify the fuzzer finds the known self[...]-in-nested-loops bug against a worktree of commit 2ab67c7"
+  task :rediscover do
+    sh({ "RUBY_YJIT_ENABLE" => "1" }, "bundle", "exec", "ruby", "fuzz/rediscover.rb")
+  end
+end
