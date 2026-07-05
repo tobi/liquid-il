@@ -28,6 +28,7 @@ TEST_FILES = %w[
   test/iseq_cache_test.rb
   test/iseq_persistence_test.rb
   test/artifact_self_consistency_test.rb
+  test/template_cache_test.rb
   test/liquid_vm_optional_test.rb
 ].freeze
 
