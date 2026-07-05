@@ -66,6 +66,7 @@ module LiquidIL
       # Maps Liquid variable names to Ruby local variable names inside for loops
       # e.g. "i" => "_i0__", "forloop" => "_fl0__"
       @loop_var_aliases = {}
+      @hoisted_lookups = EMPTY_HOISTS
       # Frozen array constants used by THIS compilation: { "[\"large\"]" => "_fa0__" }
       # (names come from the process-wide @@frozen_array_names registry)
       @frozen_arrays = {}
@@ -334,6 +335,10 @@ module LiquidIL
       # Ensure shared helpers are initialized (once, at first use)
       RuntimeHelpers.init
 
+      # Decide hoisted lookups from the IL before any code exists —
+      # emission consults @hoisted_lookups through scope_lookup.
+      @hoisted_lookups = compute_hoisted_lookups
+
       # Generate body first so inlining info is available for partial lambdas
       body_code = generate_body  # also sets @uses_cycles, @uses_captures, @uses_ifchanged, @inlined_partials
       partial_code = generate_partial_lambdas  # skips lambda body for fully inlined partials
@@ -362,10 +367,83 @@ module LiquidIL
       code << "  _cst = []\n" if @uses_captures || @uses_ifchanged
       code << "  _ics = {}\n" if @uses_ifchanged
       code << "\n"
+      @hoisted_lookups.each do |name, local|
+        code << "  #{local} = _S.lookup(#{name.inspect})\n"
+      end
       code << optimize_repeated_lookups(body_code)
       code << "\n  _O\n"
       code << "end\n"
       code
+    end
+
+    # ── Hoisted scope lookups ───────────────────────────────────
+    # A variable read HOIST_MIN_USES+ times whose name is never written
+    # anywhere in the template reads the same value every time — bind it
+    # to a local once (saves a send + operands per site in the ISeq, and
+    # the repeated scope lookups at render). Decided entirely on the IL
+    # before codegen; emission consults @hoisted_lookups via scope_lookup.
+    # Bails when the template can mutate arbitrary caller scope: include
+    # partials (static or dynamic), sections, or any opcode not in the
+    # neutral table (future/custom tag IL stays conservative by default).
+    HOIST_MIN_USES = 3
+    EMPTY_HOISTS = {}.freeze
+
+    # Ops that neither read nor write template variable names.
+    HOIST_NEUTRAL_OPS = [
+      IL::WRITE_RAW, IL::WRITE_VALUE, IL::CONST_NIL, IL::CONST_TRUE,
+      IL::CONST_FALSE, IL::CONST_INT, IL::CONST_FLOAT, IL::CONST_STRING,
+      IL::CONST_RANGE, IL::CONST_EMPTY, IL::CONST_BLANK, IL::FIND_VAR_DYNAMIC,
+      IL::FIND_SELF, IL::LOOKUP_KEY, IL::LOOKUP_CONST_KEY, IL::LOOKUP_CONST_PATH,
+      IL::LOOKUP_COMMAND, IL::PUSH_CAPTURE, IL::POP_CAPTURE, IL::LABEL,
+      IL::JUMP, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT, IL::HALT,
+      IL::COMPARE, IL::CASE_COMPARE, IL::CONTAINS, IL::BOOL_NOT, IL::IS_TRUTHY,
+      IL::BOOL_AND, IL::BOOL_OR, IL::IF, IL::ELSE, IL::END_IF, IL::PUSH_SCOPE,
+      IL::POP_SCOPE, IL::NEW_RANGE, IL::CALL_FILTER, IL::FOR_NEXT, IL::FOR_END,
+      IL::PUSH_FORLOOP, IL::POP_FORLOOP, IL::PUSH_INTERRUPT, IL::POP_INTERRUPT,
+      IL::CYCLE_STEP, IL::CYCLE_STEP_VAR, IL::RENDER_PARTIAL, IL::CONST_RENDER,
+      IL::TABLEROW_NEXT, IL::TABLEROW_END, IL::DUP, IL::POP, IL::BUILD_HASH,
+      IL::STORE_TEMP, IL::LOAD_TEMP, IL::IFCHANGED_CHECK, IL::NOOP,
+      :PAGINATE_TEARDOWN
+    ].to_h { |op| [op, true] }.freeze
+
+    def compute_hoisted_lookups
+      counts = Hash.new(0)
+      written = nil
+      @instructions.each do |inst|
+        op = inst[0]
+        case op
+        when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::WRITE_VAR, IL::WRITE_VAR_PATH
+          counts[inst[1]] += 1
+        when IL::ASSIGN, IL::ASSIGN_LOCAL, IL::INCREMENT, IL::DECREMENT,
+             IL::FOR_INIT, IL::TABLEROW_INIT
+          (written ||= {})[inst[1]] = true
+        when :PAGINATE_SETUP
+          w = (written ||= {})
+          w["paginate"] = true
+          parts = inst[1].to_s.split(".")
+          w[parts.first] = true
+          w[parts.last] = true
+        when IL::INCLUDE_PARTIAL, IL::CONST_INCLUDE, :SHOPIFY_SECTION_RENDER
+          return EMPTY_HOISTS
+        else
+          return EMPTY_HOISTS unless HOIST_NEUTRAL_OPS[op]
+        end
+      end
+      hoisted = nil
+      counts.each do |name, c|
+        next if c < HOIST_MIN_USES
+        next if written&.key?(name)
+        next if name == "forloop" || name == "tablerowloop"
+        hoisted ||= {}
+        hoisted[name] = "_lk#{hoisted.size}__"
+      end
+      hoisted || EMPTY_HOISTS
+    end
+
+    # The single emission primitive for whole-variable reads: loop-var
+    # alias, hoisted local, or scope lookup.
+    def scope_lookup(name)
+      @loop_var_aliases[name] || @hoisted_lookups[name] || "_S.lookup(#{name.inspect})"
     end
 
     # Scan instructions for partials and compile them
@@ -676,12 +754,7 @@ module LiquidIL
 
       when IL::WRITE_VAR
         @pc += 1
-        var_expr = if (alias_var = @loop_var_aliases[inst[1]])
-                     alias_var
-                   else
-                     "_S.lookup(#{inst[1].inspect})"
-                   end
-        inline_output_append(var_expr, prefix, guard_interrupt: @uses_interrupts)
+        inline_output_append(scope_lookup(inst[1]), prefix, guard_interrupt: @uses_interrupts)
 
       when IL::WRITE_VAR_PATH
         @pc += 1
@@ -692,7 +765,7 @@ module LiquidIL
         # specialized inline paths. The base stays a textual _S.lookup(...)
         # so the partial-arg rewrites keep matching.
         if !@loop_var_aliases[inst[1]] && path.none? { |k| RuntimeHelpers::SPECIAL_KEYS[k.to_s] }
-          base = "_S.lookup(#{inst[1].inspect})"
+          base = scope_lookup(inst[1])
           guard = @uses_interrupts ? " unless _S.has_interrupt?" : ""
           if path.length == 1
             "#{prefix}_H.olf(_O, #{base}, #{path[0].to_s.inspect})#{guard}\n"
@@ -1359,7 +1432,7 @@ module LiquidIL
       result = if root == "self"
         "_S.lookup_self"
       else
-        @loop_var_aliases[root] || "_S.lookup(#{root.inspect})"
+        scope_lookup(root)
       end
       i = root.length
 
@@ -1446,11 +1519,7 @@ module LiquidIL
           stack << "LiquidIL::RangeValue.new(#{left}, #{right})"
           @pc += 1
         when IL::FIND_VAR
-          if (alias_var = @loop_var_aliases[inst[1]])
-            stack << alias_var
-          else
-            stack << "_S.lookup(#{inst[1].inspect})"
-          end
+          stack << scope_lookup(inst[1])
           @pc += 1
         when IL::FIND_SELF
           stack << "_S.lookup_self"
@@ -1593,11 +1662,7 @@ module LiquidIL
 
     # Generate variable path access (a.b.c)
     def generate_var_path_expr(var, path)
-      if (alias_var = @loop_var_aliases[var])
-        result = alias_var
-      else
-        result = "_S.lookup(#{var.inspect})"
-      end
+      result = scope_lookup(var)
       path.each do |key|
         result = inline_lookup(result, key)
       end
@@ -2567,14 +2632,14 @@ module LiquidIL
       when IL::WRITE_VAR
         return nil if @loop_var_aliases[nxt[1]]
         @pc += 1
-        "  _H.roa(_O, #{raw.inspect}, _S.lookup(#{nxt[1].inspect}))#{guard}\n"
+        "  _H.roa(_O, #{raw.inspect}, #{scope_lookup(nxt[1])})#{guard}\n"
       when IL::WRITE_VAR_PATH
         return nil if @loop_var_aliases[nxt[1]]
         path = nxt[2]
         return nil if path.any? { |k| RuntimeHelpers::SPECIAL_KEYS[k.to_s] }
 
         @pc += 1
-        base = "_S.lookup(#{nxt[1].inspect})"
+        base = scope_lookup(nxt[1])
         if path.length == 1
           "  _H.rolf(_O, #{raw.inspect}, #{base}, #{path[0].to_s.inspect})#{guard}\n"
         else
