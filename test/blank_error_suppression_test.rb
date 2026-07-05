@@ -6,8 +6,8 @@ require_relative "../lib/liquid_il"
 # Reference Liquid (BlockBody.rescue_render_node) appends a rendered node's
 # error text UNLESS the node is blank. LiquidIL reproduces that suppression
 # ONLY for templates parsed with error_mode :lax — a deliberate, documented
-# divergence from reference (which suppresses in every parse mode). In :strict
-# and :strict2 the error text keeps surfacing exactly as before. render! (which
+# Suppression applies in :lax and :strict (historical reference behavior);
+# :strict2 is the new contract where blank bodies surface. render! (which
 # renders with render_errors=false) must keep raising in every mode, blank or
 # not. See Parser#mark_blank_error_suppression and the codegen suppress paths.
 class BlankErrorSuppressionTest < Minitest::Test
@@ -48,10 +48,18 @@ class BlankErrorSuppressionTest < Minitest::Test
     assert_includes result, "Liquid error"
   end
 
-  # ── strict: unchanged, error text still surfaces ──────────────────
+  # ── strict: historical suppression preserved; strict2 surfaces ────
 
-  def test_strict_blank_if_body_still_shows_error_text
-    result = strict.parse('{% if 5 > "x" %}{% endif %}').render({})
+  def strict2
+    @strict2 ||= LiquidIL::Context.new(error_mode: :strict2)
+  end
+
+  def test_strict_blank_if_body_suppresses_error_text
+    assert_equal "", strict.parse('{% if 5 > "x" %}{% endif %}').render({})
+  end
+
+  def test_strict2_blank_if_body_shows_error_text
+    result = strict2.parse('{% if 5 > "x" %}{% endif %}').render({})
     assert_includes result, "Liquid error"
     assert_includes result, "comparison of Integer with String failed"
   end
@@ -100,8 +108,12 @@ class BlankErrorSuppressionTest < Minitest::Test
     assert_includes result, "invalid integer"
   end
 
-  def test_strict_blank_for_loop_offset_error_shown
-    result = strict.parse('{% for i in (1..3) offset: "x" %}{% endfor %}').render({})
+  def test_strict_blank_for_loop_offset_error_suppressed
+    assert_equal "", strict.parse('{% for i in (1..3) offset: "x" %}{% endfor %}').render({})
+  end
+
+  def test_strict2_blank_for_loop_offset_error_shown
+    result = strict2.parse('{% for i in (1..3) offset: "x" %}{% endfor %}').render({})
     assert_includes result, "Liquid error"
     assert_includes result, "invalid integer"
   end

@@ -459,7 +459,10 @@ module LiquidIL
     # [IF, negate] array; extending it with a truthy third slot is invisible to
     # the optimizer (reads inst[1]) and to non-lax/non-blank emission.
     def mark_blank_error_suppression(markers)
-      return unless @error_mode == :lax
+      # Historical suppression applies in :lax AND :strict; :strict2 is the
+      # new contract where blank bodies must NOT hide error text.
+      return if @error_mode == :strict2
+
 
       markers.each do |idx|
         inst = @builder.instructions[idx]
@@ -1355,7 +1358,7 @@ module LiquidIL
         # integer" error text (FOR_INIT slot 8), mirroring the if/unless path.
         # Codegen's needs_error_handling rescue reads this flag; render! still
         # raises because the swallow only fires when scope.render_errors.
-        if @error_mode == :lax
+        unless @error_mode == :strict2
           fi = @builder.instructions[for_init_idx]
           fi[8] = true if fi && fi[0] == IL::FOR_INIT
         end
