@@ -29,6 +29,7 @@ TEST_FILES = %w[
   test/iseq_persistence_test.rb
   test/artifact_self_consistency_test.rb
   test/template_cache_test.rb
+  test/external_partials_test.rb
   test/liquid_vm_optional_test.rb
   test/storefront_mock_integration_test.rb
 ].freeze
