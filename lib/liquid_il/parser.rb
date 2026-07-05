@@ -37,6 +37,12 @@ module LiquidIL
       @expr_lexer = ExpressionLexer.new
       @cycle_counter = 0 # For unique cycle identities
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
+      # True only when the token just consumed was a literal RAW text node.
+      # A left-trim marker ({%-, {{-) strips whitespace from the source text
+      # immediately adjacent to it; when a tag, raw block, or comment sits
+      # between the text and the marker there is no adjacent literal to strip,
+      # so trim must not reach back across it.
+      @prev_token_was_raw = false
       @error_mode = error_mode  # :lax, :warn, :strict, :strict2
       @warnings = warnings || []  # Collect non-fatal warnings
     end
@@ -138,14 +144,17 @@ module LiquidIL
           case current_template_type
           when TemplateLexer::RAW
             blank = parse_raw && blank
+            @prev_token_was_raw = true
           when TemplateLexer::VAR
-            trim_previous_raw if current_template_trim_left
+            trim_previous_raw if current_template_trim_left && @prev_token_was_raw
             @pending_trim_left = current_template_trim_right  # For next RAW token
+            @prev_token_was_raw = false
             parse_variable_output
             blank = false
           when TemplateLexer::TAG
-            trim_previous_raw if current_template_trim_left
+            trim_previous_raw if current_template_trim_left && @prev_token_was_raw
             @pending_trim_left = current_template_trim_right  # For next RAW token
+            @prev_token_was_raw = false
             tag_name = @template_lexer.tag_name
 
             # Check if this is an end tag we're looking for
@@ -153,6 +162,10 @@ module LiquidIL
 
             tag_blank = parse_tag
             blank = tag_blank && blank
+            # A tag (and its closing delimiter or end tag) is not literal text,
+            # so a trim marker on the next token must not reach back across it —
+            # even if the block body's last emitted node was raw text.
+            @prev_token_was_raw = false
           end
 
           # Safety: raise if we didn't advance (indicates infinite loop bug)
@@ -1590,6 +1603,15 @@ module LiquidIL
           first_value = nil
           expr_lexer.advance
         end
+      when ExpressionLexer::TRUE
+        first_value = [:lit, true]
+        expr_lexer.advance
+      when ExpressionLexer::FALSE
+        first_value = [:lit, false]
+        expr_lexer.advance
+      when ExpressionLexer::NIL
+        first_value = [:lit, nil]
+        expr_lexer.advance
       end
 
       # Parse values - each is tagged as [:lit, value] or [:var, name]
@@ -1614,6 +1636,15 @@ module LiquidIL
           expr_lexer.advance
         when ExpressionLexer::IDENTIFIER
           values << [:var, expr_lexer.value]
+          expr_lexer.advance
+        when ExpressionLexer::TRUE
+          values << [:lit, true]
+          expr_lexer.advance
+        when ExpressionLexer::FALSE
+          values << [:lit, false]
+          expr_lexer.advance
+        when ExpressionLexer::NIL
+          values << [:lit, nil]
           expr_lexer.advance
         when ExpressionLexer::EOF
           break
