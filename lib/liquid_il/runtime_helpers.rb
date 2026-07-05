@@ -237,6 +237,100 @@ module LiquidIL
       end
     end
 
+    # ── External partial references ─────────────────────────────────────
+    # An EXTERNAL partial is NOT compiled into the entry artifact; the call
+    # site emits `_H.epc(...)` and the partial's compiled artifact is supplied
+    # at render time by a PartialProvider (`provider.call(name, digest) ->
+    # callable`) resolved from scope registers. The seam keeps the compiled
+    # partial-lambda calling convention: epc resolves the provider entry to a
+    # `->(_S, _O, isolated, caller_line:, parent_cycle_state:)` adapter and
+    # routes it through the SAME ipc/rpf/ipf drivers as in-artifact lambdas, so
+    # include semantics (caller-scope publication + interrupt propagation) and
+    # the invoke_partial error protocol are identical across the boundary.
+    # When no provider entry exists, execute_dynamic_partial (file_system
+    # compile) is the fallback — so a template compiled in index mode still
+    # renders anywhere a file_system is present.
+
+    # epc: single external {% render/include %} site. Resolves the provider
+    # (or file_system fallback) to a partial-lambda adapter and invokes it via
+    # ipc; a name missing from both provider and file_system produces the same
+    # error as a missing static partial today (via execute_dynamic_partial).
+    def self.epc(provider, name, digest, assigns, output, scope, isolated, caller_line, cycle_state = nil)
+      adapter = external_partial_lambda(provider, name, digest, scope)
+      if adapter
+        ipc(adapter, name, assigns, output, scope, isolated, caller_line, cycle_state)
+      else
+        execute_dynamic_partial(name, assigns, output, scope,
+          isolated: isolated, tag_type: isolated ? "render" : "include",
+          caller_line: caller_line, parent_cycle_state: cycle_state)
+      end
+    end
+
+    # Resolve (and per-render memoize) the partial-lambda adapter for an
+    # external partial. Returns nil only when the name is available from
+    # neither the provider nor the file_system — the caller then surfaces the
+    # missing-partial error. Memoized on the scope so a cold provider is asked
+    # at most once per (name, digest) per render, and never for partials whose
+    # call site does not execute.
+    def self.external_partial_lambda(provider, name, digest, scope)
+      cache = (scope.external_partial_cache ||= {})
+      key = digest ? "#{name} #{digest}" : name
+      return cache[key] if cache.key?(key)
+      cache[key] = build_external_partial_lambda(provider, name, digest, scope)
+    end
+
+    def self.build_external_partial_lambda(provider, name, digest, scope)
+      cproc = cpc = nil
+      if provider
+        callable = begin
+          provider.call(name, digest)
+        rescue StandardError
+          nil
+        end
+        if callable && (pair = external_callable(callable))
+          cproc, cpc = pair
+        end
+      end
+      if cproc.nil? && scope.file_system
+        source = read_partial_source(scope.file_system, name, scope)
+        if source
+          tmpl = compile_dynamic_partial(source, scope.file_system, scope)
+          cproc = tmpl.instance_variable_get(:@compiled_proc)
+          cpc = tmpl.instance_variable_get(:@partial_constants)
+        end
+      end
+      return nil unless cproc
+      # Adapter matches the compiled partial-lambda convention. The external
+      # artifact's proc builds its own `_O` and returns it (entry-artifact
+      # convention); we append it to the caller's buffer. For include the
+      # ipc driver passes the shared scope as `_S`, so scope publication and
+      # interrupt propagation flow through the same object.
+      if cpc
+        ->(_S, _O, _isolated, caller_line: 1, parent_cycle_state: nil) { _O << cproc.call(_S, cpc) }
+      else
+        ->(_S, _O, _isolated, caller_line: 1, parent_cycle_state: nil) { _O << cproc.call(_S) }
+      end
+    end
+
+    # Extract [compiled_proc, partial_constants] from a provider-supplied
+    # callable. Supports LiquidIL::CompiledArtifact and Template (the two
+    # things a host loads a partial into) plus a bare entry-convention Proc.
+    def self.external_callable(callable)
+      case callable
+      when Proc
+        [callable, nil]
+      when LiquidIL::CompiledArtifact
+        [callable.instance_variable_get(:@proc), callable.partial_constants]
+      when LiquidIL::Template
+        [callable.instance_variable_get(:@compiled_proc), callable.partial_constants]
+      else
+        if callable.respond_to?(:compiled_proc)
+          pc = callable.respond_to?(:partial_constants) ? callable.partial_constants : nil
+          [callable.compiled_proc, pc]
+        end
+      end
+    end
+
     # rolf/rolp: raw text + looked-up value in one send — the raw/lookup/raw
     # sandwich is the most common statement pair in real templates.
     def self.rolf(output, raw, obj, key)
