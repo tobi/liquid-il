@@ -408,7 +408,7 @@ module LiquidIL
         end
 
         {
-          key: tokens.join(""),
+          key: tokens.join("\n"),
           start: start,
           end: stop,
           instr_count: stop - start,
@@ -428,7 +428,9 @@ module LiquidIL
           dual_slots[tslot] = true
           [SeqRef.new(:local, tslot, true), "L#{tslot}"]
         else
-          key = path.empty? ? name : "#{name}#{path.join("")}"
+          # Structural key ([name, path]) so distinct reads never collide the
+          # way a string join could ("order"+["a","b"] vs "order"+["ab"]).
+          key = [name, path]
           slot = input_slot_of[key]
           unless slot
             slot = slot_kinds.length
