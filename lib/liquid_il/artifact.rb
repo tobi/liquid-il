@@ -48,12 +48,18 @@ module LiquidIL
 
     SEG_ISEQ = 1
     SEG_PARTIAL_CONSTANTS = 2
+    # External partial references only ({name => {digest:, disposition: :external}}):
+    # lets a loaded artifact report which per-file artifacts a host must
+    # prefetch. Added ONLY when external partials exist, so artifacts compiled
+    # without a partial_index (every existing user) stay byte-identical.
+    SEG_PARTIAL_DEPS = 3
 
     class << self
       # Encode a compiled Template into the persistable artifact string.
       def encode(template)
         iseq = template.iseq_binary
         partial_constants = template.partial_constants
+        ext_deps = external_deps(template.respond_to?(:partial_dependencies) ? template.partial_dependencies : nil)
 
         out = MAGIC.b
         out << VERSION.chr
@@ -64,11 +70,21 @@ module LiquidIL
         if partial_constants && !partial_constants.empty?
           segments << [SEG_PARTIAL_CONSTANTS, Marshal.dump(partial_constants)]
         end
+        if ext_deps && !ext_deps.empty?
+          segments << [SEG_PARTIAL_DEPS, Marshal.dump(ext_deps)]
+        end
         out << segments.length.chr
         segments.each do |type, bytes|
           out << [type, bytes.bytesize].pack("CV") << bytes
         end
         out
+      end
+
+      # The external-only subset of a partial_dependencies hash (or nil).
+      def external_deps(deps)
+        return nil unless deps
+        ext = deps.select { |_name, info| info[:disposition] == :external }
+        ext.empty? ? nil : ext
       end
 
       # True if the blob is a framed artifact (vs a legacy Marshal payload).
@@ -104,6 +120,7 @@ module LiquidIL
 
         iseq = nil
         partial_constants = nil
+        partial_deps = nil
         seg_count.times do
           type = blob.getbyte(pos)
           len_bytes = blob.byteslice(pos + 1, 4)
@@ -117,6 +134,7 @@ module LiquidIL
           case type
           when SEG_ISEQ then iseq = bytes
           when SEG_PARTIAL_CONSTANTS then partial_constants = Marshal.load(bytes)
+          when SEG_PARTIAL_DEPS then partial_deps = Marshal.load(bytes)
             # Unknown segment types are skipped (forward compatibility)
           end
         end
@@ -126,7 +144,7 @@ module LiquidIL
           raise CorruptArtifactError, "artifact digest mismatch — refusing to load ISeq"
         end
 
-        [iseq, partial_constants, crc]
+        [iseq, partial_constants, crc, partial_deps]
       end
 
       # Load an artifact (or legacy Marshal payload) into a renderable Template.
@@ -147,9 +165,9 @@ module LiquidIL
         # staleness checks); the ISeq segment integrity check happens inside
         # decode_segments.
         if artifact?(blob)
-          iseq, partial_constants, = decode_segments(blob)
+          iseq, partial_constants, _crc, partial_deps = decode_segments(blob)
           compiled_proc = RubyVM::InstructionSequence.load_from_binary(iseq).eval
-          CompiledArtifact.new(compiled_proc, partial_constants, blob.bytesize, Zlib.crc32(blob))
+          CompiledArtifact.new(compiled_proc, partial_constants, blob.bytesize, Zlib.crc32(blob), partial_deps)
         else
           data = Marshal.load(blob)
           compiled_proc = RubyVM::InstructionSequence.load_from_binary(data[:iseq_binary]).eval

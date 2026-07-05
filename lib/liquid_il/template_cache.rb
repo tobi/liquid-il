@@ -10,40 +10,50 @@ module LiquidIL
   # Unlike Template, this carries no source/context. Rendering builds
   # the Scope directly (no context/register merging).
   class CompiledArtifact
-    attr_reader :byte_size, :digest, :partial_constants
+    attr_reader :byte_size, :digest, :partial_constants, :partial_dependencies
 
-    def initialize(compiled_proc, partial_constants, byte_size, digest)
+    def initialize(compiled_proc, partial_constants, byte_size, digest, partial_dependencies = nil)
       @proc = compiled_proc
       @partial_constants = partial_constants
       @byte_size = byte_size
       @digest = digest
+      # {name => {digest:, disposition:}} — only external entries are persisted
+      # (see Artifact); nil for artifacts with no external partials.
+      @partial_dependencies = partial_dependencies
     end
 
-    def render(assigns = {}, registers: nil, render_errors: true, static_environments: nil, **extra_assigns)
+    def render(assigns = {}, registers: nil, render_errors: true, static_environments: nil,
+               partial_provider: nil, output: nil, **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       regs = registers || EMPTY_HASH
       scope = Scope.new(assigns, registers: regs, static_environments: static_environments)
       scope.file_system = regs["file_system"] || regs[:file_system]
       scope.render_errors = render_errors
+      scope.partial_provider = partial_provider if partial_provider
       global = Filters.global_registry
       scope.custom_filters = global unless global.empty?
 
-      if @partial_constants
-        @proc.call(scope, @partial_constants)
-      else
-        @proc.call(scope)
-      end
+      result =
+        if @partial_constants
+          @proc.call(scope, @partial_constants)
+        else
+          @proc.call(scope)
+        end
+      output ? (output << result) : result
     rescue LiquidIL::ResourceLimitError => e
       raise unless render_errors
-      (e.partial_output || "") + "Liquid error: #{e.message}"
+      out = (e.partial_output || "") + "Liquid error: #{e.message}"
+      output ? (output << out) : out
     rescue LiquidIL::RuntimeError => e
       raise unless render_errors
-      output = e.partial_output || ""
+      pre = e.partial_output || ""
       location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
-      output + "Liquid error (#{location}): #{e.message}"
+      out = pre + "Liquid error (#{location}): #{e.message}"
+      output ? (output << out) : out
     rescue StandardError => e
       raise unless render_errors
-      "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
+      out = "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
+      output ? (output << out) : out
     end
 
     def render!(assigns = {}, **options)
@@ -73,6 +83,12 @@ module LiquidIL
     rescue StandardError => e
       raise unless scope.render_errors
       "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
+    end
+
+    # Append into a caller-provided buffer instead of returning a fresh string;
+    # returns the buffer. Mirrors Template#render_to_output_buffer.
+    def render_to_output_buffer(context_or_assigns = {}, output = +"", **options)
+      render(context_or_assigns, output: output, **options)
     end
   end
 

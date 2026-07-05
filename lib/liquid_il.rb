@@ -97,13 +97,18 @@ module LiquidIL
   end
 
   class Context
-    attr_accessor :file_system, :strict_errors, :registers
+    attr_accessor :file_system, :strict_errors, :registers, :partial_index
     attr_reader :custom_filters, :strict_variables, :strict_filters, :resource_limits, :error_mode
 
     def initialize(file_system: nil, strict_errors: false, registers: {},
                    strict_variables: false, strict_filters: false,
-                   resource_limits: nil, error_mode: :strict2)
+                   resource_limits: nil, error_mode: :strict2,
+                   partial_index: nil)
       @file_system = file_system
+      # Digest index (name -> content_digest) for the external-partial compile
+      # mode: resolve which partials exist and their identity WITHOUT fetching
+      # bodies. See RubyCompiler#should_externalize?.
+      @partial_index = partial_index
       @strict_errors = strict_errors
       @registers = registers
       @strict_variables = strict_variables
@@ -209,7 +214,7 @@ module LiquidIL
   #
   class Template
     attr_reader :source, :instructions, :compiled_source, :errors, :warnings,
-                :partial_constants
+                :partial_constants, :partial_dependencies
 
     def initialize(source, instructions, context, compiled_result, iseq_binary: nil)
       @source = source
@@ -218,6 +223,11 @@ module LiquidIL
       @compiled_proc = compiled_result.proc
       @compiled_source = compiled_result.source
       @partial_constants = compiled_result.partial_constants
+      # {name => {digest:, disposition: :inline|:lambda|:external}} — lets a host
+      # build a composite cache key (entry digest + baked-partial digests) and
+      # know which external artifacts to prefetch. nil when the template has no
+      # partials. See RubyCompiler#compute_partial_dependencies.
+      @partial_dependencies = compiled_result.respond_to?(:partial_dependencies) ? compiled_result.partial_dependencies : nil
       @iseq_binary = iseq_binary
       @errors = []
       @warnings = []
@@ -290,6 +300,8 @@ module LiquidIL
                strict_variables: nil, strict_filters: nil,
                static_environments: nil,
                resource_limits: nil,
+               partial_provider: nil,
+               output: nil,
                **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
       ctx = @context
@@ -324,28 +336,58 @@ module LiquidIL
       # render-time hashes so cumulative counters are shared only within this render.
       limits = resource_limits.is_a?(Hash) ? resource_limits.dup : resource_limits
       scope.resource_limits = limits || ctx&.resource_limits if limits || ctx&.resource_limits
+      # Render-time PartialProvider for external partial references. An explicit
+      # option wins over a registers["partial_provider"] entry (already picked
+      # up by Scope#initialize).
+      scope.partial_provider = partial_provider if partial_provider
 
-      if @partial_constants
-        @compiled_proc[scope, @partial_constants]
-      else
-        @compiled_proc[scope]
-      end
+      result =
+        if @partial_constants
+          @compiled_proc[scope, @partial_constants]
+        else
+          @compiled_proc[scope]
+        end
+      # Optional caller-provided buffer (render_to_output_buffer): append and
+      # return it. The compiled proc still builds its own _O — see the note on
+      # render_to_output_buffer for why threading the buffer into the proc is
+      # incompatible with the byte-identical-emission gate.
+      output ? (output << result) : result
     rescue LiquidIL::ResourceLimitError => e
       raise unless render_errors
-      (e.partial_output || "") + "Liquid error: #{LiquidIL.clean_error_message(e.message)}"
+      out = (e.partial_output || "") + "Liquid error: #{LiquidIL.clean_error_message(e.message)}"
+      output ? (output << out) : out
     rescue LiquidIL::RuntimeError => e
       raise unless render_errors
-      output = e.partial_output || ""
+      pre = e.partial_output || ""
       location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
-      output + "Liquid error (#{location}): #{e.message}"
+      out = pre + "Liquid error (#{location}): #{e.message}"
+      output ? (output << out) : out
     rescue StandardError => e
       raise unless render_errors
-      "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
+      out = "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
+      output ? (output << out) : out
     end
 
     # Strict render — raises on any error instead of rendering inline.
     def render!(assigns = {}, **options)
       render(assigns, render_errors: false, **options)
+    end
+
+    # Render, appending into a caller-provided String buffer instead of
+    # returning a fresh one; returns the buffer. The storefront renderer's
+    # contract (renderable_template.rb) expects this shape (a 16KB preallocated
+    # buffer per request).
+    #
+    #   buf = +"<html>"
+    #   template.render_to_output_buffer({ "x" => 1 }, buf)  # => buf, extended
+    #
+    # Note: the compiled proc emits `_O = +""` unconditionally, so it still
+    # allocates its own buffer and we append the result. Threading the buffer
+    # INTO the proc would change emitted source (hence every artifact's bytes),
+    # which the byte-identical-emission gate forbids; the extra append-copy is
+    # the price of that guarantee.
+    def render_to_output_buffer(context_or_assigns = {}, output = +"", **options)
+      render(context_or_assigns, output: output, **options)
     end
 
     # Generate standalone Ruby source code as a module.
