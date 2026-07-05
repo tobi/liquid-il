@@ -91,12 +91,15 @@ module LiquidIL
       end
 
       def dedup_enabled?
-        # OFF BY DEFAULT (2026-07-05): the pass's candidate matching costs
-        # ~8x compile time on real templates (storefront set 9.6ms → 75ms;
-        # order_email alone +48ms) for artifact wins worth single-digit
-        # microseconds of remote-hit — a bad trade for the cache-miss
-        # column. LIQUID_DEDUP=1 re-enables for development until the
-        # matcher is made linear; the correctness tests run with it set.
+        # OFF BY DEFAULT. The discovery was rewritten near-linear
+        # (2026-07-05: two-stage fingerprint bucketing replaced the all-
+        # windows enumeration — storefront-set compile 75ms → 12.2ms,
+        # byte-identical group selection), but even at ~+34% compile the
+        # trade is wrong while the wins are main-body-only artifact bytes
+        # worth single-digit microseconds of remote-hit: cache-miss is the
+        # scoreboard column LiquidIL still loses. Revisit the default when
+        # v2 (in-loop dedup) multiplies the artifact win. LIQUID_DEDUP=1
+        # opts in; the correctness tests set it explicitly.
         @optimize && ENV["LIQUID_DEDUP"] == "1"
       end
 
@@ -156,24 +159,62 @@ module LiquidIL
 
       # ── Candidate discovery ────────────────────────────────────────────────
 
+      # Windows longer than this many STATEMENTS are not considered (template-
+      # authored repetition is short; the cap bounds discovery at O(n * CAP)).
+      MAX_WINDOW_STATEMENTS = 16
+
+      # Two-stage discovery, near-linear instead of the old all-windows
+      # enumeration (which ran the full analyze_window abstraction on every
+      # contiguous (i,j) statement pair — O(S^2) windows x O(len) walks, ~48ms
+      # on order_email alone):
+      #
+      #   1. COARSE: one context-free integer fingerprint per statement (names,
+      #      paths and assign targets abstracted to fixed markers — a strict
+      #      superset relation: windows with equal exact keys always have equal
+      #      coarse sequences). Then every window of 1..MAX_WINDOW_STATEMENTS
+      #      statements gets an O(1)-incremental combined hash and is bucketed
+      #      by [length, hash] — integers only, no allocation per window.
+      #   2. EXACT: only buckets with >= MIN_OCCURRENCES windows and enough
+      #      instructions run the real analyze_window abstraction, whose key
+      #      then splits hash collisions and aliasing-pattern differences
+      #      (in-run target reads vs free inputs) exactly as before.
       def find_dedup_groups
         blocks = []
         each_eligible_region { |lo, hi| collect_blocks(lo, hi, blocks) }
 
-        # Enumerate every contiguous-statement window in every block, key by
-        # abstracted shape, and group.
-        by_key = Hash.new { |h, k| h[k] = [] }
+        # Integer-only bucketing: the bucket key packs the window hash and its
+        # statement length into one Integer, and each window packs [start, end)
+        # into one Integer — no per-window array allocation.
+        buckets = {}
         blocks.each do |stmts|
           n = stmts.length
+          fps = Array.new(n) { |i| statement_fingerprint(stmts[i][0], stmts[i][1]) }
           i = 0
           while i < n
-            j = i
-            while j < n
-              info = analyze_window(stmts[i][0], stmts[j][1])
-              by_key[info[:key]] << info if info
-              j += 1
+            h = 0
+            max_l = [MAX_WINDOW_STATEMENTS, n - i].min
+            start = stmts[i][0]
+            l = 0
+            while l < max_l
+              h = ((h * 1_000_003) ^ fps[i + l]) & 0x3ff_ffff_ffff_ffff
+              endx = stmts[i + l][1]
+              # Instruction-count floor is a candidacy filter, not correctness.
+              if endx - start >= MIN_INSTRUCTIONS
+                key = (h << 4) | l
+                (buckets[key] ||= []) << ((start << 24) | endx)
+              end
+              l += 1
             end
             i += 1
+          end
+        end
+
+        by_key = Hash.new { |h, k| h[k] = [] }
+        buckets.each_value do |wins|
+          next if wins.length < MIN_OCCURRENCES
+          wins.each do |packed|
+            info = analyze_window(packed >> 24, packed & 0xff_ffff)
+            by_key[info[:key]] << info if info
           end
         end
 
@@ -195,6 +236,40 @@ module LiquidIL
           }
         end
         groups
+      end
+
+      # Context-free per-statement shape hash mirroring analyze_window's
+      # abstraction, minus window-relative slot numbering: every variable
+      # name, path, and assign target collapses to a fixed marker (exact-stage
+      # analysis restores the slot/aliasing distinctions); CALL_FILTER ignores
+      # its line operand; literals hash by content.
+      def statement_fingerprint(s, e)
+        h = 0x9e3779b97f4a7c15
+        i = s
+        while i < e
+          inst = @instructions[i]
+          op = inst[0]
+          h = ((h * 31) ^ op.hash) & 0x3fff_ffff_ffff_ffff
+          case op
+          when IL::FIND_VAR, IL::WRITE_VAR, IL::ASSIGN, IL::ASSIGN_LOCAL,
+               IL::FIND_VAR_PATH, IL::WRITE_VAR_PATH
+            # name/path abstracted (they become call args or target slots)
+            h ^= 0x5bd1
+          when IL::CALL_FILTER
+            h = ((h * 31) ^ inst[1].hash ^ inst[2].hash) & 0x3fff_ffff_ffff_ffff
+          when IL::CONST_STRING, IL::WRITE_RAW
+            h = ((h * 31) ^ inst[1].hash) & 0x3fff_ffff_ffff_ffff
+          else
+            j = 1
+            n = inst.length
+            while j < n
+              h = ((h * 31) ^ inst[j].hash) & 0x3fff_ffff_ffff_ffff
+              j += 1
+            end
+          end
+          i += 1
+        end
+        h
       end
 
       # Yield [lo, hi) for each maximal run of allowlisted instructions that sits
