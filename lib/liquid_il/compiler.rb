@@ -38,6 +38,12 @@ module LiquidIL
     end
 
     def compile
+      # Item A: link_and_strip fills these when it runs (it walks the final
+      # post-optimization stream — the same stream the hoist census needs — so
+      # the census rides along instead of paying a separate full pass). Left
+      # false for label-free templates and optimize:false, where the backend
+      # falls back to RubyCompiler#compute_hoisted_lookups.
+      @hoist_ran = false
       parser = Parser.new(@source,
         # :lax when unspecified — internal callers (statically-compiled
         # partials) parse lax, matching the liquid gem; Compiler::Ruby.compile
@@ -69,7 +75,12 @@ module LiquidIL
         IL.link(instructions)
       end
 
-      { instructions: instructions }
+      # Item A: hand link_and_strip's hoisted-lookup census to the Ruby backend
+      # so it need not re-walk the whole IL. nil => backend falls back to
+      # RubyCompiler#compute_hoisted_lookups.
+      hoist = @hoist_ran ? [@hoist_counts, @hoist_written, @hoist_blocked] : nil
+
+      { instructions: instructions, hoist: hoist }
     end
 
     private
@@ -741,17 +752,48 @@ module LiquidIL
     # Fused link + strip_labels: combines IL.link and strip_labels into 2 passes
     # instead of 5+ passes, saving 17-20µs for typical templates
     def link_and_strip(instructions)
-      # Pass 1: collect label positions (label_id -> index)
+      # Pass 1: collect label positions (label_id -> index) and, riding along on
+      # this same walk of the final stream, the hoisted-lookup census (Item A):
+      # read counts per name, the written-name set, and whether hoisting is
+      # blocked. This is the exact stream and classification
+      # RubyCompiler#compute_hoisted_lookups would re-walk, so no overcount —
+      # it just avoids a second full pass. See derive_hoisted_lookups.
       label_positions = {}
+      hcounts = Hash.new(0)
+      hwritten = nil
+      hoist_active = true
       len = instructions.length
       i = 0
       while i < len
         inst = instructions[i]
-        if inst[0] == IL::LABEL
+        opcode = inst[0]
+        if opcode == IL::LABEL
           label_positions[inst[1]] = i
+        elsif hoist_active
+          case opcode
+          when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::WRITE_VAR, IL::WRITE_VAR_PATH
+            hcounts[inst[1]] += 1
+          when IL::ASSIGN, IL::ASSIGN_LOCAL, IL::INCREMENT, IL::DECREMENT,
+               IL::FOR_INIT, IL::TABLEROW_INIT
+            (hwritten ||= {})[inst[1]] = true
+          when :PAGINATE_SETUP
+            hw = (hwritten ||= {})
+            hw["paginate"] = true
+            parts = inst[1].to_s.split(".")
+            hw[parts.first] = true
+            hw[parts.last] = true
+          when IL::INCLUDE_PARTIAL, IL::CONST_INCLUDE, :SHOPIFY_SECTION_RENDER
+            hoist_active = false
+          else
+            hoist_active = false unless RubyCompiler::HOIST_NEUTRAL_OPS[opcode]
+          end
         end
         i += 1
       end
+      @hoist_counts = hcounts
+      @hoist_written = hwritten
+      @hoist_blocked = !hoist_active
+      @hoist_ran = true
 
       # Quick path: no labels at all
       if label_positions.empty?

@@ -47,9 +47,12 @@ module LiquidIL
     # Cached indent strings to avoid repeated "  " * n allocations
     INDENT = Array.new(20) { |i| ("  " * i).freeze }.freeze
 
-    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil)
+    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil, hoist_data: nil)
       @instructions = instructions
       @context = context
+      # Optimizer-provided hoisted-lookup census [counts, written, blocked],
+      # or nil to fall back to a fresh IL walk (compute_hoisted_lookups).
+      @hoist_data = hoist_data
       @loop_depth = 0 # Track nested loop depth for parentloop support
       # Compile-time current file (nil for the main template, the partial
       # name inside partial compilations — see compile_partial). Baked into
@@ -169,7 +172,8 @@ module LiquidIL
         instructions,
         context: @context,
         partials: @partials,
-        partial_names_in_progress: @partial_names_in_progress
+        partial_names_in_progress: @partial_names_in_progress,
+        hoist_data: result[:hoist]
       )
       # Share frozen array usage map so partial constants are declared in the parent proc
       ruby_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
@@ -340,8 +344,14 @@ module LiquidIL
       RuntimeHelpers.init
 
       # Decide hoisted lookups from the IL before any code exists —
-      # emission consults @hoisted_lookups through scope_lookup.
-      @hoisted_lookups = compute_hoisted_lookups
+      # emission consults @hoisted_lookups through scope_lookup. The optimizer
+      # already walked every instruction and handed us the census (@hoist_data);
+      # only re-walk when it didn't run (optimize: false).
+      @hoisted_lookups = if @hoist_data
+        derive_hoisted_lookups(*@hoist_data)
+      else
+        compute_hoisted_lookups
+      end
 
       # Generate body first so inlining info is available for partial lambdas
       body_code = generate_body  # also sets @uses_cycles, @uses_captures, @uses_ifchanged, @inlined_partials
@@ -410,6 +420,10 @@ module LiquidIL
       :PAGINATE_TEARDOWN
     ].to_h { |op| [op, true] }.freeze
 
+    # Fallback census for when the optimizer did not hand one in via @hoist_data
+    # (label-free templates that skip link_and_strip, or optimize: false). The
+    # normal path folds this exact walk into link_and_strip's final-stream scan
+    # — see Compiler#link_and_strip.
     def compute_hoisted_lookups
       counts = Hash.new(0)
       written = nil
@@ -433,6 +447,14 @@ module LiquidIL
           return EMPTY_HOISTS unless HOIST_NEUTRAL_OPS[op]
         end
       end
+      derive_hoisted_lookups(counts, written, false)
+    end
+
+    # Turn a read census (name -> count), a written-name set, and a blocked flag
+    # into the name -> local map. Shared by the fallback scan above and the
+    # optimizer-provided census (@hoist_data).
+    def derive_hoisted_lookups(counts, written, blocked)
+      return EMPTY_HOISTS if blocked
       hoisted = nil
       counts.each do |name, c|
         next if c < HOIST_MIN_USES
@@ -3059,7 +3081,8 @@ module LiquidIL
 
         ruby_compiler = RubyCompiler.new(
           instructions,
-          context: context
+          context: context,
+          hoist_data: result[:hoist]
         )
         if options[:template_name]
           ruby_compiler.instance_variable_set(:@current_file_lit, options[:template_name])
