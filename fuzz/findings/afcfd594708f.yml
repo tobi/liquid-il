@@ -1,0 +1,15 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_afcfd594708f
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 15, ref_ctx: "\there0false3{}日本語こんにちは{\"",
+    lil_ctx: "\there0false3[{}, \"日本語こんに"}'
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, name: "split"}}]'
+  seed: 1990268906
+  subprocess_confirmed: true
+template: "{{ nil | split }}"
+environment: {}
+expected: 'Liquid error: wrong number of arguments (given 1, expected 2)'
+complexity: 100
+_liquidil_actual: ''

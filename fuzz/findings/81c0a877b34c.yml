@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_81c0a877b34c
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 76, ref_ctx: "Liquid error: divided by",
+    lil_ctx: "Liquid error (line 7): d"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: "=="},
+    body: [{type: :if, branches: [{cond: {type: :lit, value: "TrueClass"}, body: [{type:
+    :case, whens: [{values: [{}, {}], body: [{type: :output, expr: {type: :chain,
+    base: "id"}}]}]}]}]}]}]}]'
+  seed: 1089639399
+  subprocess_confirmed: true
+template: "{% if nil == nil %}{% if true %}{% case nil %}{% when nil, nil %}{{ values
+  }}{% endcase %}{% endif %}{% endif %}"
+environment:
+  values: {}
+expected: "{}{}"
+complexity: 100
+_liquidil_actual: "{}"

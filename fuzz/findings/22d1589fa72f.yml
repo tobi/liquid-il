@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_22d1589fa72f
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 54, ref_ctx: "re\ntab\there\n50% off\n{\"ke",
+    lil_ctx: "re\ntab\there\n{\"key_38\" =>"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :lit, value:
+    "Float"}, body: [{type: :cycle, values: [{type: :chain, accessors: [{bracket:
+    {type: :chain, base: "id"}}]}]}]}]}]'
+  seed: 1314868122
+  subprocess_confirmed: true
+template: "{% if 1.5 %}{% cycle [count] %}{% endif %}"
+environment:
+  count: {}
+expected: ''
+complexity: 100
+_liquidil_actual: "{}"

@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_6e1a804d6424
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "false-10<tr ", lil_ctx:
+    "Liquid error"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :case, whens: [{values: [{type: :chain, accessors: [{dot: "id"}]}], body:
+    [{type: :increment}]}]}]}]'
+  seed: 64565017
+  subprocess_confirmed: true
+template: "{% for node in (nil..nil) %}{% case nil %}{% when .first %}{% increment
+  \ %}{% endcase %}{% endfor %}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: ''

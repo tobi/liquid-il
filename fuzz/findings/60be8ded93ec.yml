@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_60be8ded93ec
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 172, ref_ctx: "% percent\n  a { brace
+    } ", lil_ctx: "% percent\n  falsea { bra"}'
+  signature: 'output_mismatch::[{type: :raw_tag, text: "id"}, {type: :assign, name:
+    "id", ws: true}]'
+  seed: 1380496619
+  subprocess_confirmed: true
+template: |-
+  {% raw %}a { brace } c
+  {% endraw %}{%- assign value = nil -%}
+environment: {}
+expected: 'a { brace } c
+
+  '
+complexity: 100
+_liquidil_actual: a { brace } c

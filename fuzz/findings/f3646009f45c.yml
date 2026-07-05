@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_f3646009f45c
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 9, ref_ctx: "true0true0<tr class=\"",
+    lil_ctx: "true0trueInfinity<tr "}'
+  signature: 'output_mismatch::[{type: :liquid_block, lines: [{type: :assign, name:
+    "id", expr: {type: :filter, target: {type: :filter, name: "prepend"}, name: "divided_by"}}]}]'
+  seed: 1675341126
+  subprocess_confirmed: true
+template: |-
+  {% liquid
+  assign item = nil | prepend | divided_by
+  %}
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): wrong number of arguments (given 1, expected
+  2)'

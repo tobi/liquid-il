@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_8c7c4268e524
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 41, ref_ctx: "y % percent\nfalse0\n<div>",
+    lil_ctx: "y % percent\nnullLiquid e"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: ">",
+    left: {type: :lit, value: "String"}, right: {type: :lit, value: "Float"}}}]}]'
+  seed: 1066381693
+  subprocess_confirmed: true
+template: '{% if "{{ not_a_tag }}520" > 1.5 %}{% endif %}'
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): comparison of String with 1.5 failed'

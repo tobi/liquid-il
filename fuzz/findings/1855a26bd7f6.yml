@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_1855a26bd7f6
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 1, ref_ctx: "00price: $9.9", lil_ctx:
+    "0\u0000price: $9.9"}'
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, target: {type:
+    :filter, target: {type: :chain, base: "id"}, name: "lstrip"}, name: "round"}}]'
+  seed: 1267567175
+  subprocess_confirmed: true
+template: "{{ nums | lstrip | round }}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "\0"

@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_5cfb2101c594
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 71, ref_ctx: "Liquid error: comparison",
+    lil_ctx: "Liquid error (line 1): c"}'
+  signature: 'output_mismatch::[{type: :capture, name: "id"}, {type: :capture, name:
+    "id"}, {type: :if, branches: [{cond: {type: :binop, op: "<=", left: {type: :chain,
+    base: "id"}, right: {type: :chain, base: "id"}}}]}]'
+  seed: 2102527279
+  subprocess_confirmed: true
+template: "{% capture entry %}{% endcapture %}{% capture x %}{% endcapture %}{% if
+  entry <= x %}{% endif %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): comparison of String with String failed'

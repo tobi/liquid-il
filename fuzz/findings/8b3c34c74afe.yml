@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_8b3c34c74afe
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 24, ref_ctx: " } c03.14159  tab\there\n-",
+    lil_ctx: " } c03.14159Liquid error"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: "contains",
+    left: {type: :chain, accessors: [{bracket: {type: :lit, value: "String"}}]}},
+    body: [{type: :render, name: "id"}]}]}]'
+  seed: 1305141682
+  subprocess_confirmed: true
+template: '{% if ["Hello, World!719"] contains nil %}{% render "row" %}{% endif %}'
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): Unknown operator World!719"]'

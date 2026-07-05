@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_f29cf61ff444
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 144, ref_ctx: "syntax error: Unexpected",
+    lil_ctx: "syntax error (aside line"}'
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, target: {type:
+    :filter, target: {type: :filter, name: "split"}, name: "upcase"}, name: "round"}}]'
+  seed: 770673401
+  subprocess_confirmed: true
+template: "{{ nil | split | upcase | round }}"
+environment: {}
+expected: 'Liquid error: wrong number of arguments (given 1, expected 2)'
+complexity: 100
+_liquidil_actual: "\0"

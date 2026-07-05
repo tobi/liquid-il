@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_1e1c9e77f098
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "0<div>markup", lil_ctx:
+    "Liquid error"}'
+  signature: 'output_mismatch::[{type: :capture, name: "id", body: [{type: :output,
+    expr: {type: :filter, target: {type: :filter, target: {type: :chain, base: "id"},
+    name: "strip"}, name: "last"}}]}]'
+  seed: 1348613469
+  subprocess_confirmed: true
+template: "{% capture nums %}{{ count | strip | last }}{% endcapture %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): no implicit conversion of nil into String'

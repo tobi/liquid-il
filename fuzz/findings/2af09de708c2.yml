@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_2af09de708c2
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 15, ref_ctx: "ay % percent7  ", lil_ctx:
+    "ay % percent\a  "}'
+  signature: 'output_mismatch::[{type: :echo, expr: {type: :filter, target: {type:
+    :filter, target: {type: :chain, base: "id"}, name: "lstrip"}, name: "size"}}]'
+  seed: 1901083088
+  subprocess_confirmed: true
+template: "{% echo names | lstrip | size %}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "\0"

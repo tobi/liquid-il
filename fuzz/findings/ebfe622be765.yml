@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_ebfe622be765
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "0stray % per", lil_ctx:
+    "\u0000stray % per"}'
+  signature: 'output_mismatch::[{type: :liquid_block, lines: [{type: :echo, expr:
+    {type: :filter, target: {type: :filter, target: {type: :chain, base: "id"}, name:
+    "strip"}, name: "floor"}}]}]'
+  seed: 1014836987
+  subprocess_confirmed: true
+template: |-
+  {% liquid
+  echo y | strip | floor
+  %}
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "\0"

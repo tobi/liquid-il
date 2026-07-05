@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_3afb74ce23e7
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 17, ref_ctx: "café 日本語\n0-18café 日本語\n0.",
+    lil_ctx: "café 日本語\n0-1Liquid error"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: "!=",
+    right: {type: :lit, value: "FalseClass"}}, body: [{type: :output, expr: {type:
+    :filter, target: {type: :filter, target: {type: :chain, base: "id"}, name: "lstrip"},
+    name: "floor"}}]}]}]'
+  seed: 1131074524
+  subprocess_confirmed: true
+template: "{% if nil != false %}{{ entry | lstrip | floor }}{% endif %}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "\0"

@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_15610f8411d9
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 7, ref_ctx: \"398true0emoji \U0001F600\\ntab\",
+    lil_ctx: \"398true[0]emoji \U0001F600\\nt\"}"
+  signature: 'output_mismatch::[{type: :case, whens: [{body: [{type: :echo, expr:
+    {type: :filter, name: "split"}}]}]}]'
+  seed: 370667747
+  subprocess_confirmed: true
+template: "{% case nil %}{% when nil %}{% echo nil | split %}{% endcase %}"
+environment: {}
+expected: 'Liquid error: wrong number of arguments (given 1, expected 2)'
+complexity: 100
+_liquidil_actual: ''

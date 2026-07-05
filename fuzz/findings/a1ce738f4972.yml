@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_a1ce738f4972
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 57, ref_ctx: "arkup</div>001.51.51.51.",
+    lil_ctx: "arkup</div>0\u00001.51.51.51."}'
+  signature: 'output_mismatch::[{type: :echo, expr: {type: :filter, target: {type:
+    :filter, target: {type: :chain, base: "id"}, name: "lstrip"}, name: "abs"}}]'
+  seed: 1141720933
+  subprocess_confirmed: true
+template: "{% echo record | lstrip | abs %}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "\0"

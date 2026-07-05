@@ -1,0 +1,21 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_7a5411eee4a4
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 1, ref_ctx: "012343.141590", lil_ctx:
+    "0Hello, World"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :for, var: "id", coll: {type: :chain, base: "id"}, body: [{type: :raw_tag,
+    text: "id"}]}]}]'
+  seed: 277363065
+  subprocess_confirmed: true
+template: |-
+  {% for value in (nil..nil) %}{% for value in forloop %}{% raw %}Hello, World!
+  {% endraw %}{% endfor %}{% endfor %}
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Hello, World!
+
+  '

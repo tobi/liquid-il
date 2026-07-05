@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_a31d705d0922
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "0-1<div>mark", lil_ctx:
+    "[0]-1<div>ma"}'
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, target: {type:
+    :filter, target: {type: :filter, target: {type: :chain, base: "id"}, name: "floor"},
+    name: "floor"}, name: "sort_natural"}}]'
+  seed: 1342080029
+  subprocess_confirmed: true
+template: "{{ values | floor | floor | sort_natural }}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "[0]"

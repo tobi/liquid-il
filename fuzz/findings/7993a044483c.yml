@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_7993a044483c
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 26, ref_ctx: "Liquid error: divided by",
+    lil_ctx: "Liquid error (line 2): d"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :output, expr: {type: :filter, target: {type: :filter, name: "json"},
+    name: "upcase"}}]}]'
+  seed: 1979879971
+  subprocess_confirmed: true
+template: "{% for elem in (nil..nil) %}{{ nil | json | upcase }}{% endfor %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'NULL'

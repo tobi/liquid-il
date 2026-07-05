@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_b59c8e9f0727
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 18, ref_ctx: "本語\nTrue0.0-1\" %}<tr clas",
+    lil_ctx: "本語\nTrue0.0-1"}'
+  signature: 'output_mismatch::[{type: :case, whens: [{values: [{type: :lit, value:
+    "String"}]}]}]'
+  seed: 1007041045
+  subprocess_confirmed: true
+template: '{% case nil %}{% when "{% not_a_tag %}" %}{% endcase %}'
+environment: {}
+expected: "\" %}"
+complexity: 100
+_liquidil_actual: ''

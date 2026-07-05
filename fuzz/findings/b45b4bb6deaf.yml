@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_b45b4bb6deaf
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 124, ref_ctx: "Liquid error: divided
+    by", lil_ctx: "Liquid error (line 4): d"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", else_body: [{type: :tablerow,
+    var: "id", coll: {type: :chain, base: "id", accessors: [{bracket: {}}]}}]}]'
+  seed: 1392075097
+  subprocess_confirmed: true
+template: "{% for row in nil %}{% else %}{% tablerow entry in entry[nil] %}{% endtablerow
+  %}{% endfor %}"
+environment:
+  entry: true
+expected: ''
+complexity: 100
+_liquidil_actual: |
+  <tr class="row1">
+  </tr>

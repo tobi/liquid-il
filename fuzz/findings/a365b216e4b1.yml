@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_a365b216e4b1
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 168, ref_ctx: "markup</div>\n1.5Liquid::",
+    lil_ctx: "markup</div>1.5false<div"}'
+  signature: 'output_mismatch::[{type: :unless, branches: [{body: [{type: :for, var:
+    "id", coll: {type: :range}, body: [{type: :cycle, values: [{type: :chain, base:
+    "id"}]}]}]}]}]'
+  seed: 194425524
+  subprocess_confirmed: true
+template: "{% unless nil %}{% for entry in (nil..nil) %}{% cycle forloop %}{% endfor
+  %}{% endunless %}"
+environment: {}
+expected: Liquid::ForloopDrop
+complexity: 100
+_liquidil_actual: ForloopDrop

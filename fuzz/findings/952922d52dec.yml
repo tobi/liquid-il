@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_952922d52dec
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "false", lil_ctx: "Liquid
+    error"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: ">",
+    left: {type: :chain, accessors: [{bracket: {type: :chain, accessors: [{bracket:
+    {type: :lit, value: "String"}}]}}]}}, body: [{type: :raw, text: "id"}]}]}]'
+  seed: 1131083962
+  subprocess_confirmed: true
+template: |-
+  {% if [["line1
+  line2"]] > nil %}café 日本語
+  {% endif %}
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): Unknown operator line2"]]'

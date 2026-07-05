@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_d7585f64d511
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "true50% off\n", lil_ctx:
+    "1.550% off\n0"}'
+  signature: 'output_mismatch::[{type: :if, else_body: [{type: :echo, expr: {type:
+    :filter, target: {type: :filter, target: {type: :chain, base: "id"}, name: "downcase"},
+    name: "floor"}}]}]'
+  seed: 553497657
+  subprocess_confirmed: true
+template: "{% if false %}{% else %}{% echo names | downcase | floor %}{% endif %}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "\0"

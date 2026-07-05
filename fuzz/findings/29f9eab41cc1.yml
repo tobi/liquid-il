@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_29f9eab41cc1
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 63, ref_ctx: "e50% offH16350% off\n0tru",
+    lil_ctx: "e50% offH163050% off\n0tr"}'
+  signature: 'output_mismatch::[{type: :assign, name: "id", expr: {type: :filter,
+    name: "times"}}]'
+  seed: 1521417249
+  subprocess_confirmed: true
+template: "{% assign flag = nil | times %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): wrong number of arguments (given 1, expected
+  2)'

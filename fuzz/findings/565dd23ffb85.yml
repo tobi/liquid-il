@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_565dd23ffb85
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 28, ref_ctx: \">\\n-1emoji \U0001F600\\n461168601842\",
+    lil_ctx: \">\\n-1emoji \U0001F600\\n<tr class=\\\"r\"}"
+  signature: 'output_mismatch::[{type: :if, else_body: [{type: :for, var: "id", coll:
+    {type: :range}, body: [{type: :cycle, values: [{type: :chain, accessors: [{bracket:
+    {type: :lit, value: "String"}}]}]}]}]}]'
+  seed: 285495073
+  subprocess_confirmed: true
+template: '{% if false %}{% else %}{% for row in (nil..nil) %}{% cycle ["_S_marker_298"]
+  %}{% endfor %}{% endif %}'
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: _S_marker_298

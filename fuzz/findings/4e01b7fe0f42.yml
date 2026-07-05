@@ -1,0 +1,24 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_4e01b7fe0f42
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 259, ref_ctx: "Liquid error: invalid
+    in", lil_ctx: "Liquid error (line 6): i"}'
+  signature: 'output_mismatch::[{type: :tablerow, var: "id", coll: {type: :chain,
+    base: "id"}, body: [{type: :output, expr: {type: :filter, name: "truncatewords",
+    args: [{}]}}]}]'
+  seed: 211968790
+  subprocess_confirmed: true
+template: "{% tablerow row in names %}{{ nil | truncatewords: nil }}{% endtablerow
+  %}"
+environment:
+  names:
+  - true
+expected: |
+  <tr class="row1">
+  <td class="col1"></td></tr>
+complexity: 100
+_liquidil_actual: |
+  <tr class="row1">
+  <td class="col1">Liquid error (line 1): invalid integer</td></tr>

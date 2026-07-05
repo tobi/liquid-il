@@ -1,0 +1,19 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_a0e4524f111f
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 14, ref_ctx: \"ueEMOJI \U0001F60050600a
+    { brace \", lil_ctx: \"ueEMOJI \U0001F600506Liquid error\"}"
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :logical, op:
+    "and", left: {type: :binop, op: "contains", left: {type: :chain, accessors: [{bracket:
+    {type: :lit, value: "String"}}]}}}, body: [{type: :tablerow, var: "id", body:
+    [{type: :continue}]}]}]}]'
+  seed: 1541939726
+  subprocess_confirmed: true
+template: '{% if ["  padded  "] contains nil and nil %}{% tablerow entry in nil %}{%
+  continue %}{% endtablerow %}{% endif %}'
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): Unknown operator padded'

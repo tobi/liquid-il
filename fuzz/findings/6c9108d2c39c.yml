@@ -1,0 +1,22 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_6c9108d2c39c
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 64, ref_ctx: "off\n50% off\n50% off\n50%
+    ", lil_ctx: "off\n50% off\n<tr class=\"r"}'
+  signature: 'output_mismatch::[{type: :case, whens: [{values: [{}, {}], body: [{type:
+    :for, var: "id", coll: {type: :range}, body: [{type: :raw, text: "id"}]}]}]}]'
+  seed: 1955368333
+  subprocess_confirmed: true
+template: |-
+  {% case nil %}{% when nil, nil %}{% for row in (nil..nil) %}50% off
+  {% endfor %}{% endcase %}
+environment: {}
+expected: |
+  50% off
+  50% off
+complexity: 100
+_liquidil_actual: '50% off
+
+  '

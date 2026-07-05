@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_366d707f16fd
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 201, ref_ctx: "Liquid error: invalid
+    in", lil_ctx: "Liquid error (header lin"}'
+  signature: 'output_mismatch::[{type: :case, whens: [{body: [{type: :echo, expr:
+    {type: :filter, target: {type: :filter, target: {type: :filter, name: "json"},
+    name: "capitalize"}, name: "sort"}}]}]}]'
+  seed: 1647990855
+  subprocess_confirmed: true
+template: "{% case nil %}{% when nil %}{% echo nil | json | capitalize | sort %}{%
+  endcase %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Null'

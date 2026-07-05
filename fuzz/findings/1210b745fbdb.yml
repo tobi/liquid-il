@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_1210b745fbdb
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 105, ref_ctx: \"</td></tr>\\n11[]\\nemoji
+    \U0001F600\\n\", lil_ctx: \"</td></tr>\\n1[]\\nemoji \U0001F600\\n5\"}"
+  signature: 'output_mismatch::[{type: :case, whens: [{values: [{}, {}], body: [{type:
+    :cycle, values: [{type: :lit, value: "Integer"}]}]}]}]'
+  seed: 292021528
+  subprocess_confirmed: true
+template: "{% case nil %}{% when nil, nil %}{% cycle 1 %}{% endcase %}"
+environment: {}
+expected: '11'
+complexity: 100
+_liquidil_actual: '1'

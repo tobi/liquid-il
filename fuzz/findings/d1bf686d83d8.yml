@@ -1,0 +1,22 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_d1bf686d83d8
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 42, ref_ctx: "ss=\"row1\">\n</tr>\n",
+    lil_ctx: "ss=\"row1\">\n<td class=\"co"}'
+  signature: 'output_mismatch::[{type: :tablerow, var: "id", coll: {type: :chain,
+    base: "id", accessors: [{dot: "id"}]}}]'
+  seed: 2101702347
+  subprocess_confirmed: true
+template: "{% tablerow it in count.first %}{% endtablerow %}"
+environment:
+  count:
+    a: []
+expected: |
+  <tr class="row1">
+  <td class="col1"></td><td class="col2"></td></tr>
+complexity: 100
+_liquidil_actual: |
+  <tr class="row1">
+  <td class="col1"></td></tr>

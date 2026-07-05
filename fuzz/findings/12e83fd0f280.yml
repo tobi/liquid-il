@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_12e83fd0f280
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "falsetrue0a ", lil_ctx:
+    "[false, nil]"}'
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, target: {type:
+    :filter, target: {type: :filter, name: "last"}, name: "rstrip"}, name: "size"}}]'
+  seed: 664089276
+  subprocess_confirmed: true
+template: "{{ nil | last | rstrip | size }}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "\0"

@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_b1ab2c512221
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "25-0.5872", lil_ctx: "[]ForloopDro"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :cycle, values: [{type: :chain, accessors: [{bracket: {type: :lit, value:
+    "Float"}}]}]}]}]'
+  seed: 235181388
+  subprocess_confirmed: true
+template: "{% for it in (nil..nil) %}{% cycle [-0.5] %}{% endfor %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: "-0.5"

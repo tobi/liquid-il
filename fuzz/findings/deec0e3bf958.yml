@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_deec0e3bf958
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 14, ref_ctx: "Liquid error: divided by",
+    lil_ctx: "Liquid error (line 1): d"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :logical, op:
+    "or", right: {type: :binop, op: "!=", right: {type: :chain, base: "id"}}}, body:
+    [{type: :output, expr: {type: :filter, name: "json"}}]}]}]'
+  seed: 1355086734
+  subprocess_confirmed: true
+template: "{% if nil or nil != data %}{{ nil | json }}{% endif %}"
+environment:
+  data: -0.5
+expected: ''
+complexity: 100
+_liquidil_actual: 'null'

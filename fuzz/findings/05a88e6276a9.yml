@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_05a88e6276a9
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "café 日本語\nemo", lil_ctx:
+    "falsecafé 日本"}'
+  signature: 'output_mismatch::[{type: :unless, branches: [{body: [{type: :output,
+    expr: {type: :filter, name: "truncatewords", args: [{}]}}]}]}]'
+  seed: 1677856525
+  subprocess_confirmed: true
+template: "{% unless nil %}{{ nil | truncatewords: nil }}{% endunless %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): invalid integer'

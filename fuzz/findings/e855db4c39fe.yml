@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_e855db4c39fe
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 19, ref_ctx: \"729tab\\there\\nfalse0Liquid\",
+    lil_ctx: \"729tab\\there\\nemoji \U0001F6007290F\"}"
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, target: {type:
+    :filter, target: {type: :chain, base: "id"}, name: "ceil"}, name: "compact"}}]'
+  seed: 1231144337
+  subprocess_confirmed: true
+template: "{{ count | ceil | compact }}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "[0]"

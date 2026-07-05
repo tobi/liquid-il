@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_accd381a92bf
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 44, ref_ctx: "Liquid error: invalid in",
+    lil_ctx: "Liquid error (header lin"}'
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, target: {type:
+    :filter, target: {type: :chain, base: "id"}, name: "upcase"}, name: "round"}}]'
+  seed: 1411517206
+  subprocess_confirmed: true
+template: "{{ b | upcase | round }}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "\0"

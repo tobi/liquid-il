@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_4b65d41f85e0
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 87, ref_ctx: \"tr>\\nemoji \U0001F600\\ntrue0\\n-0.0Li\",
+    lil_ctx: \"tr>\\nemoji \U0001F600\\n\\\"true\\\"0\\n-0.0\"}"
+  signature: 'output_mismatch::[{type: :unless, branches: [{cond: {type: :binop, op:
+    ">", left: {type: :chain, base: "id"}, right: {type: :lit, value: "Float"}}}]}]'
+  seed: 1512070320
+  subprocess_confirmed: true
+template: "{% unless x > 3.14159 %}{% endunless %}"
+environment:
+  x: "{{ not_a_tag }}"
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): comparison of String with 3.14159 failed'

@@ -1,0 +1,21 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_dddcc32cbc06
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "<div>markup<", lil_ctx:
+    "Liquid error"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: "!=",
+    right: {type: :chain, base: "id"}}, body: [{type: :capture, name: "id", body:
+    [{type: :output, expr: {type: :filter, target: {type: :filter, target: {type:
+    :chain, base: "id"}, name: "upcase"}, name: "abs"}}]}]}]}]'
+  seed: 1742854968
+  subprocess_confirmed: true
+template: "{% if nil != info %}{% capture list %}{{ info | upcase | abs }}{% endcapture
+  %}{% endif %}"
+environment:
+  info: 0.0
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): no implicit conversion of BigDecimal into
+  String'

@@ -1,0 +1,23 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_efb0c08768bf
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "false<div>ma", lil_ctx:
+    "<div>markup<"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :chain, base:
+    "id"}, body: [{type: :tablerow, var: "id", coll: {type: :chain, base: "id"}}]}]'
+  seed: 906027255
+  subprocess_confirmed: true
+template: "{% for it in record %}{% tablerow node in forloop %}{% endtablerow %}{%
+  endfor %}"
+environment:
+  record:
+    id: '4296'
+expected: |
+  <tr class="row1">
+  </tr>
+complexity: 100
+_liquidil_actual: |
+  <tr class="row1">
+  <td class="col1"></td></tr>

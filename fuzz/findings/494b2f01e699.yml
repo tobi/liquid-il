@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_494b2f01e699
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 6, ref_ctx: "10-0.5-0.5-0.50caf", lil_ctx:
+    "10-0.5Liquid error"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: "<",
+    left: {type: :chain, base: "id"}, right: {type: :chain, base: "id"}}}]}]'
+  seed: 1518201616
+  subprocess_confirmed: true
+template: "{% if z < z %}{% endif %}"
+environment:
+  z: ''
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): comparison of String with String failed'

@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_d36bf2c3b15e
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 0, ref_ctx: "461168601842", lil_ctx:
+    "Liquid error"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :liquid_block, lines: [{type: :assign, name: "id", expr: {type: :filter,
+    target: {type: :chain, base: "id", accessors: [{dot: "id"}]}, name: "split"}}]}]}]'
+  seed: 643738137
+  subprocess_confirmed: true
+template: |-
+  {% for entry in (nil..nil) %}{% liquid
+  assign info = entry.title | split
+  %}{% endfor %}
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): no implicit conversion of String into Integer'

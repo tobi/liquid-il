@@ -1,0 +1,21 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_d3d2506c9a01
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 41, ref_ctx: \"ace } c\\ntrue9930emoji
+    \U0001F600\\n\", lil_ctx: \"ace } c\\ntrue  -1991.51.5\"}"
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: "contains",
+    left: {type: :chain, accessors: [{bracket: {type: :lit, value: "String"}}]}},
+    body: [{type: :capture, name: "id"}]}]}, {type: :if, branches: [{cond: {type:
+    :chain, base: "id"}, body: [{type: :output, expr: {type: :filter, target: {type:
+    :filter, name: "prepend"}, name: "strip"}}]}]}]'
+  seed: 1482171003
+  subprocess_confirmed: true
+template: '{% if ["Hello, World!"] contains nil %}{% capture items %}{% endcapture
+  %}{% endif %}{% if items %}{{ nil | prepend | strip }}{% endif %}'
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): wrong number of arguments (given 1, expected
+  2)'

@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_e81b4a71c1e6
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 19, ref_ctx: "rkup</div>\n\nHello, World",
+    lil_ctx: "rkup</div>\n\n-573Hello, W"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: "!=",
+    left: {type: :lit, value: "FalseClass"}}, body: [{type: :output, expr: {type:
+    :filter, name: "truncate", args: [{}]}}]}]}]'
+  seed: 1996532236
+  subprocess_confirmed: true
+template: "{% if false != nil %}{{ nil | truncate: nil }}{% endif %}"
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): invalid integer'

@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_919b8783bb82
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 2, ref_ctx: "-1Liquid error", lil_ctx:
+    "-1-1Liquid err"}'
+  signature: 'output_mismatch::[{type: :raw_tag, text: "id"}, {type: :if, branches:
+    [{}], ws: true}]'
+  seed: 1290051317
+  subprocess_confirmed: true
+template: "{% raw %}tab\there\n{% endraw %}{%- if nil -%}{% endif %}"
+environment: {}
+expected: "tab\there\n"
+complexity: 100
+_liquidil_actual: "tab\there"

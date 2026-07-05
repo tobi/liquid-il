@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_66e979858690
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 21, ref_ctx: "ice: $9.99\n0", lil_ctx:
+    "ice: $9.99\n0Hello, World"}'
+  signature: 'output_mismatch::[{type: :capture, name: "id", body: [{type: :if, branches:
+    [{cond: {type: :logical, op: "or", right: {type: :chain, base: "id"}}, body: [{type:
+    :cycle, values: [{type: :lit, value: "String"}]}]}]}]}, {type: :output, expr:
+    {type: :chain, base: "id"}}]'
+  seed: 350233435
+  subprocess_confirmed: true
+template: '{% capture y %}{% if nil or c %}{% cycle "Hello, World!92" %}{% endif %}{%
+  endcapture %}{{ y }}'
+environment:
+  c: []
+expected: ''
+complexity: 100
+_liquidil_actual: Hello, World!92

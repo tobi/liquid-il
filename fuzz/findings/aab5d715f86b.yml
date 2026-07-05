@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_aab5d715f86b
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 63, ref_ctx: "rice: $9.99\nprice: $9.99",
+    lil_ctx: "rice: $9.99\n-1stray % pe"}'
+  signature: 'output_mismatch::[{type: :case, expr: {type: :chain, base: "id"}, whens:
+    [{body: [{type: :decrement, name: "id"}]}, {body: [{type: :raw, text: "id"}]}]}]'
+  seed: 1234126205
+  subprocess_confirmed: true
+template: |-
+  {% case total %}{% when nil %}{% decrement total %}{% when nil %}stray % percent
+  {% endcase %}
+environment: {}
+expected: "-1"
+complexity: 100
+_liquidil_actual: "-1stray % percent\n"

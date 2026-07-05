@@ -1,0 +1,20 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_25b257a4aee5
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 13, ref_ctx: "tray { brace\n  <div>mark",
+    lil_ctx: "tray { brace<tr class=\"r"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :for, var: "id", coll: {type: :range}, body: [{type: :if, branches: [{cond:
+    {type: :logical, op: "and", left: {type: :binop, op: ">", left: {type: :chain,
+    base: "id"}, right: {type: :lit, value: "String"}}}}]}]}]}]'
+  seed: 661041110
+  subprocess_confirmed: true
+template: '{% for it in (nil..nil) %}{% for node in (nil..nil) %}{% if forloop > "  padded  "
+  and nil %}{% endif %}{% endfor %}{% endfor %}'
+environment: {}
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): comparison of LiquidIL::ForloopDrop with
+  String failed'

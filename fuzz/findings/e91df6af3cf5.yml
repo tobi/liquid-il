@@ -1,0 +1,16 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_e91df6af3cf5
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 15, ref_ctx: "500café 日本語\n0", lil_ctx:
+    "500café 日本語\n\u0000"}'
+  signature: 'output_mismatch::[{type: :echo, expr: {type: :filter, target: {type:
+    :filter, target: {type: :chain, base: "id"}, name: "upcase"}, name: "ceil"}}]'
+  seed: 486185420
+  subprocess_confirmed: true
+template: "{% echo nums | upcase | ceil %}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "\0"

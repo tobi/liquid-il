@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_ad5c84a1cb1a
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 42, ref_ctx: "Liquid error: invalid in",
+    lil_ctx: "Liquid error (line 9): i"}'
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :binop, op: ">",
+    left: {type: :chain, base: "id"}, right: {type: :lit, value: "Integer"}}}]}]'
+  seed: 424186259
+  subprocess_confirmed: true
+template: "{% if names > 1 %}{% endif %}"
+environment:
+  names: 'false'
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): comparison of String with 1 failed'

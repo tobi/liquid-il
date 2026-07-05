@@ -1,0 +1,15 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_e2a34ac258d1
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 390, ref_ctx: "kup</div>\n0a50% off\n  0\n",
+    lil_ctx: "kup</div>\n0aLiquid error"}'
+  signature: 'output_mismatch::[{type: :echo, expr: {type: :filter, name: "split"}}]'
+  seed: 594491212
+  subprocess_confirmed: true
+template: "{% echo nil | split %}"
+environment: {}
+expected: 'Liquid error: wrong number of arguments (given 1, expected 2)'
+complexity: 100
+_liquidil_actual: ''

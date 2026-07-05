@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_7d7af672b9b7
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 52, ref_ctx: "\n0\n50% off\n0\n1-1",
+    lil_ctx: "\n0\n50% off\n0[{\"3\" => \"he"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :if, branches: [{cond: {type: :binop, op: ">", left: {type: :lit, value:
+    "Float"}, right: {type: :chain, base: "id"}}}]}]}]'
+  seed: 1827101700
+  subprocess_confirmed: true
+template: "{% for value in (nil..nil) %}{% if -0.5 > data %}{% endif %}{% endfor %}"
+environment:
+  data: café
+expected: ''
+complexity: 100
+_liquidil_actual: 'Liquid error (line 1): comparison of Float with String failed'

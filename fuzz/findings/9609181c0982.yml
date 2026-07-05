@@ -1,0 +1,17 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_9609181c0982
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: "rule=output_mismatch detail={index: 33, ref_ctx: \"arkup</div>\\n{\\\"PRICE_STAR\",
+    lil_ctx: \"arkup</div>\\nemoji \U0001F600{\\\"PRI\"}"
+  signature: 'output_mismatch::[{type: :if, branches: [{cond: {type: :chain, base:
+    "id"}, body: [{type: :cycle, values: [{type: :lit, value: "FalseClass"}]}]}]}]'
+  seed: 273906547
+  subprocess_confirmed: true
+template: "{% if record %}{% cycle false %}{% endif %}"
+environment:
+  record: {}
+expected: 'false'
+complexity: 100
+_liquidil_actual: ''

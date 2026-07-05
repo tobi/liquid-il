@@ -1,0 +1,24 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_386f38c7d0a2
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 12, ref_ctx: "Liquid error: invalid in",
+    lil_ctx: "Liquid error (line 5): i"}'
+  signature: 'output_mismatch::[{type: :for, var: "id", coll: {type: :range}, body:
+    [{type: :tablerow, var: "id", coll: {type: :chain, base: "id"}, body: [{type:
+    :cycle, values: [{type: :chain, base: :self}]}]}]}]'
+  seed: 2004026303
+  subprocess_confirmed: true
+template: "{% for row in (nil..nil) %}{% tablerow row in values %}{% cycle self %}{%
+  endtablerow %}{% endfor %}"
+environment:
+  values:
+    name: PRICE_START_99_END
+expected: |
+  <tr class="row1">
+  <td class="col1">Liquid::SelfDrop</td></tr>
+complexity: 100
+_liquidil_actual: |
+  <tr class="row1">
+  <td class="col1"></td></tr>

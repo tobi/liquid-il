@@ -1,0 +1,18 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_8b1cf9865d05
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 25, ref_ctx: "59true00.0-1", lil_ctx:
+    "59true00.0-1[true, true]"}'
+  signature: 'output_mismatch::[{type: :assign, name: "id", expr: {type: :filter,
+    name: "truncatewords", args: [{}]}}, {type: :echo, expr: {type: :filter, target:
+    {type: :chain, base: "id"}, name: "escape"}}]'
+  seed: 1399490613
+  subprocess_confirmed: true
+template: "{% assign user = nil | truncatewords: nil %}{% echo user | escape %}"
+environment:
+  user: []
+expected: ''
+complexity: 100
+_liquidil_actual: "[]"

@@ -1,0 +1,15 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_805a4381eaab
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 1, ref_ctx: "00        ", lil_ctx: "0\u0000        "}'
+  signature: 'output_mismatch::[{type: :output, expr: {type: :filter, target: {type:
+    :filter, target: {type: :chain, base: "id"}, name: "rstrip"}, name: "round"}}]'
+  seed: 159119880
+  subprocess_confirmed: true
+template: "{{ flag | rstrip | round }}"
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: "\0"

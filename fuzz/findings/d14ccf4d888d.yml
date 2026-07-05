@@ -1,0 +1,19 @@
+# Differential fuzzer finding -- see .goals/02-differential-fuzzer.md
+---
+name: fuzz_d14ccf4d888d
+_metadata:
+  doc: fuzz/README or goal 02 doc (.goals/02-differential-fuzzer.md)
+  hint: 'rule=output_mismatch detail={index: 79, ref_ctx: "rice: $9.99\n000", lil_ctx:
+    "rice: $9.99\n200"}'
+  signature: 'output_mismatch::[{type: :liquid_block, lines: [{type: :echo, expr:
+    {type: :filter, target: {type: :filter, name: "json"}, name: "size"}}]}]'
+  seed: 1695865158
+  subprocess_confirmed: true
+template: |-
+  {% liquid
+  echo nil | json | size
+  %}
+environment: {}
+expected: '0'
+complexity: 100
+_liquidil_actual: '4'

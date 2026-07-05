@@ -568,4 +568,9 @@ namespace :fuzz do
   task :rediscover do
     sh({ "RUBY_YJIT_ENABLE" => "1" }, "bundle", "exec", "ruby", "fuzz/rediscover.rb")
   end
+
+  desc "Export fuzz/findings/ as a clean liquid-spec suite at spec/fuzz.yml (each spec re-validated against reference liquid)"
+  task :export do
+    sh("bundle", "exec", "ruby", "fuzz/export_spec.rb")
+  end
 end
