@@ -165,12 +165,14 @@ module LiquidIL
       end
     end
 
-    # ipc: the single partial-invocation site — wraps the compiled lambda in
-    # the invoke_partial prologue/rescue/ensure. Living here (instead of an
-    # _H.ip block inside every lambda) saves one nested ISeq per partial.
+    # ipc: the single partial-invocation site — builds the partial's scope
+    # and wraps the compiled lambda in the invoke_partial prologue/rescue/
+    # ensure. Living here (instead of an _H.ip block inside every lambda)
+    # saves one nested ISeq per partial.
     def self.ipc(partial, name, assigns, output, scope, isolated, caller_line, cycle_state = nil)
+      inner = isolated ? scope.isolated_with(assigns) : scope
       ip(name, scope, isolated, caller_line, output) do
-        partial.call(assigns, output, scope, isolated, caller_line: caller_line, parent_cycle_state: cycle_state)
+        partial.call(inner, output, isolated, caller_line: caller_line, parent_cycle_state: cycle_state)
       end
     end
 

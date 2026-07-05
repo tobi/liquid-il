@@ -370,7 +370,7 @@ module LiquidIL
       @hoisted_lookups.each do |name, local|
         code << "  #{local} = _S.lookup(#{name.inspect})\n"
       end
-      code << optimize_repeated_lookups(body_code)
+      code << body_code
       code << "\n  _O\n"
       code << "end\n"
       code
@@ -537,8 +537,10 @@ module LiquidIL
         # lambda for it, and no nested block ISeq inside the lambda.
         # Error locations inside the body are compile-time literals, so the
         # lambda carries no source/current-file state.
-        code << "  #{lambda_name} = ->(assigns, _O, __parent_scope__, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
-        code << "    __partial_scope__ = isolated ? __parent_scope__.isolated_with(assigns) : __parent_scope__\n"
+        # The scope arrives as the _S parameter (built by _H.ipc), which
+        # shadows the outer proc's _S — partial bodies splice verbatim,
+        # no scope-variable renaming.
+        code << "  #{lambda_name} = ->(_S, _O, isolated, caller_line: 1, parent_cycle_state: nil) {\n"
         # Only allocate cycle/capture/ifchanged state when the partial actually uses them
         if info[:uses_cycles]
           code << "    _cs = isolated ? {} : (parent_cycle_state || {})\n"
@@ -571,36 +573,31 @@ module LiquidIL
       body.gsub(re) { $1 || replacement }
     end
 
+    # Indent a compiled partial body for splicing. Lambda bodies splice
+    # verbatim — the lambda's _S parameter shadows the outer proc's, so no
+    # scope-variable renaming happens. Inline splices (arg_expressions set)
+    # rewrite the body against an isolated __partial_scope__ with direct
+    # temp-variable access for the passed args.
     def indent_partial_body(body, spaces, assign_keys: [], arg_expressions: nil)
       indent = " " * spaces
       cache_key = [body.hash, assign_keys.sort, spaces, arg_expressions&.hash]
       return @@indent_partial_body_cache[cache_key] if @@indent_partial_body_cache.key?(cache_key)
 
-      # Replace _S with __partial_scope__ to avoid closure issues
-      body = code_gsub(body, "_S", "__partial_scope__")
-      # For inlined isolated partials, replace __partial_scope__.lookup(key) with direct access
       if arg_expressions
-        # Use temp variables instead of __partial_args__ hash — eliminates hash overhead
+        body = code_gsub(body, "_S", "__partial_scope__")
+        # Use temp variables instead of a scope hash — eliminates hash overhead
         assign_keys.each do |key|
-          if arg_expressions[key]
-            temp_var = "__p_#{key}__"
-            # For constant String args, skip .to_s (String#to_s returns self)
-            is_const_string = arg_expressions[key].is_a?(String) && arg_expressions[key] =~ /\A".*"\z/
-            if is_const_string
-              body = code_gsub(body, "_H.oa(_O, __partial_args__[#{key.inspect}])", "_O << #{temp_var}")
-              body = code_gsub(body, "_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << #{temp_var}")
-            else
-              # Inline .to_s for oa calls with temp variables (avoids method dispatch)
-              body = code_gsub(body, "_H.oa(_O, __partial_args__[#{key.inspect}])", "_O << (#{temp_var}.to_s)")
-              body = code_gsub(body, "_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << (#{temp_var}.to_s)")
-            end
-            body = code_gsub(body, "__partial_args__[#{key.inspect}]", temp_var)
-            body = code_gsub(body, "__partial_scope__.lookup(#{key.inspect})", temp_var)
+          next unless arg_expressions[key]
+          temp_var = "__p_#{key}__"
+          # For constant String args, skip .to_s (String#to_s returns self)
+          is_const_string = arg_expressions[key].is_a?(String) && arg_expressions[key] =~ /\A".*"\z/
+          if is_const_string
+            body = code_gsub(body, "_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << #{temp_var}")
+          else
+            # Inline .to_s for oa calls with temp variables (avoids method dispatch)
+            body = code_gsub(body, "_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << (#{temp_var}.to_s)")
           end
-        end
-      elsif assign_keys.length > 0
-        assign_keys.each do |key|
-          body = code_gsub(body, "__partial_scope__.lookup(#{key.inspect})", "__partial_args__[#{key.inspect}]")
+          body = code_gsub(body, "__partial_scope__.lookup(#{key.inspect})", temp_var)
         end
       end
       result = body.lines.map { |l| l.strip.empty? ? l : "#{indent}#{l}" }.join
@@ -1273,9 +1270,7 @@ module LiquidIL
           # Generate temp variables for each arg (arg_expressions already built above)
           # Only generate for args that are actually referenced in the partial body
           assign_keys = arg_expressions.keys.select do |k|
-            # Check original body patterns (before _S -> __partial_scope__ substitution)
             info[:compiled_body].include?("_S.lookup(#{k.inspect})") ||
-              info[:compiled_body].include?("__partial_scope__.lookup(#{k.inspect})") ||
               (k == "self" && info[:compiled_body].include?("lookup_self"))
           end
           arg_expressions.each do |k, expr|
@@ -1568,8 +1563,7 @@ module LiquidIL
             ruby_op = COMPARE_OPS[op]
             # For safe expressions (size/length lookups, numeric literals, round/ceil/floor),
             # use || 0 pattern instead of is_a?(Numeric) check. Saves ~5ns per comparison.
-            if left_ruby.include?("&.size") || left_ruby.include?("&.length") ||
-               left_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/) ||
+            if left_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/) ||
                left_ruby.include?(").round(") || left_ruby.include?(").ceil") || left_ruby.include?(").floor")
               stack << "(#{left_ruby} || 0) #{ruby_op} #{right_ruby}"
             else
@@ -1959,12 +1953,14 @@ module LiquidIL
       # - for loops inside tablerows (depth > 0 but no _fl{depth-1}__ exists)
       parent_forloop = "_S.lookup('forloop')"
 
-      # Check what the loop body actually needs
-      needs_scope_sync = body_code.include?(".call(") ||
-                         body_code.include?("_H.ipc(") ||
+      # Check what the loop body actually needs. Partial invocations (ipc/
+      # rpf/ipf/dynamic/section) read the item and forloop through the
+      # scope; nested loops read the parent forloop from the scope.
+      needs_scope_sync = body_code.include?("_H.ipc(") ||
                          body_code.include?("_H.rpf(") ||
                          body_code.include?("_H.ipf(") ||
                          body_code.include?("execute_dynamic_partial") ||
+                         body_code.include?("render_shopify_section") ||
                          body_code.include?("ForloopDrop.new") ||
                          body_code.include?("_S.lookup('forloop')") ||
                          body_code.include?("_S.lookup(#{item_var.inspect})")
@@ -2892,60 +2888,6 @@ module LiquidIL
         @@iseq_cache[key] = bin
         bin
       end
-    end
-
-    # Post-processing: hoist repeated hash lookups into temp variables.
-    # When _i0__["tags"] appears in both a size/length check and a for-loop,
-    # hoist the first lookup to a named temp and reuse it.
-    def optimize_repeated_lookups(code)
-      # Fast reject: the pattern needs a safe-navigated size/length lookup
-      # somewhere in the body. One include? scan beats regex-matching every
-      # line of every generated body (this was ~4.6% of total compile time).
-      return code unless code.include?("&.size") || code.include?("&.length")
-
-      lines = code.lines
-      lookups = []
-
-      # Match: _i0__["tags"]&.size or _i0__['tags']&.length
-      size_re = /(_\w+__\[(?:"[^"]+"|'[^"]+')\])\s*&\.(size|length)/
-
-      lines.each_with_index do |line, i|
-        next unless line.include?("&.")
-        m = line.match(size_re)
-        if m
-          lookups << { lookup: m[1], line: i, prop: m[2], indent: line[/\A\s*/], replaced: false }
-        end
-      end
-
-      # Find for-loop collections that reuse the same lookup
-      lines.each_with_index do |line, i|
-        lookups.each do |r|
-          next if r[:replaced] || i <= r[:line]
-          if line.include?(r[:lookup]) && line.include?("__coll")
-            r[:replaced] = true
-            r[:coll_line] = i
-          end
-        end
-      end
-
-      # Apply in reverse to preserve line indices
-      lookups.reverse_each do |r|
-        next unless r[:replaced]
-        key = r[:lookup][/"([^"]+)"/, 1] || r[:lookup]
-        cache = "_cache_#{key}__"
-
-        # Replace in for-loop: __coll1__ = _i0__["tags"] -> __coll1__ = _cache_tags__
-        lines[r[:coll_line]] = lines[r[:coll_line]].sub("= #{r[:lookup]}", "= #{cache}")
-
-        # Insert cache assignment before the if, update the inline lookup
-        indent = r[:indent]
-        old = lines[r[:line]]
-        insert = "#{indent}#{cache} = #{r[:lookup]}\n"
-        new_line = old.sub(r[:lookup] + "&.", cache + "&.")
-        lines[r[:line]] = insert + new_line
-      end
-
-      lines.join
     end
 
   end

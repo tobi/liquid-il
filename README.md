@@ -49,16 +49,16 @@ Every render in production falls into one of three cache scenarios, and every be
 | **remote-hit → render** | compiled artifact fetched as a string (memcache/DB) → load → render | artifact size (~3µs/KB ISeq load) |
 | **in-process → render** | template already loaded in this process → render | generated-code quality under JIT |
 
-`rake bench` (alias `rake scenarios`) prints exactly this table against reference liquid; `rake liquid_vm:scenarios` adds Shopify/liquid-vm classic and SSA. Current standing (Ruby 4.0, YJIT, geomean over the common bench specs, 2026-07-04):
+`rake bench` (alias `rake scenarios`) prints exactly this table against reference liquid; `rake liquid_vm:scenarios` adds Shopify/liquid-vm classic and SSA. Current standing (Ruby 4.0, YJIT, geomean over the common bench specs, 2026-07-05):
 
 | adapter | cache-miss | remote-hit | in-process | artifact |
 |---|---:|---:|---:|---:|
-| liquid_il | **454µs** | **95µs** | **64µs** | 8.2KB |
-| liquid_ruby | 446µs | — | 188µs | — |
-| liquid_vm | 429µs | 107µs | 90µs | 1.7KB |
-| liquid_vm_ssa | 1.01ms | 115µs | 97µs | 1.8KB |
+| liquid_il | 462–475µs | **95–99µs** | **60–67µs** | 6.8KB |
+| liquid_ruby | 430µs | — | 184µs | — |
+| liquid_vm | 423µs | 104µs | 88µs | 1.7KB |
+| liquid_vm_ssa | 990µs | 108µs | 91µs | 1.8KB |
 
-remote-hit is the production workload and the primary target; in-process shows the ceiling of the generated code; cache-miss is the cost of a cold fleet. LiquidIL currently wins remote-hit and in-process outright, is at parity with reference liquid on cache-miss (within 6% of liquid-vm), and still trails liquid-vm's compact bytecode on artifact size — the remaining lever on the biggest templates. The plan to win all four columns, with per-tranche results, is [docs/win_all_scenarios.md](docs/win_all_scenarios.md).
+remote-hit is the production workload and the primary target; in-process shows the ceiling of the generated code; cache-miss is the cost of a cold fleet. LiquidIL wins remote-hit and in-process on the geomean and on every individual template except order_email's remote-hit (82 vs 75µs — its 14KB artifact vs liquid-vm's 5KB), is at parity with reference liquid on cache-miss (within ~10% of liquid-vm), and still trails liquid-vm's compact bytecode on artifact size — the remaining lever on the biggest templates. The plan to win all four columns, with per-tranche results, is [docs/win_all_scenarios.md](docs/win_all_scenarios.md).
 
 ### Runtime environment assumptions
 
@@ -91,11 +91,11 @@ The budget is accounted by the summed size of the loaded artifacts; once it is e
 
 | spec | artifact | decode | ISeq load | cold total | warm render |
 |---|---|---|---|---|---|
-| bench_nested_partials | 4.5KB | 2.4µs | 10.7µs | **14.2µs** | 3.6µs |
-| bench_theme_cart_page | 12.6KB | 4.7µs | 22.6µs | **28.5µs** | 24.9µs |
-| bench_theme_product_page | 17.2KB | 4.8µs | 32.1µs | **38.0µs** | 21.4µs |
+| bench_nested_partials | 4.3KB | 2.4µs | 9.5µs | **13.1µs** | 2.4µs |
+| bench_theme_cart_page | 11.4KB | 3.6µs | 22µs | **27µs** | 24µs |
+| bench_theme_product_page | 14.7KB | 4µs | 28µs | **33µs** | 17µs |
 
-Two optimization waves got here. The first (45–81µs cold, 18–37KB artifacts → ~30–40µs, 15–21KB) hoisted per-partial boilerplate into the (already-jitted) runtime, introduced a census-based inline-vs-shared-lambda policy for partials, baked error locations in as compile-time literals, and replaced the Marshal envelope with the framed binary. The second (the emitted-bytes tranches of [docs/win_all_scenarios.md](docs/win_all_scenarios.md)) compacted the compiled source before ISeq compilation, fused the dominant output patterns into single runtime sends (`raw+lookup+append` in one call), and merged appends across partial-inline seams via parse-time literal juxtaposition — another −15% artifact on the big pages.
+Three optimization waves got here. The first (45–81µs cold, 18–37KB artifacts → ~30–40µs, 15–21KB) hoisted per-partial boilerplate into the (already-jitted) runtime, introduced a census-based inline-vs-shared-lambda policy for partials, baked error locations in as compile-time literals, and replaced the Marshal envelope with the framed binary. The second (the emitted-bytes tranches of [docs/win_all_scenarios.md](docs/win_all_scenarios.md)) compacted the compiled source before ISeq compilation, fused the dominant output patterns into single runtime sends (`raw+lookup+append` in one call), and merged appends across partial-inline seams via parse-time literal juxtaposition. The third moved whole protocols into runtime drivers — loops (`_H.ei/eif/eifs`), `render … for` collection dispatch (`_H.rpf/ipf`), partial invocation (`_H.ipc`) — and added IL-decided hoisting of repeated scope lookups; cart went 18.7 → 15.5KB and its remote-hit row flipped against liquid-vm.
 
 All benchmarking runs through liquid-spec's harness (GC-disciplined timing, real percentiles, allocation counts). The adapter implements liquid-spec's **compiled-artifact protocol** (`LiquidSpec.dump_artifact` / `LiquidSpec.load_artifact`), so every bench reports the artifact stage — payload bytes, cold load, load+first-render, steady-state load time and allocations — with a dump → load → render roundtrip check per spec:
 
@@ -288,9 +288,9 @@ Re-runs are conditional (a pass only re-runs when an earlier one changed somethi
 The structured compiler converts IL to Ruby with native control flow:
 
 - `if/else/end` emitted directly from the IF/ELSE/END_IF markers — a linear walk, no jump-target analysis
-- Index-based `while` loops instead of FOR_INIT + FOR_NEXT dispatch
-- Direct variable access instead of stack operations
-- Partial bodies compiled once, then inlined or shared as lambdas by a per-template census
+- Loops emit one block-taking runtime-driver send (`_H.ei` plain, `_H.eif` forloop-bearing, `_H.eifs` scope-synced for bodies that call partials) — coercion, index walk, and ForloopDrop management live in the already-jitted runtime; `{% break %}`/`{% continue %}` are plain Ruby `break`/`next`
+- Direct variable access instead of stack operations; a variable read 3+ times and never written is hoisted to a local, decided on the IL before codegen (`scope_lookup` primitive, same mechanism as loop-var aliases)
+- Partial bodies compiled once, then inlined or shared as lambdas by a per-template census; lambdas receive their scope as a `_S` parameter (shadowing — bodies splice verbatim, no renaming) and are invoked through runtime drivers (`_H.ipc` single call, `_H.rpf`/`_H.ipf` for `render`/`include … for` collection dispatch)
 - The dominant output patterns collapse to single runtime sends (`_H.rolf(_O, "raw", obj, "key")` = raw text + lookup + append in one call — a helper send costs 63B of ISeq where the inline expansion costs 109B)
 - The final source is compacted (comments/indentation dropped, statements fused, adjacent string literals juxtaposed) before `RubyVM::InstructionSequence` compilation
 
@@ -302,8 +302,9 @@ This produces code that YJIT can optimize effectively — no megamorphic dispatc
 # Run unit tests
 bundle exec rake unit
 
-# Run liquid-spec (5,181 specifications, including Shopify production
-# recordings and the Shopify Theme Dawn suite — all passing)
+# Run liquid-spec (5,335 specifications, including Shopify production
+# recordings, the Shopify Theme Dawn suite, and filesystem-lookup
+# semantics — all passing)
 bundle exec rake spec
 
 # Run full suite (unit tests + liquid-spec)
@@ -321,4 +322,4 @@ Every template compiles — there is no interpreter fallback and no unsupported-
 - **Break/continue in included partials** — interrupts propagate out of `{% include %}` into the caller's loop
 - **Recursive partials** — direct and mutual recursion resolve through the dynamic-partial path
 
-The full liquid-spec suite (5,181 specs: core Liquid, lax mode, Shopify production recordings, Shopify Theme Dawn) passes, with output validated byte-for-byte against the reference `liquid` gem in every benchmark run. Remaining adapter opt-outs: `shopify_includes` and `shopify_error_handling` (Shopify-internal include quirks and production error formatting).
+The full liquid-spec suite (5,335 specs: core Liquid, lax mode, Shopify production recordings, Shopify Theme Dawn, filesystem lookup) passes, with output validated byte-for-byte against the reference `liquid` gem in every benchmark run. Remaining adapter opt-outs: `shopify_includes` and `shopify_error_handling` (Shopify-internal include quirks and production error formatting).
