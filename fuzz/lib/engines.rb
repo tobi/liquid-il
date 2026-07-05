@@ -91,7 +91,20 @@ module Fuzz
       Timeout.timeout(timeout, HangError) do
         blob = template.to_artifact
         loaded = LiquidIL::Artifact.load(blob)
-        output = loaded.render({}, static_environments: kase.environment, render_errors: true)
+        # The loaded artifact carries no context, so its file_system must be
+        # threaded in via registers (Template.render / CompiledArtifact.render
+        # both read registers[:file_system]). Without this, every {% render %} /
+        # {% include %} -- including the missing-partial and syntax-error-partial
+        # error paths -- collapses to "This liquid context does not allow
+        # includes.", diverging from the direct render for the identical
+        # (template, environment, filesystem). Mirror the direct-render side,
+        # which builds the same MemoryFileSystem in LiquidILEngine.render.
+        registers = {}
+        if kase.filesystem && !kase.filesystem.empty?
+          registers[:file_system] = MemoryFileSystem.new(kase.filesystem)
+        end
+        output = loaded.render({}, static_environments: kase.environment,
+                               render_errors: true, registers: registers)
         { ok: true, output: output }
       end
     rescue HangError
