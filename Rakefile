@@ -20,6 +20,7 @@ TEST_FILES = %w[
   test/optimization_passes_test.rb
   test/error_handling_test.rb
   test/case_when_semantics_test.rb
+  test/blank_error_suppression_test.rb
   test/dynamic_partials_runtime_test.rb
   test/dynamic_partials_performance_test.rb
   test/concurrency_test.rb

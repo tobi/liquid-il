@@ -2080,6 +2080,9 @@ module LiquidIL
       has_offset = for_init[4]
       offset_continue = for_init[5]
       reversed = for_init[6]
+      # Slot 8 (set only for :lax blank for-loops): suppress the offset/limit
+      # "invalid integer" error text in the recovery rescue. See parse_for_tag.
+      suppress_errors = for_init[8]
       @pc += 1
 
       # Track loop depth for nested loops - increment BEFORE parsing body.
@@ -2380,8 +2383,10 @@ module LiquidIL
       if needs_error_handling
         code << "#{prefix}rescue LiquidIL::RuntimeError => _e#{depth}__\n"
         code << "#{prefix}  raise unless _S.render_errors\n"
-        code << "#{prefix}  _loc#{depth}__ = _e#{depth}__.file ? \"\#{_e#{depth}__.file} line \#{_e#{depth}__.line}\" : \"line \#{_e#{depth}__.line}\"\n"
-        code << "#{prefix}  _O << \"Liquid error (\#{_loc#{depth}__}): \#{_e#{depth}__.message}\"\n"
+        unless suppress_errors
+          code << "#{prefix}  _loc#{depth}__ = _e#{depth}__.file ? \"\#{_e#{depth}__.file} line \#{_e#{depth}__.line}\" : \"line \#{_e#{depth}__.line}\"\n"
+          code << "#{prefix}  _O << \"Liquid error (\#{_loc#{depth}__}): \#{_e#{depth}__.message}\"\n"
+        end
         code << "#{prefix}end\n"
       end
 
@@ -2710,6 +2715,11 @@ module LiquidIL
       return nil unless inst && inst[0] == IL::IF
 
       negate = inst[1]
+      # Slot 2 (set only for :lax blank if/unless constructs): swallow the
+      # condition's runtime error text instead of surfacing it, while render!
+      # (render_errors=false) still raises. See
+      # Parser#mark_blank_error_suppression.
+      suppress_errors = inst[2]
       @pc += 1
 
       then_code = String.new
@@ -2747,11 +2757,18 @@ module LiquidIL
       # Generate code
       code = temp_code
       cond_ruby = cond_expr || "nil"
+      cond_final = inline_truthy(cond_ruby)
+      if suppress_errors
+        # Blank + lax: a raising comparison (e.g. 5 > "x") is treated as a
+        # false condition and produces no error text under render_errors;
+        # render! re-raises so strict rendering is unchanged.
+        cond_final = "(begin; #{cond_final}; rescue LiquidIL::RuntimeError; raise unless _S.render_errors; false; end)"
+      end
 
       if negate
-        code << "#{prefix}unless #{inline_truthy(cond_ruby)}\n"
+        code << "#{prefix}unless #{cond_final}\n"
       else
-        code << "#{prefix}if #{inline_truthy(cond_ruby)}\n"
+        code << "#{prefix}if #{cond_final}\n"
       end
 
       code << then_code

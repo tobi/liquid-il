@@ -436,6 +436,24 @@ module LiquidIL
       end
     end
 
+    # Reference (BlockBody.rescue_render_node) appends a rendered node's error
+    # text UNLESS the node is blank. LiquidIL reproduces that suppression only
+    # for :lax templates (a deliberate, documented divergence — :strict and
+    # :strict2 keep surfacing the text). Blankness is already computed as
+    # tag_blank; here we tag each IF-condition marker of a blank construct so
+    # codegen wraps its comparison to swallow the error text in render_errors
+    # mode while render! still raises. `mark` is the instruction index of an
+    # [IF, negate] array; extending it with a truthy third slot is invisible to
+    # the optimizer (reads inst[1]) and to non-lax/non-blank emission.
+    def mark_blank_error_suppression(markers)
+      return unless @error_mode == :lax
+
+      markers.each do |idx|
+        inst = @builder.instructions[idx]
+        inst[2] = true if inst && inst[0] == IL::IF
+      end
+    end
+
     def push_blank_raw_indices
       arr = []
       @blank_raw_indices_stack.push(arr)
@@ -844,6 +862,7 @@ module LiquidIL
 
       @builder.is_truthy
       @builder.if_start
+      if_markers = [@builder.instructions.length - 1]
 
       branch_blanks = []
       branch_raws = []
@@ -857,7 +876,7 @@ module LiquidIL
       case end_tag
       when 'elsif'
         @builder.else_start
-        elsif_blanks, elsif_raws = parse_elsif_chain
+        elsif_blanks, elsif_raws = parse_elsif_chain(if_markers)
         branch_blanks.concat(elsif_blanks)
         branch_raws.concat(elsif_raws)
       when 'else'
@@ -883,11 +902,15 @@ module LiquidIL
       @builder.end_if
       tag_blank = branch_blanks.all?
       branch_raws.each { |indices| strip_blank_raws(indices) } if tag_blank
+      mark_blank_error_suppression(if_markers) if tag_blank
       tag_blank
     end
 
     # Each elsif becomes ELSE + nested IF; this level's END_IF is emitted here.
-    def parse_elsif_chain
+    # if_markers collects the instruction indices of every IF condition in this
+    # if/elsif chain so a wholly-blank construct can suppress their runtime
+    # error text (lax only — see mark_blank_error_suppression).
+    def parse_elsif_chain(if_markers)
       branch_blanks = []
       branch_raws = []
 
@@ -901,6 +924,7 @@ module LiquidIL
 
       @builder.is_truthy
       @builder.if_start
+      if_markers << (@builder.instructions.length - 1)
 
       advance_template
       end_tag, body_blank, body_raws = parse_block_body(%w[elsif else endif])
@@ -910,7 +934,7 @@ module LiquidIL
       case end_tag
       when 'elsif'
         @builder.else_start
-        nested_blanks, nested_raws = parse_elsif_chain
+        nested_blanks, nested_raws = parse_elsif_chain(if_markers)
         branch_blanks.concat(nested_blanks)
         branch_raws.concat(nested_raws)
       when 'else'
@@ -934,6 +958,7 @@ module LiquidIL
 
       @builder.is_truthy
       @builder.if_start(true) # NOTE: negated - opposite of if
+      if_markers = [@builder.instructions.length - 1]
 
       branch_blanks = []
       branch_raws = []
@@ -945,7 +970,7 @@ module LiquidIL
       case end_tag
       when 'elsif'
         @builder.else_start
-        elsif_blanks, elsif_raws = parse_elsif_chain_unless
+        elsif_blanks, elsif_raws = parse_elsif_chain_unless(if_markers)
         branch_blanks.concat(elsif_blanks)
         branch_raws.concat(elsif_raws)
       when 'else'
@@ -962,10 +987,11 @@ module LiquidIL
       @builder.end_if
       tag_blank = branch_blanks.all?
       branch_raws.each { |indices| strip_blank_raws(indices) } if tag_blank
+      mark_blank_error_suppression(if_markers) if tag_blank
       tag_blank
     end
 
-    def parse_elsif_chain_unless
+    def parse_elsif_chain_unless(if_markers)
       branch_blanks = []
       branch_raws = []
 
@@ -976,6 +1002,7 @@ module LiquidIL
 
       @builder.is_truthy
       @builder.if_start # elsif branches of unless are NOT negated
+      if_markers << (@builder.instructions.length - 1)
 
       advance_template
       end_tag, body_blank, body_raws = parse_block_body(%w[elsif else endunless])
@@ -985,7 +1012,7 @@ module LiquidIL
       case end_tag
       when 'elsif'
         @builder.else_start
-        nested_blanks, nested_raws = parse_elsif_chain_unless
+        nested_blanks, nested_raws = parse_elsif_chain_unless(if_markers)
         branch_blanks.concat(nested_blanks)
         branch_raws.concat(nested_raws)
       when 'else'
@@ -1268,6 +1295,7 @@ module LiquidIL
       # Initialize for loop (pops collection, creates iterator)
       # Pass label_end for error recovery - on error, output error message and jump past the for block
       @builder.for_init(var_name, loop_name, !limit_expr.nil?, !offset_expr.nil?, offset_continue, reversed, label_end)
+      for_init_idx = @builder.instructions.length - 1
 
       @builder.push_scope
       @builder.push_forloop
@@ -1310,6 +1338,14 @@ module LiquidIL
       if tag_blank
         strip_blank_raws(body_raws)
         strip_blank_raws(else_raws) if end_tag == 'else'
+        # Blank for-loop in lax mode: suppress the offset/limit "invalid
+        # integer" error text (FOR_INIT slot 8), mirroring the if/unless path.
+        # Codegen's needs_error_handling rescue reads this flag; render! still
+        # raises because the swallow only fires when scope.render_errors.
+        if @error_mode == :lax
+          fi = @builder.instructions[for_init_idx]
+          fi[8] = true if fi && fi[0] == IL::FOR_INIT
+        end
       end
       tag_blank
     end
