@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module StorefrontMock
-  # Mirror of liquid-vm's ContextShim (lib/liquid/vm/hacks/context_shim.rb).
+  # Mirror of the host engine's context-shim pattern.
   #
   # Wraps a MockLiquidContext. Unknown methods delegate to it, so assigns,
   # registers, environments, and the error surface all stay host-side. Scope
@@ -9,7 +9,7 @@ module StorefrontMock
   # stashed at `registers.static[:liquid_il_scope]` — the same convention
   # liquid-vm uses for `registers.static[:liquid_vm_state]`.
   #
-  # `handle_error` deliberately stays on the wrapped Ruby context: SFR renders
+  # `handle_error` deliberately stays on the wrapped Ruby context: the host renders
   # error text through Liquid::Context#handle_error, and LiquidIL's text already
   # matches reference, so errors flow there rather than being emitted inline.
   class ScopeShim
@@ -47,7 +47,7 @@ module StorefrontMock
 
     # --- isolated subcontext -> isolated engine scope (our Scope#isolated) ---
     # A fresh sub-shim per partial, over an isolated scope. It does NOT clobber
-    # the parent's stash (stash: false), matching ContextShim#new_isolated_subcontext.
+    # the parent's stash (stash: false), matching the host shim's isolated-subcontext behavior.
     def new_isolated_subcontext
       ScopeShim.new(@context, @scope.isolated, stash: false)
     end

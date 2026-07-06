@@ -10,7 +10,7 @@ module StorefrontMock
   # shops. `load_body` is the ONLY path that materializes a body and it counts
   # every fetch, so laziness can be asserted.
   #
-  # Digest is a cityhash stand-in: a SHA1 prefix (fast, stable, collision-safe
+  # Digest is a content-hash stand-in: a SHA1 prefix (fast, stable, collision-safe
   # enough for a mock).
   class BodyStore
     def initialize

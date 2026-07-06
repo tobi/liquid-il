@@ -26,7 +26,7 @@ module StorefrontMock
     # so render_scope output is byte-identical to a plain .render(assigns).
     #
     # The external-partial PartialProvider rides in on registers["partial_provider"]
-    # (parked there by AppProcess#render_request) exactly like SFR passes
+    # (parked there by AppProcess#render_request) exactly like the host passes
     # cross-cutting request state; Scope#initialize picks it up so external
     # `{% render/include %}` sites resolve their per-file artifacts at render time.
     def wrap_context(context)

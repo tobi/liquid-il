@@ -308,7 +308,7 @@ class StorefrontMockIntegrationTest < Minitest::Test
 
   # ---------------------------------------------------------------------------
   # The native CompiledArtifact#render_to_output_buffer path: appends into the
-  # caller's preallocated buffer (SFR's 16KB-per-request buffer) AND resolves
+  # caller's preallocated buffer (the host's per-request buffer) AND resolves
   # external partials via the provider parked on registers. Output byte-identical
   # to the reference and to a plain render.
   # ---------------------------------------------------------------------------
@@ -362,7 +362,7 @@ class StorefrontMockIntegrationTest < Minitest::Test
   end
 
   # ---------------------------------------------------------------------------
-  # ScopeShim mirrors liquid-vm's ContextShim.
+  # ScopeShim mirrors the host engine's context-shim pattern.
   # ---------------------------------------------------------------------------
   def test_scope_shim_bridges_context_and_engine_scope
     context = MockLiquidContext.new(assigns: { "host_only" => "H" })
@@ -405,7 +405,7 @@ class StorefrontMockIntegrationTest < Minitest::Test
     assert_equal "enabled", default.cohort
 
     forced = router.from_context(ctx(self_verify: "liquid-il"))
-    assert_equal "liquid-il", forced.slug, "self-verify header forces the engine"
+    assert_equal "liquid-il", forced.slug, "forcing header selects the engine"
     assert_equal "verifier", forced.cohort
 
     beta = router.from_context(ctx(shop: MockShop.new(id: 9, features: ["f_liquid_il_rendering"])))

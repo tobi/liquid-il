@@ -10,7 +10,7 @@ Suggested order: 01 → 02 → 03 → 04 (01 finishes the "win all scenarios" pl
 | [02-differential-fuzzer](02-differential-fuzzer.md) | mechanical semantic-gap discovery vs reference liquid | zero unexplained divergences; findings feed liquid-spec |
 | [03-artifact-statement-dedup](03-artifact-statement-dedup.md) | dedupe template-authored repetition into artifact-local lambdas | order_email remote-hit ≤ liquid-vm (76→≤70µs) |
 | [04-concurrency-story](04-concurrency-story.md) | verified thread safety + Ractor rendering demo | bench:threads scaling table + Ractor test green |
-| [05-storefront-integration](05-storefront-integration.md) | LiquidIL as a third SFR engine, proven on verifier replays before any buyer traffic | verifier diff burn-down to zero; hot-template renders at in-process speed |
+| [05-storefront-integration](05-storefront-integration.md) | LiquidIL as a pluggable host-renderer engine, proven on shadow-replay traffic before any live request | replay diff burn-down to zero; hot-template renders at in-process speed |
 
 ## Rules that apply to every goal
 

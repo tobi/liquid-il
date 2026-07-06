@@ -11,7 +11,7 @@ module StorefrontMock
   #   slug                    -> engine identifier ("liquid-il" / "liquid-ruby")
   #   cohort                  -> stats dimension set by the router
   #
-  # `parse_raw` in SFR may return ANY object responding to render/render!/
+  # `parse_raw` in the host may return ANY object responding to render/render!/
   # render_to_output_buffer; nothing else is assumed.
   module AdapterInterface
     def slug

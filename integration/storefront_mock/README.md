@@ -1,6 +1,6 @@
 # Storefront integration mock
 
-A faithful miniature of the Shopify storefront renderer's integration substrate,
+A faithful miniature of a multi-tenant host renderer's integration substrate,
 built entirely in-repo, proving the LiquidIL-as-a-third-engine design from
 [`.goals/05-storefront-integration.md`](../../.goals/05-storefront-integration.md)
 end to end — with the reference `liquid` gem as a byte-for-byte conformance
@@ -20,15 +20,15 @@ It is also part of `rake test` (registered in `TEST_FILES`).
 | storefront thing | mock here |
 |---|---|
 | `Theme#assets_by_name` + content-addressed `theme_template_bodies` (shared across shops) | `MockTheme` + `BodyStore` (`lib/mock_theme.rb`) — name→digest **and name→bytesize** metadata with no body fetch; `load_body` counts every fetch |
-| Sonic `CacheStore` two-tier memcached (node-local daemon → remote cluster) | `MockKeyValueStore` + `TieredStore` (`lib/mock_key_value_store.rb`) |
+| the host's two-tier memcached stack (node-local daemon → remote cluster) | `MockKeyValueStore` + `TieredStore` (`lib/mock_key_value_store.rb`) |
 | `Liquid::Context` | `MockLiquidContext` (`lib/mock_liquid_context.rb`) — assigns, registers (`static`), environments, `handle_error`, `shop.features.enabled?` |
 | `LiquidAdapter::Interface` | `AdapterInterface` (`lib/adapter_interface.rb`) |
-| liquid-vm's `ContextShim` | `ScopeShim` (`lib/scope_shim.rb`) |
-| `LiquidVmBytecodeCache`, generalized | `CompiledTemplateCache` + coders (`lib/compiled_template_cache.rb`) |
+| the host's engine context shim | `ScopeShim` (`lib/scope_shim.rb`) |
+| the host's compiled-bytecode cache, generalized | `CompiledTemplateCache` + coders (`lib/compiled_template_cache.rb`) |
 | in-process live-proc tier | `LiquidIL::TemplateCache` (from `lib/`) wired as the top tier |
 | the inline/external partial census | `ThemePartialIndex` (compile-time, from metadata) + `RecordingFileSystem` (inline half) |
 | lazy per-file partial loads | `CompiledTemplateCache#partial_provider` → LiquidIL's `registers["partial_provider"]` seam |
-| `from_context` precedence | `AdapterRouter` (`lib/adapter_router.rb`) |
+| the host's adapter-selection precedence | `AdapterRouter` (`lib/adapter_router.rb`) |
 | the reference control engine | `LiquidRubyAdapter` over the `liquid` gem (`lib/liquid_ruby_adapter.rb`) |
 
 ## The cache key and the tiers
@@ -173,7 +173,7 @@ state flows normally.
 The harness adds exactly one method to `lib/`: `CompiledArtifact#render_scope(scope)`
 (`lib/liquid_il/template_cache.rb`) — render a loaded artifact against a
 caller-supplied, fully-configured `Scope` instead of building one from assigns.
-This is the ContextShim seam: the shim owns the engine `Scope`, and the engine
+This is the context-shim seam: the shim owns the engine `Scope`, and the engine
 executes the artifact's proc against it. Error formatting matches `#render`. The
 external-partial feature needed **no further lib changes**: `partial_index`,
 `Template#partial_dependencies`, `registers["partial_provider"]`, `_H.epc`, the

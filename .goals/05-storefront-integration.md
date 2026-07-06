@@ -1,199 +1,168 @@
-# Goal 5: Storefront integration — LiquidIL as a third SFR engine
+# Goal 5: Host-renderer integration — LiquidIL as a pluggable engine
 
 ## Objective
 
-Wire LiquidIL into the Shopify storefront renderer
-(`~/world/trees/root/src/areas/core/storefront`) as a third engine beside
-liquid-vm (the production default) and liquid-ruby, reusing every cache that
-gets templates and partials to the renderer quickly, and prove it **out of
-band on verifier replay traffic before any buyer request ever touches it**.
+Wire LiquidIL into a large multi-tenant host renderer as an additional engine
+beside its existing ones, reusing the host's caches that get templates and
+partials to the renderer quickly, and prove it **out of band on the host's
+shadow-replay verification traffic before any live request touches it**.
 
-All storefront facts below were scouted 2026-07-05 with file:line pointers;
-re-verify anchors by grep, not line number. Note: liquid-vm's serialization
-constant is literally `Liquid::Vm::Sfr::LIQUID_IL_COMBINED_VERSION` — "Liquid
-IL" in SFR code refers to liquid-vm's format, not this project. Naming will
-collide; pick the slug `liquid-il` but expect to disambiguate internally.
+NOTE: the detailed reconnaissance of the specific host (internal file
+anchors, component names, cache-key formats, header names, rollout
+machinery) lives OUTSIDE this repository in the private integration notes.
+This document keeps only the engine-side design and the generic
+architecture; re-scout or consult the private notes when implementing the
+host side.
 
-## The seam (all of it)
+## Host architecture (generic shape, verified by reconnaissance)
 
-- **Adapter registry**: `app/liquid/liquid_adapter.rb` — `from_context`
-  precedence: forced (self-verify header or `FORCED_LIQUID_ADAPTER` env) →
-  profiling cohort → default `liquid-vm, cohort: "enabled"`. No per-shop flag
-  gates adapter choice today.
-- **Contract**: `app/liquid/liquid_adapter/interface.rb`. `parse_raw` may
-  return ANY object responding to `render(context)`, `render!(context)`,
-  `render_to_output_buffer(context, output)` (see
-  `renderable_template.rb`) — nothing else is assumed. Plus
-  `eval_infallible_raw`, `new_parse_context_raw`, `filtering?`,
-  `disable_native_filters!`, `set_native_feature_flag`, `wrap_context`.
-- **Context bridging precedent**: liquid-vm's `ContextShim`
-  (gem `lib/liquid/vm/hacks/context_shim.rb`): `method_missing` delegates
-  everything to the wrapped `Liquid::Context` (assigns, registers,
-  error surface stays Ruby); scope stack / variable storage / resource
-  accounting / interrupt flag route to an engine-state object stashed at
-  `registers.static[:liquid_vm_state]`; `handle_error` deliberately stays on
-  the Ruby context; `new_isolated_subcontext` spawns a sub-shim per partial;
-  strainer's `@context` is rebound to the shim so Ruby filters see it.
-- **Filters/tags are engine-agnostic**: registered once on
-  `Liquid::Environment.default` (`config/initializers/liquid/100_filters.rb`,
-  `100_tags.rb`) as plain Ruby modules/classes; both adapters call them back
-  through the strainer. Only the `link_to*` family has a native fast path,
-  gated per-shop by `f_liquid_vm_native_link_to_filter`.
-- **Compiled cache precedent**: `app/services/liquid_vm_bytecode_cache.rb` —
-  per-FILE artifacts keyed
-  `prefix(GLOBAL_BUST + PACK_DIGEST):content_digest:vary_key(blake3 of parse
-  opts)`, stored in the two-tier memcached `application_cache` (10-day TTL,
-  node-local daemon → remote cluster), request layers preloaded (fingerprint
-  key-list `read_multi`, `MAX_PRELOAD_KEYS = 256`) → memoized → fetch.
-  Invalidation is purely content-addressed. Canary+verification suppresses
-  WRITES only; reads share the production cache.
-- **Template supply**: theme asset metadata (name→cityhash) preloaded per
-  theme per request (`Theme#assets_by_name`); bodies content-addressed in
-  `theme_template_bodies`, **shared across shops** (`cache_by_shop_id:
-  false`), Snappy-compressed, fetched lazily per asset with a
-  previous-request fingerprint bulk prefetch
-  (`Theme.preload_previously_used_template_bodies`).
-- **Verifier**: 1% of prod requests recorded to Monorail
-  (`VerifierMiddleware`), replayed by the external `Shopify/sfr-verifier`
-  service; replays carry `X-Storefront-Verification-Request` and — key fact,
-  documented in `docs/content/performance/perf_experiments.md` — the
-  verifier ALREADY sets `X-SFR-Self-Verify-Features` on its replays to force
-  flag state. `forced_liquid_adapter` consumes that same header for engine
-  forcing, tagging cohort `"verifier"`. Diffs are raw response-body text
-  diffs stored in GCS (`bin/show_verifier_diff`).
-- **Runtime**: Ruby 4.0.2, YJIT enabled post-fork (ZJIT wired but off) —
-  exactly LiquidIL's assumed environment. Error mode per request:
-  `strict2` (`f_rigid_liquid_rendering`) or `lax` — exactly LiquidIL's
-  implemented matrix. Global resource limits configured — LiquidIL compiles
-  limit checks in only when configured, same shape. Render output goes into
-  a 16KB preallocated String buffer via `render_to_output_buffer`.
+- **Adapter seam**: the host selects a Liquid engine per request through an
+  adapter interface. The contract is small: a parse entry point may return
+  ANY object responding to `render(context)`, `render!(context)`, and
+  `render_to_output_buffer(context, output)`, plus hooks for building parse
+  contexts, evaluating bare expressions infallibly, and wrapping the render
+  context. Engine forcing per request exists (an internal-only header), and
+  the default engine is chosen by env config — no per-tenant flag today; the
+  host has an established per-tenant feature-flag idiom to add one.
+- **Context bridging precedent**: the host's existing native engine bridges
+  its Ruby `Liquid::Context` via a shim: `method_missing` delegates
+  everything (assigns, registers, error surface stays Ruby-side); scope
+  stack, variable storage, resource accounting, and the interrupt flag route
+  to an engine-state object stashed in the context registers; isolated
+  subcontexts spawn sub-shims for partials; the filter dispatcher is rebound
+  so Ruby filters see the shim.
+- **Filters/tags are engine-agnostic**: registered once, globally, as plain
+  Ruby modules/classes; engines call them back through the standard
+  dispatcher. Only a tiny allowlisted set has native fast-path
+  reimplementations, gated per-tenant.
+- **Compiled-template cache precedent**: per-FILE compiled artifacts keyed
+  `format_epoch+format_digest : content_digest : vary_key(digest of the
+  parse options that affect output)`, stored in a two-tier memcached stack
+  (node-local daemon → remote cluster), with request-scoped layers:
+  a fingerprint preloader (the set of cache keys the previous request with
+  the same fingerprint touched — capped at a few hundred — is batch-fetched
+  in one round trip) → per-request memo → tiered store → compile.
+  Invalidation is purely content-addressed. Shadow-replay traffic suppresses
+  cache WRITES on canary; reads are shared.
+- **Template supply**: theme assets are content-addressed; per-request the
+  host preloads the full name→digest metadata index WITHOUT bodies, and
+  fetches bodies lazily per asset (with its own previous-request bulk
+  prefetch). Identical bodies are shared across tenants.
+- **Verification**: a small sample of production requests is recorded and
+  replayed out-of-process against candidate builds; responses are diffed.
+  Replays are recognizable per-request, and the replaying service already
+  forces per-request feature state via the same header the adapter-forcing
+  mechanism reads — so an engine that exists only in the forced-selection
+  path is reachable exclusively by replay traffic and internal requests.
+- **Runtime**: modern Ruby with YJIT enabled post-fork; per-request error
+  mode is strict2 or lax (exactly LiquidIL's implemented matrix); global
+  resource limits configured (LiquidIL compiles limit checks in only when
+  configured — same shape); output rendered into a caller-provided
+  preallocated buffer.
 
 ## Architecture decision
 
-Two ideas were considered and they are STAGES, not alternatives:
+Two ideas considered; they are STAGES, not alternatives:
 
-**A. The engine-agnostic compiled-template layer ("the wrappier thing").**
-Generalize `LiquidVmBytecodeCache` into a `CompiledTemplateCache`
-parameterized by engine: `(slug, format_digest, coder)` — liquid-vm's cache
-becomes one instantiation; LiquidIL's is another whose coder is the framed
-artifact (`Artifact.encode/decode`) and whose vary_key ADDITIONALLY includes
+**A. Engine-agnostic compiled-template layer.** Generalize the host's
+compiled-artifact cache to be engine-parameterized: `(engine_slug,
+format_digest, coder)`. LiquidIL's coder is the framed artifact
+(`Artifact.encode/decode`) and its vary_key ADDITIONALLY includes
 `RUBY_VERSION` + platform (ISeq binaries are not portable across Ruby
 versions; the envelope already stamps this — the cache key must too, or
-mixed-version fleets poison each other during Ruby upgrades). Keep per-FILE
-artifact granularity to inherit, unchanged: cross-shop sharing (content-
-addressed bodies), natural invalidation, the fingerprint preloader, and the
+mixed-version fleets poison each other during upgrades). Keep per-FILE
+artifact granularity to inherit, unchanged: cross-tenant sharing,
+content-addressed invalidation, the fingerprint preloader, and the
 node-local tier.
 
-**B. Verifier-first rollout (ship dark, learn out of band).** Because the
-replay service already forces per-request features via the self-verify
-header, a LiquidIL adapter that exists ONLY in the forced chain (no cohort,
-no default path) is reachable exclusively by: internal folks with the VPN
-header, and sfr-verifier replays configured to send
-`X-SFR-Self-Verify-Features: liquid-il`. That yields production-truthful
-output diffs (the GCS body diff = our differential fuzzer at production
-scale), real cache-key distributions, hit rates, and latency histograms
-(cohort `"verifier"` is already a stats dimension) with ZERO buyer
-exposure. One infra check required: confirm sfr-verifier's replay traffic
-passes the `shopifolk?` gate (`request.rb` — VPN header) — strongly implied
-by the documented flag-forcing behavior but not verifiable from this tree.
-
-Then, and only then: per-shop percentage rollout via the codebase's enforced
-idiom `shop.features.enabled?("f_liquid_il_rendering")` (custom cops REQUIRE
-this form) inserted before the `from_context` fallthrough.
+**B. Verifier-first rollout (ship dark, learn out of band).** An adapter
+that exists ONLY in the forced-selection chain (no cohort, no default path)
+is reachable exclusively by internal requests and by replay traffic
+configured to force it. That yields production-truthful output diffs (the
+host's body-diff pipeline = our differential fuzzer at production scale),
+real cache-key distributions, hit rates, and latency histograms with ZERO
+live exposure. Then, and only then: per-tenant percentage rollout via the
+host's feature-flag idiom at the default-selection fallthrough.
 
 ## Work plan
 
-### Phase 0 — LiquidIL-side prerequisites (this repo)
+### Phase 0 — LiquidIL-side prerequisites (this repo) — ALL DONE 2026-07-05
 
-1. **Fix `artifact_self_consistency`** (fuzz/findings/artifact_self_consistency/):
-   templates using render/include break when rendered from a LOADED artifact
-   ("This liquid context does not allow includes"). This is literally the
-   production path; nothing ships before it's fixed and covered by
-   `rake bench:cold`-style roundtrip specs for partial-bearing templates.
-2. **External partial references (the lazy-partial model).** New compile
-   mode: the compiler receives, instead of (or alongside) a body-fetching
-   file_system, a **digest index** (name → content_digest, available at
-   compile time from `assets_by_name` without any body fetch) and a
-   **PartialProvider** render-time interface (`call(name, digest) →
-   callable`). Census decides per partial:
-   - small & static → INLINE (fetch that body at compile time; the entry
-     artifact's cache key becomes composite:
-     `entry_digest + sorted inlined-partial digests` — deps tracking exists,
-     grep `partial_cache_deps_valid?`);
-   - large or shared → EXTERNAL: emit a provider call site; the partial is
-     its own per-file artifact, loaded lazily on first use and warmed by the
-     fingerprint preloader. The dynamic-partial machinery
-     (`execute_dynamic_partial` + per-name caching) is the starting point;
-     the artifact format's partial segment exists.
-   Acceptance: a template with N static partials compiles WITHOUT fetching
-   the bodies of external ones; render with a cold provider fetches lazily;
-   `bench:cold` extended to validate the split.
-3. **`render_to_output_buffer(context, output)`** native support on
-   Template/loaded artifacts (append into a caller-provided buffer instead
-   of allocating `_O` — the emitted proc already takes the buffer implicitly;
-   thread it through the entry point).
+1. ~~Artifact self-consistency for partial-bearing templates~~ — the engine
+   was already correct (loaded artifacts accept a file_system via
+   `registers[:file_system]`); the fuzzer's roundtrip oracle wasn't passing
+   it. Invariant pinned by test/artifact_self_consistency_test.rb.
+2. ~~External partial references~~ — `partial_index` compile mode (name →
+   content_digest, no body fetch), EXTERNAL census disposition, the
+   `PartialProvider` render-time seam (`_H.epc` routing through the existing
+   ipc/rpf/ipf drivers), `Template#partial_dependencies` for composite cache
+   keys, optional `SEG_PARTIAL_DEPS` artifact segment. Byte-identical
+   emission when no `partial_index` is supplied. Known limitation: include +
+   `{% cycle %}` across the external boundary does not share caller cycle
+   state.
+3. ~~`render_to_output_buffer`~~ and ~~`CompiledArtifact#render_scope(scope)`~~
+   (the context-shim seam: a host-owned Scope executes the loaded proc).
 
-### Phase 1 — the adapter (storefront repo)
+### Phase 0.5 — the mock (this repo) — DONE 2026-07-05
 
-4. `LiquidAdapter::LiquidIlAdapter` (SLUG `"liquid-il"`): `parse_raw`
-   returning our template wrapper (render/render!/render_to_output_buffer);
-   env-var validation gains the third value; `forced_liquid_adapter` gains
-   the third elsif. THE HARDEST PART is the context shim — mirror
-   `ContextShim` exactly:
-   - `method_missing` → wrapped `Liquid::Context` (assigns, registers,
-     `handle_error` stays Ruby-side — LiquidIL's error text formats already
-     match reference per liquid-spec, but SFR error rendering flows through
-     `Liquid::Context#handle_error`, so route errors there rather than
-     emitting our own inline text);
-   - scope reads/writes, scope stack, resource accounting → LiquidIL `Scope`
-     stashed at `registers.static[:liquid_il_scope]`;
-   - `new_isolated_subcontext` → isolated scope (our `isolated_with`);
-   - interrupt handler → graceful-timeout sets our scope interrupt;
-   - strainer rebinding so storefront's Ruby filters (registered globally on
-     `Liquid::Environment.default`) execute against the shim. Bridge their
-     registry into `LiquidIL::Filters.register` at boot (host-filter dynamic
-     dispatch path; our compile-time-known builtins already overlap and are
-     reference-conformant per liquid-spec).
-5. **Tags port — the real volume**: `layout`, `render`, `section`,
-   `content_for`, `block`, `schema` (+ the JSON section-compiler axis gated
-   by `json_compilation_enabled?`). Map onto `LiquidIL::Tags.register` IL
-   emission (the shopify_mock stylesheet tag shows the pattern). Enumerate
-   `app/liquid/tags/*` first and triage: many may be thin.
+`integration/storefront_mock/` is a faithful miniature of the host
+architecture above, entirely in this repo: content-addressed mock theme
+with fetch counters, two-tier KV mock, minimal Liquid::Context stand-in,
+the adapter interface + ScopeShim + router, the engine-parameterized
+`CompiledTemplateCache` with fingerprint preloading and the in-process
+live-proc `TemplateCache` tier. `test/storefront_mock_integration_test.rb`
+proves steps (a)–(i): cold fleet; fingerprint-preloaded fresh process with
+zero compiles/zero fetches; live-proc hits (~90µs); content-addressed
+invalidation; cross-tenant sharing; a both-engines verifier diff against
+reference liquid on every request; external-partial laziness (unreferenced
+bodies never fetched, no artifact written); independent partial versioning
+(entry key UNCHANGED on external-partial edit); partial fingerprint warming
+in one batch read. The adapter + shim files are first drafts of the real
+host-side files.
 
-### Phase 2 — caches
+### Phase 1 — the adapter (host repo)
 
-6. `CompiledTemplateCache` generalization (or a sibling
-   `LiquidIlArtifactCache` if generalizing liquid-vm's is too invasive):
-   same key discipline + Ruby-version/platform in vary_key + the fingerprint
-   preloader wired to partial artifacts.
-7. **In-process live-proc LRU — the differentiator.** liquid-vm's "local"
-   tier is a same-host memcached daemon: every request pays a socket hop +
-   deserialize. LiquidIL's `TemplateCache` (byte-budgeted LRU holding live
-   procs; `LruMemoryCache` at 200MB is the in-repo precedent, ES-only today)
-   keyed by the same cache keys makes hot templates render at the in-process
-   number (68µs vs 92 on the scoreboard). Multi-tenant breadth is the
-   argument FOR it, not against: content addressing means one hot
-   theme-store snippet is ONE entry serving thousands of shops.
+4. The adapter class + slug + env-var branch + forced-selection entry.
+   Hardest part is the context shim — mirror the host's existing shim
+   pattern exactly (see the mock's ScopeShim and the private notes):
+   delegation for assigns/registers, `handle_error` stays on the host
+   context (LiquidIL's error text formats match reference per liquid-spec,
+   but the host's error rendering flows through its own context), scope
+   reads/writes + isolated subcontexts + interrupts route to LiquidIL's
+   `Scope`, filter dispatcher rebinding, and the host's global filter
+   registry bridged into `LiquidIL::Filters.register`.
+5. **Tags port — the real volume**: the host's theme tags (layout/section/
+   content-for/schema families and its JSON-compilation axis) mapped onto
+   `LiquidIL::Tags.register` IL emission. Enumerate and triage first.
 
-### Phase 3 — verify, then roll
+### Phase 2 — caches (host repo)
 
-8. Land dark (forced-chain only). Internal self-verify smoke via header.
-9. sfr-verifier: configure a replay share with
-   `X-SFR-Self-Verify-Features: liquid-il` (external repo/service change).
-   Burn down body diffs — each diff is a conformance finding; feed the same
-   triage pipeline as the fuzzer (spec it upstream or fix the engine).
-   Watch cohort-tagged stats for latency + `CompiledTemplateCache` hit rates.
-10. Per-shop `f_liquid_il_rendering` percentage rollout at the
-    `from_context` fallthrough; canary cache-write suppression carries over
-    unchanged.
+6. Engine-parameterized compiled-template cache instantiation for LiquidIL
+   (Ruby-version-aware vary key; fingerprint preloader wired to partial
+   artifacts; composite entry keys folding INLINED partial digests — the
+   mock demonstrates why: a process-global live-proc tier would serve stale
+   procs after a partial edit if the entry key ignored inlined content).
+7. In-process live-proc `TemplateCache` tier — the differentiator: the
+   host's node-local tier is still a socket hop + deserialize per request;
+   live procs render hot templates at the in-process number. Content
+   addressing means one hot shared snippet is ONE entry serving many
+   tenants.
+
+### Phase 3 — verify, then roll (host repo + replay service)
+
+8. Land dark (forced-selection only); internal smoke via the forcing header.
+9. Configure a replay share to force the new engine; burn body diffs to
+   zero (each diff is a conformance finding — same triage discipline as the
+   fuzzer: fix the engine or spec the behavior upstream); watch cohort-
+   tagged latency and cache hit rates.
+10. Per-tenant percentage rollout at the default-selection fallthrough.
 
 ## Gates
 
-- LiquidIL repo: every phase-0 change under the standing gates (`rake test`
-  green, `bench:cold` validation, scoreboard quoted, compile-time A/B for
-  backend passes).
-- Storefront repo: their test suite + verifier-diff burn-down to zero before
-  any cohort.
-- The scoreboard claim to beat, from their own wiring: liquid-vm pays
-  node-local memcached + deserialize per template per request; LiquidIL's
-  target is artifact-load ≈ 2µs/KB on miss and ~zero on live-proc hit.
+- This repo: the standing gates (suite green, bench:cold validation,
+  scoreboard quoted, compile-time A/B for backend passes).
+- Host repo: its test suite + verifier-diff burn-down to zero before any
+  live cohort.
+- The performance claim to beat: the host's current engine pays node-local
+  memcached + deserialize per template per request; LiquidIL's target is
+  artifact-load ≈ 2µs/KB on miss and ~zero on live-proc hit.

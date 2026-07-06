@@ -2,12 +2,12 @@
 
 module StorefrontMock
   # Mirrors LiquidAdapter.from_context precedence:
-  #   1. forced   — self-verify features (the verifier / VPN-header path)
+  #   1. forced   — per-request engine forcing (the replay / internal-header path)
   #   2. beta flag — shop.features.enabled?("f_liquid_il_rendering")
   #   3. default   — the reference control (LiquidIL ships DARK: reachable only
   #                  via the forced chain or the beta flag, never the default)
   #
-  # The cohort set on the chosen adapter is the stats dimension SFR tags renders
+  # The cohort set on the chosen adapter is the stats dimension the host tags renders
   # with ("verifier", "beta", "enabled").
   class AdapterRouter
     FORCE_SLUGS = %w[liquid-il liquid-ruby].freeze

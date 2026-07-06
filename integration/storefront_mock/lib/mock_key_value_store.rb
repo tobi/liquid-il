@@ -3,7 +3,7 @@
 module StorefrontMock
   # Hash-backed key/value store with get/set/read_multi and hit/miss/read/write
   # counters. Two of these get composed into a TieredStore below (node_local ->
-  # remote), mirroring Sonic's CacheStore two-tier memcached.
+  # remote), mirroring the host renderer's two-tier (node-local + remote) memcached stack.
   class MockKeyValueStore
     attr_reader :name, :hits, :misses, :reads, :writes, :read_multi_calls
 

@@ -13,7 +13,15 @@ module LiquidIL
   module ShopifyMock
     CDN_BASE = "//cdn.shopify.shopify-uh49.marcandre-cournoyer.eu.spin.dev/s/files/1/0000/0001/t/1/assets".freeze
     SHOPIFY_TAG_PATTERN = /\{%[-]?\s*(?:schema|style|stylesheet|javascript|form|paginate|section)\b/.freeze
-    STOREFRONT_DAWN_ROOT = File.join(Dir.home, "world/trees/root/src/areas/core/storefront/test/support/themes/shop1.myshopify.io-1/dawn").freeze
+    # Local checkout of the Dawn theme fixtures used by the shopify_theme_dawn
+    # suite. Machine-specific: set LIQUID_IL_DAWN_FIXTURES, or put the absolute
+    # path in spec/helpers/dawn_fixtures.path (gitignored). When neither is
+    # present, Dawn asset reads fall through to the spec-provided filesystem.
+    STOREFRONT_DAWN_ROOT = (
+      ENV["LIQUID_IL_DAWN_FIXTURES"] ||
+      (File.exist?(File.join(__dir__, "dawn_fixtures.path")) ? File.read(File.join(__dir__, "dawn_fixtures.path")).strip : nil) ||
+      ""
+    ).freeze
 
     class << self
       def install!

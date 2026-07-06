@@ -45,3 +45,4 @@ spec/liquid_ruby_bench.rb
 parsing
 fuzz/triage/raw_export.yml
 .claude/worktrees/
+spec/helpers/dawn_fixtures.path
