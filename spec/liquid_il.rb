@@ -27,6 +27,13 @@ LiquidSpec.configure do |config|
   # surface in LiquidIL::ShopifyMock. Shopify include quirks and production
   # error formatting are still outside the mock environment.
   config.missing_features = [:shopify_includes, :shopify_error_handling]
+
+  # liquid-spec 2.0.0 spec bug: lax_filter_booleandrop_first_last_size expects
+  # the old BooleanDrop (to_s → "Yay"/"Nay") but the standard_drops.rb
+  # registration now wins over the legacy liquid_ruby.rb one, so
+  # StandardBooleanDrop (to_s → "true"/"false") is used. Reference liquid
+  # also outputs "true", confirming the spec's expected "Yay" is stale.
+  config.known_failures = ["lax_filter_booleandrop_first_last_size"]
 end
 
 # Fallback for templates that can't be compiled (dynamic partials, recursion, etc.)

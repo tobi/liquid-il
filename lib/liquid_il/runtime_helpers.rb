@@ -360,10 +360,11 @@ module LiquidIL
       scope.assign_local(name, value) unless value.is_a?(LiquidIL::ErrorMarker)
     end
 
-    # t: truthy unwrap for conditions — drops define to_liquid_value
-    # (BooleanDrop(false) must be falsy). One send instead of the inline
-    # _t temp shuffle.
+    # t: truthy unwrap for conditions — call to_liquid first (NilDrop → nil),
+    # then to_liquid_value (BooleanDrop(false) → false). One send instead of
+    # the inline _t temp shuffle.
     def self.t(value)
+      value = value.to_liquid
       value.to_liquid_value
     end
 
@@ -401,8 +402,8 @@ module LiquidIL
       else LiquidIL::Utils.output_string(value)
       end
     }
-
     IS_TRUTHY = ->(value) {
+      value = value.to_liquid
       value = value.to_liquid_value
       case value
       when nil, false then false
@@ -463,14 +464,14 @@ module LiquidIL
         when "size" then obj.size
         end
       else
-        # Unknown type — check for Drop-style invoke_drop first (Liquid::Drop compat),
-        # then fall back to [] only for Hash-like objects that are known safe.
+        # Unknown type — Liquid::Drop compat: [] routes through invoke_drop
+        # (or the drop's own [] override, e.g. StandardIndexDrop), preserving
+        # the original key type for type-based dispatch. Non-drop objects
+        # with [] (e.g. Integer#[] bit access) are NOT called — returns nil.
         if obj.respond_to?(:invoke_drop)
-          obj.invoke_drop(key.to_s)
+          obj[key]
         elsif obj.respond_to?(:liquid_method_missing)
           obj.liquid_method_missing(key.to_s)
-        elsif obj.is_a?(Hash) || (obj.respond_to?(:key?) && obj.respond_to?(:[]))
-          obj[key.to_s]
         else
           nil
         end
@@ -739,7 +740,7 @@ module LiquidIL
         obj.invoke_drop(key)
       else
         if obj.respond_to?(:invoke_drop)
-          obj.invoke_drop(key.to_s)
+          obj[key]
         else
           nil
         end

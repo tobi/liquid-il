@@ -609,7 +609,12 @@ module LiquidIL
         @builder.find_var_dynamic unless skip_dynamic
         parse_property_chain(lexer)
       else
-        raise SyntaxError, "Unexpected token #{lexer.current} in expression"
+        if !strict? && lexer.current == ExpressionLexer::EOF
+          # Lax mode: unparseable expression (e.g. {{ #{1+1} }}) renders nothing
+          @builder.const_nil
+        else
+          raise SyntaxError, "Unexpected token #{lexer.current} in expression"
+        end
       end
     end
 

@@ -1,0 +1,102 @@
+---
+_metadata:
+  hint: Standard test drops (liquid-spec 2.0.0) — bracket access, NilDrop truthiness, lax parsing
+  doc: test_drops.md
+  render_errors: true
+specs:
+# ============================================================================
+# IndexDrop — bracket access on Liquid::Drop subclasses
+# Root cause: bracket_lookup and lookup called obj.invoke_drop(key.to_s) instead
+# of obj[key] in the else branch. StandardIndexDrop overrides [] but not
+# invoke_drop, so the override was bypassed and the key was stringified,
+# breaking type-based dispatch (Integer vs String).
+# Fix: call obj[key] (respects [] overrides, preserves key type) for objects
+# that respond to :invoke_drop (Liquid::Drop compat).
+# ============================================================================
+- name: repro_index_drop_integer_zero
+  template: "{{ drop[0] }}"
+  environment:
+    drop: "instantiate:IndexDrop"
+  expected: "zero"
+  complexity: 200
+  hint: |
+    IndexDrop[0] → "zero". The [] override on StandardIndexDrop must be
+    called with the original Integer key, not stringified.
+
+- name: repro_index_drop_integer_one
+  template: "{{ drop[1] }}"
+  environment:
+    drop: "instantiate:IndexDrop"
+  expected: "one"
+  complexity: 200
+
+- name: repro_index_drop_string
+  template: "{{ drop['foo'] }}"
+  environment:
+    drop: "instantiate:IndexDrop"
+  expected: "foo"
+  complexity: 200
+  hint: |
+    IndexDrop["foo"] → "foo". String key → identity. The [] override
+    must receive the String key, not a stringified version.
+
+# ============================================================================
+# NilDrop — to_liquid returns nil, must be falsy
+# Root cause: IS_TRUTHY and RuntimeHelpers.t called only to_liquid_value,
+# which returns self (truthy) for drops that don't override it. NilDrop
+# overrides to_liquid → nil but not to_liquid_value, so it was truthy.
+# Fix: call to_liquid first (unwraps NilDrop → nil), then to_liquid_value
+# on the result (unwraps BooleanDrop → boolean).
+# ============================================================================
+- name: repro_nil_drop_is_falsy
+  template: "{% if drop %}yes{% else %}no{% endif %}"
+  environment:
+    drop: "instantiate:NilDrop"
+  expected: "no"
+  complexity: 200
+  hint: |
+    NilDrop.to_liquid returns nil, which is falsy. The truthiness check
+    must call to_liquid before to_liquid_value.
+
+- name: repro_nil_drop_renders_empty
+  template: "[{{ drop }}]"
+  environment:
+    drop: "instantiate:NilDrop"
+  expected: "[]"
+  complexity: 200
+
+# ============================================================================
+# Lax parsing — #{1+1} is not Ruby interpolation, it's junk in lax mode
+# Root cause: parse_primary_expression raised SyntaxError on EOF even in
+# lax mode. The # character causes the lexer to skip to EOF (lax), then
+# the parser sees EOF as the first token and raised instead of emitting nil.
+# Fix: in lax mode, EOF in parse_primary_expression emits const_nil instead
+# of raising.
+# ============================================================================
+- name: repro_lax_hash_interpolation_not_ruby
+  template: "{{ #{1+1} }}"
+  expected: ""
+  complexity: 200
+  hint: |
+    In lax mode, #{1+1} is not Ruby interpolation — it's unparseable junk.
+    The expression renders as nil (empty output), not a syntax error.
+
+# ============================================================================
+# Bare bracket in for loop — ['collection'] resolves to variable 'collection'
+# Root cause: FIND_VAR_DYNAMIC was missing from PEEK_FOR_OPS, so the for-loop
+# detector in the Ruby compiler didn't recognize {% for x in ['var'] %} as a
+# for-loop. The compiler fell through to generic expression handling and
+# generated invalid Ruby.
+# Fix: added FIND_VAR_DYNAMIC and FIND_SELF to PEEK_FOR_OPS and
+# PEEK_TABLEROW_OPS so the for-loop detector recognizes dynamic lookups.
+# ============================================================================
+- name: repro_bare_bracket_for_loop
+  template: "{% for item in ['collection'] %}{{ item }}{% endfor %}"
+  environment:
+    collection: "hello"
+  expected: "hello"
+  complexity: 300
+  hint: |
+    Bare brackets ['collection'] in a for loop collection is dynamic
+    variable lookup — it resolves to the variable 'collection'. The
+    for-loop codegen must handle FIND_VAR_DYNAMIC in the collection expr.
