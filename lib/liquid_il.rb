@@ -61,6 +61,16 @@ module LiquidIL
       return 1 unless @position && @source
       @source[0, @position].count("\n") + 1
     end
+
+    # Column (1-based) within the line where the error occurred.
+    # Computed lazily: only the newline count of the prefix before the
+    # last newline in source[0, position]. Zero overhead on the hot path.
+    def column
+      return 1 unless @position && @source
+      prefix = @source[0, @position]
+      last_nl = prefix.rindex("\n")
+      last_nl ? @position - last_nl : @position + 1
+    end
   end
 
   class RuntimeError < Error
