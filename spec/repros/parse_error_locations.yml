@@ -1,0 +1,208 @@
+---
+_metadata:
+  hint: Parse error locations — line numbers and columns in SyntaxError
+  doc: implementers/error_locations.md
+specs:
+# ============================================================================
+# Direct template parse errors — errors must report the correct template
+# line, not always line 1. These use error_mode: :strict so expression-level
+# errors are rejected.
+# ============================================================================
+- name: repro_parse_error_line_3_hash_character
+  template: |
+    line 1
+    line 2
+    {{ #{1+1} }}
+  error_mode: :strict
+  errors:
+    parse_error:
+      - "line 3"
+  complexity: 500
+  hint: |
+    {{ #{1+1} }} on line 3 must report "line 3" in the SyntaxError.
+    The # character is not a valid Liquid expression start.
+
+- name: repro_parse_error_line_4_bad_filter
+  template: |
+    line 1
+    line 2
+    line 3
+    {{ foo | }}
+  error_mode: :strict
+  errors:
+    parse_error:
+      - "line 4"
+      - "Expected filter name"
+  complexity: 500
+  hint: |
+    A dangling pipe on line 4 must report "line 4" and "Expected filter name".
+    Tests that position tracking works through filter parsing.
+
+- name: repro_parse_error_line_3_unterminated_string
+  template: |
+    line 1
+    line 2
+    {{ 'oops }}
+  error_mode: :strict
+  errors:
+    parse_error:
+      - "line 3"
+      - "Unterminated string"
+  complexity: 500
+  hint: |
+    An unterminated string on line 3 must report "line 3". Tests that
+    the lexer's position tracking includes the template line offset.
+
+- name: repro_parse_error_line_5_bad_dot
+  template: |
+    a
+    b
+    c
+    d
+    {{ foo. }}
+  error_mode: :strict
+  errors:
+    parse_error:
+      - "line 5"
+      - "Expected property name"
+  complexity: 510
+  hint: |
+    A dangling dot on line 5 must report "line 5". Tests line counting
+    through a 5-line template.
+
+# ============================================================================
+# Tag-level parse errors — for/assign syntax errors must report the correct
+# line. These raise in all error modes (not just strict).
+# ============================================================================
+- name: repro_parse_error_line_3_bad_for_syntax
+  template: |
+    line 1
+    line 2
+    {% for %}
+    {% endfor %}
+  errors:
+    parse_error:
+      - "line 3"
+      - "Invalid for tag"
+  complexity: 510
+  hint: |
+    A malformed for tag on line 3 must report "line 3". Tag-level errors
+    use @line_pos for position tracking.
+
+- name: repro_parse_error_line_3_bad_assign
+  template: |
+    line 1
+    line 2
+    {% assign %}
+  errors:
+    parse_error:
+      - "line 3"
+      - "Invalid assign"
+  complexity: 510
+  hint: |
+    A malformed assign on line 3 must report "line 3".
+
+- name: repro_parse_error_line_4_capture_no_name
+  template: |
+    line 1
+    line 2
+    line 3
+    {% capture %}
+    {% endcapture %}
+  errors:
+    parse_error:
+      - "line 4"
+      - "Capture requires variable name"
+  complexity: 510
+  hint: |
+    A capture tag without a variable name on line 4 must report "line 4".
+
+# ============================================================================
+# Partial parse error locations — errors inside partials surface at render
+# time with the partial name and line within the partial. Partials compile
+# in :lax mode, so only tag-level errors (that raise in all modes) surface.
+# The adapter renders errors inline (render_errors: true), so we use
+# errors: output to match the rendered error text.
+# ============================================================================
+- name: repro_partial_error_line_2_for_tag
+  template: "{% render 'bad_partial' %}"
+  error_mode: lax
+  render_errors: true
+  filesystem:
+    bad_partial.liquid: |
+      first line
+      {% for %}
+      {% endfor %}
+  errors:
+    output:
+      - "bad_partial"
+      - "line 2"
+      - "Invalid for tag"
+  complexity: 520
+  hint: |
+    A tag-level syntax error on line 2 of a rendered partial must surface
+    at render time with the partial name "bad_partial" and "line 2".
+    Partials compile in lax mode, so only tag-level errors (not
+    expression-level) surface this way.
+
+- name: repro_include_error_line_3_assign_tag
+  template: "{% include 'bad_include' %}"
+  error_mode: lax
+  render_errors: true
+  filesystem:
+    bad_include.liquid: |
+      line 1
+      line 2
+      {% assign %}
+  errors:
+    output:
+      - "bad_include"
+      - "line 3"
+      - "Invalid assign"
+  complexity: 520
+  hint: |
+    A tag-level syntax error on line 3 of an included partial must surface
+    at render time with the partial name and line number.
+
+- name: repro_nested_partial_error_inner_line_2
+  template: "{% render 'outer_wrap' %}"
+  error_mode: lax
+  render_errors: true
+  filesystem:
+    outer_wrap.liquid: |
+      outer start
+      {% render 'inner_bad' %}
+      outer end
+    inner_bad.liquid: |
+      inner line 1
+      {% for %}
+      {% endfor %}
+  errors:
+    output:
+      - "inner_bad"
+      - "line 2"
+      - "Invalid for tag"
+  complexity: 540
+  hint: |
+    A syntax error in a nested partial (outer renders inner) must surface
+    with the innermost partial name "inner_bad" and "line 2" within it.
+    Tests that error location tracking works through nested partial
+    compilation.
+
+# ============================================================================
+# Column tracking — SyntaxError must have a column attribute
+# ============================================================================
+- name: repro_parse_error_has_line_and_column
+  template: |
+    line 1
+    line 2
+    {{ foo | }}
+  error_mode: :strict
+  errors:
+    parse_error:
+      - "line 3"
+  complexity: 500
+  hint: |
+    Smoke test: SyntaxError must report the correct line (3) for an
+    error on the third line of a template. Column tracking is verified
+    via the SyntaxError#column attribute in unit tests.

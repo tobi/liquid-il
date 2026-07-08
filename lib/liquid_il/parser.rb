@@ -71,9 +71,21 @@ module LiquidIL
 
     def expr_lexer_for(source)
       @expr_lexer.error_mode = @error_mode
+      @expr_lexer.template_pos = current_template_content_start
+      @expr_lexer.template_source = @source
       @expr_lexer.reset_source(source)
       @expr_lexer.advance
       @expr_lexer
+    end
+
+    # Build a SyntaxError with the correct template position and source.
+    # When a lexer is available, uses its full_position (template start +
+    # offset within the expression). Otherwise uses @line_pos (the start
+    # of the current template token). Line/column are computed lazily
+    # by SyntaxError only when the error is actually rendered.
+    def syntax_error(msg, lexer = nil)
+      pos = lexer ? lexer.full_position : @line_pos
+      SyntaxError.new(msg, position: pos, source: @source)
     end
 
     def expr_lexer_for_partial_tag(source)
@@ -101,6 +113,10 @@ module LiquidIL
 
     def current_template_start_pos
       @template_lexer.token_start
+    end
+
+    def current_template_content_start
+      @template_lexer.content_start
     end
 
     def current_template_end_pos
@@ -263,7 +279,7 @@ module LiquidIL
       # markup (e.g. {{ - 'theme.css' - }}) as invalid expression noise that
       # renders nothing. Strict modes reject it with the conventional message.
       if stripped.start_with?("- ")
-        raise SyntaxError, "not a valid expression" if strict?
+        raise syntax_error("not a valid expression") if strict?
         advance_template
         return true
       end
@@ -533,7 +549,7 @@ module LiquidIL
         # Lax mode: if no right operand (EOF or PIPE), ignore the comparison op
         if lexer.eos? || lexer.current == ExpressionLexer::PIPE
           if strict?
-            raise SyntaxError, "Expected expression after comparison operator"
+            raise syntax_error("Expected expression after comparison operator", lexer)
           end
           break
         end
@@ -592,13 +608,13 @@ module LiquidIL
         parse_expression(lexer)
         missing_close = false
         if lexer.current == ExpressionLexer::RBRACKET
-          raise SyntaxError, "Bare bracket access is not allowed; use self[key] instead" if strict2?
+          raise syntax_error("Bare bracket access is not allowed; use self[key] instead", lexer) if strict2?
           lexer.advance
         elsif strict?
           if strict2? && lexer.current != ExpressionLexer::EOF
-            raise SyntaxError, "Bare bracket access is not allowed; use self[key] instead"
+            raise syntax_error("Bare bracket access is not allowed; use self[key] instead", lexer)
           end
-          raise SyntaxError, "Expected close_square"
+          raise syntax_error("Expected close_square", lexer)
         else
           missing_close = true
         end
@@ -613,7 +629,7 @@ module LiquidIL
           # Lax mode: unparseable expression (e.g. {{ #{1+1} }}) renders nothing
           @builder.const_nil
         else
-          raise SyntaxError, "Unexpected token #{lexer.current} in expression"
+          raise syntax_error("Unexpected token #{lexer.current} in expression", lexer)
         end
       end
     end
@@ -644,7 +660,7 @@ module LiquidIL
         case lexer.current
         when ExpressionLexer::DOT
           lexer.advance
-          raise SyntaxError, "Expected property name after '.'" unless lexer.current == ExpressionLexer::IDENTIFIER
+          raise syntax_error("Expected property name after '.'", lexer) unless lexer.current == ExpressionLexer::IDENTIFIER
 
           prop_name = lexer.value
           lexer.advance
@@ -659,7 +675,7 @@ module LiquidIL
         when ExpressionLexer::FAT_ARROW
           # Lax parsing: foo=>bar is equivalent to foo['bar']
           lexer.advance
-          raise SyntaxError, "Expected property name after '=>'" unless lexer.current == ExpressionLexer::IDENTIFIER
+          raise syntax_error("Expected property name after '=>'", lexer) unless lexer.current == ExpressionLexer::IDENTIFIER
 
           prop_name = lexer.value
           lexer.advance
@@ -688,7 +704,7 @@ module LiquidIL
         # parentheses; strict mode reports that syntax, while lax mode keeps the
         # valid prefix and skips the malformed parenthesized suffix.
         if lexer.current == ExpressionLexer::PIPE
-          raise SyntaxError, "but found pipe" if strict?
+          raise syntax_error("but found pipe", lexer) if strict?
           lexer.advance until lexer.current == ExpressionLexer::RPAREN || lexer.current == ExpressionLexer::EOF
         end
         lexer.expect(ExpressionLexer::RPAREN)
@@ -705,7 +721,7 @@ module LiquidIL
     def parse_filter(lexer)
       unless lexer.current == ExpressionLexer::IDENTIFIER
         return unless strict?
-        raise SyntaxError, "Expected filter name after '|'"
+        raise syntax_error("Expected filter name after '|'", lexer)
       end
 
       filter_name = lexer.value
@@ -1237,7 +1253,7 @@ module LiquidIL
       # Parse: var_name in collection [limit:N] [offset:N] [reversed]
       # Single-pass parsing — no regex, no gsub, no MatchData allocations
       in_pos = tag_args.index(' in ')
-      raise SyntaxError, 'Invalid for tag syntax' unless in_pos
+      raise syntax_error('Invalid for tag syntax') unless in_pos
 
       var_name = tag_args.byteslice(0, in_pos).strip
       rest = tag_args.byteslice(in_pos + 4, tag_args.bytesize - in_pos - 4)
@@ -1375,7 +1391,7 @@ module LiquidIL
       # Parse: var_name in collection [cols:N] [limit:N] [offset:N]
       # Single-pass parsing — no regex, no gsub, no MatchData allocations
       in_pos = tag_args.index(' in ')
-      raise SyntaxError, 'Invalid tablerow tag syntax' unless in_pos
+      raise syntax_error('Invalid tablerow tag syntax') unless in_pos
 
       var_name = tag_args.byteslice(0, in_pos).strip
       rest = tag_args.byteslice(in_pos + 4, tag_args.bytesize - in_pos - 4)
@@ -1497,7 +1513,7 @@ module LiquidIL
 
     def parse_assign_tag(tag_args)
       eq_pos = tag_args.index('=')
-      raise SyntaxError, 'Invalid assign syntax' unless eq_pos
+      raise syntax_error('Invalid assign syntax') unless eq_pos
       var_name = tag_args.byteslice(0, eq_pos).strip
       value_expr = tag_args.byteslice(eq_pos + 1, tag_args.bytesize - eq_pos - 1).strip
 
@@ -1519,7 +1535,7 @@ module LiquidIL
                  when ExpressionLexer::STRING
                    lexer.value
                  else
-                   raise SyntaxError, 'Capture requires variable name'
+                   raise syntax_error('Capture requires variable name', lexer)
                  end
 
       @builder.push_capture
@@ -1814,7 +1830,7 @@ module LiquidIL
       lexer = expr_lexer_for_partial_tag(tag_args)
 
       # Get partial name (must be quoted string)
-      raise SyntaxError, 'Syntax Error: Template name must be a quoted string' unless lexer.current == ExpressionLexer::STRING
+      raise syntax_error('Syntax Error: Template name must be a quoted string', lexer) unless lexer.current == ExpressionLexer::STRING
 
       partial_name = lexer.value
       lexer.advance
@@ -2283,7 +2299,7 @@ module LiquidIL
       return if lexer.eos?
 
       if strict?
-        raise SyntaxError, "Unexpected token #{lexer.current} after expression"
+        raise syntax_error("Unexpected token #{lexer.current} after expression", lexer)
       end
       # Lax/warn mode: ignore trailing junk after a valid expression
     end

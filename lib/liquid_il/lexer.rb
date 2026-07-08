@@ -390,7 +390,7 @@ module LiquidIL
     # Pre-compiled patterns
     WHITESPACE = /\s+/
 
-    attr_accessor :error_mode
+    attr_accessor :error_mode, :template_pos, :template_source
 
     def initialize(source = "", error_mode: :lax)
       @source = source
@@ -400,6 +400,8 @@ module LiquidIL
       @current_value = nil
       @peeked = false
       @error_mode = error_mode
+      @template_pos = 0
+      @template_source = nil
     end
 
     def reset_source(source)
@@ -411,6 +413,12 @@ module LiquidIL
       @current_value = nil
       @peeked = false
       self
+    end
+
+    # Full template position for error reporting: template start + offset
+    # within the expression. Only meaningful when template_pos is set.
+    def full_position
+      (@template_pos || 0) + @scanner.pos
     end
 
     def reset
@@ -514,7 +522,7 @@ module LiquidIL
     # Require current to match, raise otherwise
     def expect(token_type)
       unless accept(token_type)
-        raise SyntaxError, "Expected #{token_type} but got #{current} at position #{@scanner.pos}"
+        raise SyntaxError.new("Expected #{token_type} but got #{current}", position: full_position, source: @template_source)
       end
     end
 
@@ -662,7 +670,7 @@ module LiquidIL
         @peeked = false
         advance
       else
-        raise SyntaxError, "Unterminated string at position #{start - 1}"
+        raise SyntaxError.new("Unterminated string", position: full_position, source: @template_source)
       end
     end
 
@@ -736,7 +744,7 @@ module LiquidIL
           @current_token = EOF
           return
         end
-        raise SyntaxError, "Unexpected character '#{byte&.chr}' at position #{start}"
+        raise SyntaxError.new("Unexpected character '#{byte&.chr}'", position: full_position, source: @template_source)
       end
 
       pos = start + len
