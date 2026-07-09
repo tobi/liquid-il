@@ -71,16 +71,28 @@ module LiquidIL
       last_nl = prefix.rindex("\n")
       last_nl ? @position - last_nl : @position + 1
     end
+
+    # Structured location for error_location spec checking: "line:col"
+    def location
+      "#{line}:#{column}"
+    end
   end
 
   class RuntimeError < Error
-    attr_accessor :file, :line, :partial_output
+    attr_accessor :file, :line, :column, :partial_output
 
-    def initialize(message, file: nil, line: 1, partial_output: nil)
+    def initialize(message, file: nil, line: 1, column: 1, partial_output: nil)
       super(message)
       @file = file
       @line = line
+      @column = column
       @partial_output = partial_output
+    end
+
+    # Structured location for error_location spec checking:
+    # "line:col" (no file) or "file:line:col" (with file).
+    def location
+      @file ? "#{@file}:#{@line}:#{@column}" : "#{@line}:#{@column}"
     end
   end
 
