@@ -18,7 +18,7 @@ LiquidIL achieves its performance through a combination of compile-time decision
 
 **Inline everything that can be inlined.** Comparisons (`==`, `<`, `>`) compile to native Ruby operators with a Numeric fast path. Filters compile to direct method calls. Partial templates compile as inline lambdas. The escape filter skips `CGI.escapeHTML` entirely when the input contains no special characters.
 
-**Cache aggressively.** ISeq binaries are cached by source hash — repeated compilation of the same template loads from a binary cache instead of re-parsing Ruby source.
+**Cache aggressively.** ISeq binaries are cached by the complete generated source string (Ruby Hash handles fast bucketing and equality resolves collisions) — repeated compilation loads from a bounded binary cache instead of re-parsing Ruby source. Cross-process dependency identities come from the host partial index.
 
 See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for detailed profiling data and future optimization paths.
 
@@ -36,7 +36,7 @@ LiquidIL.load_and_render(blob, assigns)   # load → render, cold
 The hot path is therefore **deserialize → callable proc → first render**, *not* re-rendering a template already resident in memory. That single assumption drives every design decision, and there are no `optimize_for:`-style switches — the one default *is* the optimized configuration:
 
 - **The emitted code is kept small.** The generated Ruby (and thus the ISeq binary) is the thing we load cold, and `RubyVM::InstructionSequence.load_from_binary` cost scales with binary size (~3µs/KB). Repeated codegen patterns are pulled into the runtime library instead of being emitted per-template, so the artifact carries as little code as possible.
-- **The load process is optimized.** Artifacts are raw ISeq binaries in a thin framed envelope — no source, no spans (error locations are baked in as compile-time literals, so the artifact needs neither). Decoding is a magic-check plus a `byteslice`, not a Marshal object graph.
+- **The load process is optimized and guarded.** Artifact v2 carries a raw ISeq plus JSON-safe immutable constants/dependencies, exact Ruby and LiquidIL ABI stamps, and a full-payload CRC32 checked before `load_from_binary`. It contains no source or spans; error locations are baked into generated code.
 - **The source is not embedded.** Callers already hold their templates in a filesystem or database; the artifact stays lean and the source is refetched only if a Ruby-version change forces a recompile.
 
 ### The three render scenarios
@@ -76,10 +76,12 @@ For processes that render the same templates repeatedly, an optional LRU cache l
 cache = LiquidIL::TemplateCache.new(max_bytes: 64 * 1024 * 1024)
 
 blob = memcache.get(key)             # fetch the compiled artifact
-cache.render(key, blob, assigns)     # loads+caches on first use, reuses thereafter
+compiled = cache.fetch(key, blob)    # load exactly once
+compiled.render(first_assigns)       # fresh Scope for this call
+compiled.render(second_assigns)      # same code, different inputs
 ```
 
-The budget is accounted by the summed size of the loaded artifacts; once it is exceeded, the least-recently-used templates are dropped. Each entry remembers its blob's CRC32, so republishing a template under the same key transparently reloads it.
+The budget is accounted by the summed size of the loaded artifacts; once it is exceeded, the least-recently-used templates are dropped. Each entry remembers the validated artifact payload digest, so republishing a template under the same key transparently reloads it. Assigns are never cached or bound into generated code.
 
 ### Concurrency
 
@@ -135,7 +137,7 @@ mixed templates: `bench_simple_product_listing`, `bench_render_with_params`, `be
 
 ### The artifact format
 
-`Template#to_artifact` produces a framed binary (`"LQIL"` magic, format version, Ruby version/platform stamp, content digest, length-prefixed segments — see `lib/liquid_il/artifact.rb`). Loading an artifact built by a different Ruby raises `LiquidIL::StaleArtifactError` (a mismatched ISeq binary can crash the VM, so it is never fed to `load_from_binary`); a damaged blob raises `LiquidIL::CorruptArtifactError`. In both cases the caller recompiles from its own copy of the source and re-persists.
+`Template#to_artifact` produces a v2 framed binary (`"LQIL"` magic, format version, exact Ruby stamp, LiquidIL runtime/compiler ABI, full-payload CRC32, length-prefixed segments — see `lib/liquid_il/artifact.rb`). Metadata is JSON-safe rather than Marshal-loaded. A Ruby/ABI mismatch raises `LiquidIL::StaleArtifactError`; damaged data raises `LiquidIL::CorruptArtifactError`. In both cases the caller recompiles from its own source and re-persists. Artifacts contain executable ISeq and must be authenticated by the host if untrusted parties can write the cache.
 
 ### Measured cold-path numbers
 
@@ -143,9 +145,9 @@ mixed templates: `bench_simple_product_listing`, `bench_render_with_params`, `be
 
 | spec | artifact | decode | ISeq load | cold total | warm render |
 |---|---|---|---|---|---|
-| bench_nested_partials | 4.3KB | 2.4µs | 9.5µs | **13.1µs** | 2.4µs |
-| bench_theme_cart_page | 11.4KB | 3.6µs | 22µs | **27µs** | 24µs |
-| bench_theme_product_page | 14.7KB | 4µs | 28µs | **33µs** | 17µs |
+| bench_nested_partials | 3.6KB | 1.4µs | 7.0µs | **8.7µs** | 1.6µs |
+| bench_theme_cart_page | 10.9KB | 2.5µs | 18.9µs | **21.7µs** | 21.3µs |
+| bench_theme_product_page | 13.7KB | 2.9µs | 24.7µs | **27.9µs** | 16.7µs |
 
 Three optimization waves got here. The first (45–81µs cold, 18–37KB artifacts → ~30–40µs, 15–21KB) hoisted per-partial boilerplate into the (already-jitted) runtime, introduced a census-based inline-vs-shared-lambda policy for partials, baked error locations in as compile-time literals, and replaced the Marshal envelope with the framed binary. The second (the emitted-bytes tranches of [docs/win_all_scenarios.md](docs/win_all_scenarios.md)) compacted the compiled source before ISeq compilation, fused the dominant output patterns into single runtime sends (`raw+lookup+append` in one call), and merged appends across partial-inline seams via parse-time literal juxtaposition. The third moved whole protocols into runtime drivers — loops (`_H.ei/eif/eifs`), `render … for` collection dispatch (`_H.rpf/ipf`), partial invocation (`_H.ipc`) — and added IL-decided hoisting of repeated scope lookups; cart went 18.7 → 15.5KB and its remote-hit row flipped against liquid-vm.
 
@@ -154,7 +156,7 @@ All benchmarking runs through liquid-spec's harness (GC-disciplined timing, real
 - `rake bench` (alias `rake scenarios`) — the three-scenario table (cache-miss / remote-hit / in-process + artifact size) vs reference liquid, geomean plus per-spec
 - `rake bench:detail` — liquid-spec's detailed per-stage output (parse/render/load distributions, allocation counts, YJIT stats)
 - `rake bench:partials` — the partial-heavy matrix in `specs/partials/` (a local liquid-spec suite; its `expected:` blocks are generated from the reference liquid gem)
-- `rake bench:cold` — per-stage breakdown of the remote-hit load pipeline (envelope decode / `load_from_binary` / eval / first render), hard-validated against the reference gem
+- `rake bench:cold` — per-stage breakdown plus the public `load_and_render` path and reusable `CompiledArtifact` first/warm render, hard-validated against the reference gem
 - `rake bench:threads` — concurrent render throughput for shared loaded artifacts/templates at 1, 2, 4, and 8 threads
 - `rake liquid_vm:scenarios` — the same three-scenario table including Shopify/liquid-vm classic and SSA; `rake liquid_vm:bench` for their detailed output. This private repo is cloned to `/tmp/liquid-vm` by default and skipped by all default tasks; see [docs/liquid_vm.md](docs/liquid_vm.md).
 

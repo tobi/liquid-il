@@ -49,3 +49,11 @@ specs:
   filesystem:
     snippet1: "{%- assign x = 'snippet' -%}{{- other_self.x }}|{{ self.x -}}"
   expected: "outer|outer|snippet"
+
+# A render argument literally named `self` must bind FIND_SELF in the partial
+# to the caller's explicitly passed SelfDrop, not the fresh isolated scope.
+- name: self_render_parameter_shadows_fresh_partial_self
+  template: "{%- assign x = 1 -%}{%- render 'snippet1', self: self -%}"
+  filesystem:
+    snippet1: "{%- assign x = 2 -%}{{- self.x -}}|{{- x -}}"
+  expected: "1|2"

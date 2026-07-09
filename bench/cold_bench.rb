@@ -16,8 +16,9 @@
 #   load_from_binary_µs  RubyVM::InstructionSequence.load_from_binary
 #   iseq_eval_µs         iseq.eval → callable proc
 #   cold_total_µs        decode + load + eval
-#   first_render_µs      first render on a freshly loaded proc (cold JIT)
-#   warm_render_µs       render after warmup (steady state)
+#   load_and_render_µs   documented production API, artifact → first output
+#   first_render_µs      first CompiledArtifact render on a freshly loaded proc
+#   warm_render_µs       CompiledArtifact render after warmup (steady state)
 #
 # Hard-fail validation: artifact-path render == fresh-compile render ==
 # reference `liquid` gem render. Any mismatch aborts with a diff.
@@ -92,9 +93,11 @@ load_specs(ARGV).each do |spec|
 
   # Validate: artifact path must reproduce the fresh-compile output
   restored = if use_artifact
-    LiquidIL::Artifact.load(blob)
+    LiquidIL.load_artifact(blob)
   else
-    LiquidIL::Template.from_cache(**Marshal.load(blob))
+    data = Marshal.load(blob)
+    proc = RubyVM::InstructionSequence.load_from_binary(data[:iseq_binary]).eval
+    LiquidIL::CompiledArtifact.new(proc, data[:partial_constants], blob.bytesize, LiquidIL::ContentHash.digest(blob))
   end
   # Artifact-loaded templates have no context — dynamic partials resolve
   # through the render-time file_system register (the production pattern).
@@ -118,6 +121,7 @@ load_specs(ARGV).each do |spec|
   decode_ns = []
   load_ns = []
   eval_ns = []
+  load_render_ns = []
   first_ns = []
 
   # The measured decode/load/eval pipeline mirrors what from_cache/load does
@@ -147,11 +151,11 @@ load_specs(ARGV).each do |spec|
   end
 
   FIRST_ITERS.times do
-    fresh = if uses_artifact
-      LiquidIL::Artifact.load(blob)
-    else
-      LiquidIL::Template.from_cache(**Marshal.load(blob))
-    end
+    t0 = now_ns
+    LiquidIL.load_and_render(blob, assigns, registers: render_registers)
+    load_render_ns << (now_ns - t0)
+
+    fresh = LiquidIL.load_artifact(blob)
     t0 = now_ns
     fresh.render(assigns, registers: render_registers)
     first_ns << (now_ns - t0)
@@ -172,18 +176,19 @@ load_specs(ARGV).each do |spec|
     envelope_decode_us: median(decode_ns) / 1000.0,
     load_from_binary_us: median(load_ns) / 1000.0,
     iseq_eval_us: median(eval_ns) / 1000.0,
+    load_and_render_us: median(load_render_ns) / 1000.0,
     first_render_us: median(first_ns) / 1000.0,
     warm_render_us: median(warm_ns) / 1000.0,
   }
 end
 
-puts format("%-34s %9s %9s %9s %8s %9s %9s %9s",
-  "spec", "bytes", "decode", "iseq_load", "eval", "cold_tot", "first", "warm")
+puts format("%-34s %9s %9s %9s %8s %9s %11s %9s %9s",
+  "spec", "bytes", "decode", "iseq_load", "eval", "cold_tot", "load+first", "first", "warm")
 rows.each do |r|
   cold_total = r[:envelope_decode_us] + r[:load_from_binary_us] + r[:iseq_eval_us]
-  puts format("%-34s %9d %8.1fµs %8.1fµs %7.1fµs %8.1fµs %8.1fµs %8.1fµs",
+  puts format("%-34s %9d %8.1fµs %8.1fµs %7.1fµs %8.1fµs %10.1fµs %8.1fµs %8.1fµs",
     r[:name], r[:payload_bytes], r[:envelope_decode_us], r[:load_from_binary_us],
-    r[:iseq_eval_us], cold_total, r[:first_render_us], r[:warm_render_us])
+    r[:iseq_eval_us], cold_total, r[:load_and_render_us], r[:first_render_us], r[:warm_render_us])
 end
 
 warnings.each { |name, msg| puts "WARN #{name}: #{msg}" }

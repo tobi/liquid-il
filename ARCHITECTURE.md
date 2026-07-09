@@ -1,232 +1,212 @@
 # LiquidIL Architecture
 
-LiquidIL compiles Liquid templates to an intermediate language (IL) for execution on a stack-based virtual machine. This document describes the compilation pipeline and key data structures.
+LiquidIL compiles a Liquid template once, persists a Ruby ISeq artifact, and
+reuses the loaded compiled template for many renders with different assigns.
+The production target is:
 
-## Pipeline Overview
-
-```
-Source → TemplateLexer → Parser → IL → Linker → VM
-              ↓              ↓
-        ExpressionLexer  IL::Builder
+```text
+compile once → persist artifact → load in another process → render repeatedly
 ```
 
-## Stage 1: Template Lexing
+Assigns are never part of compilation, cache identity, the literal pool, or the
+artifact. Every render receives a fresh `Scope` built from that call's assigns.
 
-**File:** `lib/liquid_il/lexer.rb` (TemplateLexer)
+## Actual pipeline
 
-Splits source into three token types:
-- `RAW` - Literal text between tags
-- `TAG` - `{% ... %}` blocks
-- `VAR` - `{{ ... }}` output expressions
+```text
+Liquid source
+  → TemplateLexer / ExpressionLexer
+  → Parser + IL::Builder
+  → semantic IL passes and label linking
+  → RubyCompiler analysis and lowering
+  → compact Ruby source
+  → RubyVM::InstructionSequence binary
+  → Artifact v2 envelope
+  → CompiledArtifact
+  → RenderExecutor + fresh Scope per render
+```
 
-Tracks whitespace trim markers (`-`) for proper output formatting.
+There is no interpreter VM in the production path. The IL is a compiler IR;
+Ruby/YJIT is the execution backend.
+
+## 1. Lexing and parsing
+
+`lib/liquid_il/lexer.rb` contains two lexers:
+
+- `TemplateLexer` splits raw text, output expressions, and tags.
+- `ExpressionLexer` tokenizes Liquid expressions using byte dispatch tables.
+
+`lib/liquid_il/parser.rb` is a recursive-descent parser. It emits stack IL
+directly through `IL::Builder`; there is no separate Liquid AST allocation.
+Whitespace control, static partial names, source locations, and syntax policy are
+resolved here whenever possible.
+
+## 2. Intermediate language
+
+`lib/liquid_il/il.rb` defines the instruction set as compact arrays:
 
 ```ruby
-# Input: "Hello {{ name -}}!"
-# Tokens: [[:RAW, "Hello "], [:VAR, "name", false, true], [:RAW, "!"]]
+[IL::FIND_VAR_PATH, "product", ["title"]]
+[IL::CALL_FILTER, "upcase", 0, source_line]
+[IL::WRITE_VALUE]
 ```
 
-## Stage 2: Expression Lexing
+The IL represents Liquid semantics independently of Ruby syntax. It includes:
 
-**File:** `lib/liquid_il/lexer.rb` (ExpressionLexer)
+- constants and variable/property reads
+- output and assignment
+- structured conditionals
+- loops and interrupts
+- captures, cycles, and `ifchanged`
+- static/dynamic partial calls
+- filter calls with source locations
 
-Tokenizes tag/variable markup using byte lookup tables for O(1) punctuation dispatch.
+`IL.link` resolves symbolic loop labels. `lib/liquid_il/compiler.rb` runs
+semantic passes such as constant folding, write fusion, path collapse, dead-code
+removal, and lookup census. Ruby-specific decisions do not belong in these
+passes.
 
-Token types: `IDENTIFIER`, `NUMBER`, `STRING`, `DOT`, `DOTDOT`, `PIPE`, `COLON`, `COMMA`, comparison operators (`EQ`, `NE`, `LT`, `LE`, `GT`, `GE`), logic operators (`AND`, `OR`, `CONTAINS`), and literals (`NIL`, `TRUE`, `FALSE`, `EMPTY`, `BLANK`).
+## 3. Ruby lowering
 
-## Stage 3: Parsing & IL Emission
+`lib/liquid_il/ruby_compiler.rb` lowers IL to native Ruby control flow and
+expressions. Generated code is specialized for template structure, not render
+input values.
 
-**File:** `lib/liquid_il/parser.rb`
+### CodeFragment
 
-Recursive descent parser that emits IL directly—no AST intermediate. Uses `IL::Builder` to construct instruction sequences with symbolic labels.
+`lib/liquid_il/ruby_compiler/code_fragment.rb` carries generated expression
+source plus semantic metadata:
 
-Key parsing methods:
-- `parse_expression` → `parse_or_expression` → `parse_and_expression` → `parse_comparison_expression` → `parse_primary_expression`
-- `parse_filters` - Filter chain processing
-- `parse_if_tag`, `parse_for_tag`, `parse_case_tag`, etc. - Control flow tags
+- known value category
+- output policy (`direct`, `to_s`, or full Liquid conversion)
+- error-marker propagation
+- filter-cache metadata
+- compiler-owned value origin
 
-## Stage 4: IL Instruction Set
+Output conversion, filter chaining, truthiness, helper inclusion, and loop-item
+lookup decisions consume this metadata. They do not infer semantics by applying
+regular expressions to generated Ruby.
 
-**File:** `lib/liquid_il/il.rb`
+### Effects
 
-Instructions are simple arrays (`[:OPCODE, arg1, arg2]`) for minimal allocation.
+Nested emission frames record scope reads, dynamic access, open partial calls,
+and `forloop`/`parentloop` use. Loop planning uses these effects to select a
+fast path or the full scope-synchronizing fallback.
 
-### Complete Instruction Reference
+### Partials
 
-| Instruction | Format | Description |
-|-------------|--------|-------------|
-| **Output** |||
-| `WRITE_RAW` | `[:WRITE_RAW, string]` | Write literal string to output |
-| `WRITE_VALUE` | `[:WRITE_VALUE]` | Pop stack, convert to string, write to output |
-| **Constants** |||
-| `CONST_NIL` | `[:CONST_NIL]` | Push nil |
-| `CONST_TRUE` | `[:CONST_TRUE]` | Push true |
-| `CONST_FALSE` | `[:CONST_FALSE]` | Push false |
-| `CONST_INT` | `[:CONST_INT, value]` | Push integer |
-| `CONST_FLOAT` | `[:CONST_FLOAT, value]` | Push float |
-| `CONST_STRING` | `[:CONST_STRING, value]` | Push string |
-| `CONST_RANGE` | `[:CONST_RANGE, start, end]` | Push range literal |
-| `CONST_EMPTY` | `[:CONST_EMPTY]` | Push empty literal (for `== empty`) |
-| `CONST_BLANK` | `[:CONST_BLANK]` | Push blank literal (for `== blank`) |
-| **Variable Access** |||
-| `FIND_VAR` | `[:FIND_VAR, name]` | Look up variable by name, push to stack |
-| `FIND_VAR_DYNAMIC` | `[:FIND_VAR_DYNAMIC]` | Pop name from stack, look up, push result |
-| `LOOKUP_KEY` | `[:LOOKUP_KEY]` | Pop key, pop object, push object[key] |
-| `LOOKUP_CONST_KEY` | `[:LOOKUP_CONST_KEY, name]` | Pop object, push object[name] |
-| `LOOKUP_COMMAND` | `[:LOOKUP_COMMAND, name]` | Optimized lookup for size/first/last |
-| **Control Flow** |||
-| `LABEL` | `[:LABEL, id]` | Define jump target (removed by linker; loops only) |
-| `JUMP` | `[:JUMP, target]` | Unconditional jump (loops only) |
-| `JUMP_IF_EMPTY` | `[:JUMP_IF_EMPTY, target]` | Peek, jump if empty (for else in for) |
-| `JUMP_IF_INTERRUPT` | `[:JUMP_IF_INTERRUPT, target]` | Jump if break/continue pending |
-| `HALT` | `[:HALT]` | End execution |
-| **Structured Conditionals** |||
-| `IF` | `[:IF, negate]` | Pop condition; run then-block when truthy (falsy if negate) |
-| `ELSE` | `[:ELSE]` | Begin else-block (elsif desugars to ELSE + nested IF) |
-| `END_IF` | `[:END_IF]` | Close conditional block (markers always properly nested) |
-| **Comparison** |||
-| `COMPARE` | `[:COMPARE, op]` | Pop b, a, push a op b (eq/ne/lt/le/gt/ge) |
-| `CASE_COMPARE` | `[:CASE_COMPARE]` | Stricter comparison for case/when |
-| `CONTAINS` | `[:CONTAINS]` | Pop b, a, push a.include?(b) |
-| `BOOL_NOT` | `[:BOOL_NOT]` | Pop, push logical negation |
-| `IS_TRUTHY` | `[:IS_TRUTHY]` | Pop, push boolean (only nil/false are falsy) |
-| `BOOL_AND` | `[:BOOL_AND]` | Pop r, l; push truthy(l) && truthy(r) |
-| `BOOL_OR` | `[:BOOL_OR]` | Pop r, l; push truthy(l) \|\| truthy(r) |
-| **Scope & Assignment** |||
-| `PUSH_SCOPE` | `[:PUSH_SCOPE]` | Push new variable scope |
-| `POP_SCOPE` | `[:POP_SCOPE]` | Pop variable scope |
-| `ASSIGN` | `[:ASSIGN, name]` | Pop value, assign to root scope |
-| `ASSIGN_LOCAL` | `[:ASSIGN_LOCAL, name]` | Pop value, assign to current scope |
-| **Loops (for)** |||
-| `FOR_INIT` | `[:FOR_INIT, var, loop_name, limit?, offset?, continue?, reversed?]` | Initialize for loop |
-| `FOR_NEXT` | `[:FOR_NEXT, continue_label, break_label]` | Advance iterator or exit |
-| `FOR_END` | `[:FOR_END]` | Clean up for loop |
-| `PUSH_FORLOOP` | `[:PUSH_FORLOOP]` | Push forloop to stack (for parentloop) |
-| `POP_FORLOOP` | `[:POP_FORLOOP]` | Pop forloop from stack |
-| **Loops (tablerow)** |||
-| `TABLEROW_INIT` | `[:TABLEROW_INIT, var, loop_name, limit?, offset?, cols]` | Initialize tablerow |
-| `TABLEROW_NEXT` | `[:TABLEROW_NEXT, continue_label, break_label]` | Advance with `<tr>`/`<td>` output |
-| `TABLEROW_END` | `[:TABLEROW_END]` | Clean up tablerow |
-| **Interrupts** |||
-| `PUSH_INTERRUPT` | `[:PUSH_INTERRUPT, type]` | Signal break or continue |
-| `POP_INTERRUPT` | `[:POP_INTERRUPT]` | Clear interrupt |
-| **Filters** |||
-| `CALL_FILTER` | `[:CALL_FILTER, name, argc]` | Pop args and value, push filter result |
-| **Capture** |||
-| `PUSH_CAPTURE` | `[:PUSH_CAPTURE]` | Start capturing output |
-| `POP_CAPTURE` | `[:POP_CAPTURE]` | Stop capture, push captured string |
-| **Partials** |||
-| `RENDER_PARTIAL` | `[:RENDER_PARTIAL, name, args]` | Render with isolated scope |
-| `INCLUDE_PARTIAL` | `[:INCLUDE_PARTIAL, name, args]` | Include with shared scope |
-| **Special Tags** |||
-| `INCREMENT` | `[:INCREMENT, name]` | Increment counter, push old value |
-| `DECREMENT` | `[:DECREMENT, name]` | Decrement counter, push new value |
-| `CYCLE_STEP` | `[:CYCLE_STEP, identity, values]` | Cycle through values |
-| `CYCLE_STEP_VAR` | `[:CYCLE_STEP_VAR, var, values]` | Cycle with variable group |
-| `IFCHANGED_CHECK` | `[:IFCHANGED_CHECK, tag_id]` | Output if value changed |
-| **Stack** |||
-| `DUP` | `[:DUP]` | Duplicate top of stack |
-| `POP` | `[:POP]` | Discard top of stack |
-| `BUILD_HASH` | `[:BUILD_HASH, count]` | Pop count*2 items, push hash |
-| `STORE_TEMP` | `[:STORE_TEMP, index]` | Store top in temp slot |
-| `LOAD_TEMP` | `[:LOAD_TEMP, index]` | Load from temp slot |
-| `NEW_RANGE` | `[:NEW_RANGE]` | Pop end, start, push range |
-| `NOOP` | `[:NOOP]` | No operation |
+Static partials have three dispositions:
 
-### Example IL
+- `inline`: compiled into the caller when structured IL analysis proves it safe
+- `lambda`: compiled once inside the artifact and called by runtime helpers
+- `external`: represented by name/digest and supplied by a `PartialProvider`
 
-Template: `{% if user %}Hello {{ user.name }}{% endif %}`
+Bound isolated partials are lowered from IL against compiler-owned argument
+locals. This avoids generated-source substitution while retaining a flat ISeq.
+Any partial shape outside the explicit safe opcode set uses an isolated render
+scope. Render-time argument values are rebuilt on every call and are never
+persisted.
 
-```
-FIND_VAR "user"
-IS_TRUTHY
-IF
-WRITE_RAW "Hello "
-FIND_VAR "user"
-LOOKUP_CONST_KEY "name"
-WRITE_VALUE
-END_IF
-HALT
-```
+### Source serialization
 
-## Stage 5: Linking
+Semantic output decisions happen in IL/codegen. `ProgramSerialization` removes
+formatting and structurally coalesces adjacent compiler-owned `_O << …` statement
+records before ISeq compilation. It never infers value types, scope behavior, or
+filter semantics from generated expressions; those decisions come from
+`CodeFragment` and effects metadata.
 
-**File:** `lib/liquid_il/il.rb` (IL.link)
+## 4. Compile-time constants
 
-Two-pass process:
-1. Collect label positions (symbol → instruction index)
-2. Resolve jump targets (replace symbolic labels with indices)
-
-## Stage 6: VM Execution
-
-**File:** `lib/liquid_il/vm.rb`
-
-Stack-based virtual machine with:
-- **Value stack** - Expression evaluation
-- **Program counter** - Current instruction
-- **Iterator stack** - Nested for loop state
-- **Interrupt stack** - Break/continue propagation
-
-### Core Abstractions
-
-| Method | Purpose |
-|--------|---------|
-| `to_output(value)` | Convert any value to output string (handles `to_liquid`) |
-| `to_iterable(value)` | Convert value to array for for loops |
-| `is_truthy(value)` | Liquid semantics: only `nil` and `false` are falsy |
-| `is_empty(value)` | For `== empty` comparisons |
-| `is_blank(value)` | For `== blank` comparisons |
-| `lookup_property(obj, key)` | Property access with Drop protocol support |
-
-## Supporting Components
-
-### Context (`lib/liquid_il/context.rb`)
-Manages variable scopes, forloop state, interrupts, captures, and render depth tracking.
-
-### Filters (`lib/liquid_il/filters.rb`)
-Standard Liquid filter implementations (50+ filters including string, array, math, date).
-
-### Drops (`lib/liquid_il/drops.rb`)
-Drop protocol support: `ForloopDrop`, `TablerowloopDrop` for loop metadata.
-
-### Context Types (`lib/liquid_il/context.rb`)
-- `RangeValue` - Lazy range representation
-- `EmptyLiteral` - The `empty` keyword
-- `BlankLiteral` - The `blank` keyword
-
-### Utils (`lib/liquid_il/utils.rb`)
-Shared utilities for value coercion and output formatting.
-
-### Compiler (`lib/liquid_il/compiler.rb`)
-Wraps parser with optional optimization passes:
-- Merge consecutive `WRITE_RAW` instructions
-- Remove unreachable code after unconditional jumps
-
-### Pretty Printer (`lib/liquid_il/pretty_printer.rb`)
-Human-readable IL output for debugging.
-
-## Data Flow Example
+Large static raw literals can be moved out of the ISeq into the artifact's
+immutable constants segment. The generated proc receives that constants array
+alongside the fresh render scope:
 
 ```ruby
-# 1. Parse
-template = LiquidIL::Template.parse("Hello {{ name | upcase }}")
-
-# 2. Compile (returns linked IL)
-# Instructions:
-#   [:WRITE_RAW, "Hello "]
-#   [:FIND_VAR, "name"]
-#   [:CALL_FILTER, "upcase", 0]
-#   [:WRITE_VALUE]
-#   [:HALT]
-
-# 3. Execute
-output = template.render("name" => "world")
-# => "Hello WORLD"
+proc do |_S, _pc|
+  _O << _pc[0]
+  _H.oa(_O, _S.lookup("customer"))
+end
 ```
 
-## Performance Design
+`_pc` contains only compile-time template data. It never contains assigns,
+registers, Drops, or values observed during rendering. Pooling starts at 1KB: measurements showed that decoding smaller pooled strings costs
+more than the ISeq bytes it saves.
 
-1. **Zero-allocation hot paths** - StringScanner `skip` instead of `scan`, byte lookup tables, deferred string extraction
-2. **Compile-time decisions** - Filter aliases resolved during parsing, constant folding in optimizer
-3. **Simple instruction encoding** - Arrays instead of objects for minimal GC pressure
-4. **Direct IL emission** - No intermediate AST allocation
+## 5. ISeq and compiler caches
+
+Compiler caches use complete immutable String/Array keys. Ruby's built-in hash
+provides the fast bucket lookup and equality checks make collisions harmless.
+Cross-process content identity belongs to the host asset store/partial index,
+which supplies its own persisted digest alongside each body.
+
+Cache rules:
+
+- Context compile keys include source, explicit parse options, and tag-registry
+  generation.
+- Partial keys include name, source, compiler ABI, context/filter/limit state,
+  and partial-index identity.
+- ISeq and IL-discovery caches retain complete immutable keys rather than using
+  a bare `String#hash` value as identity.
+- Every process-wide cache is bounded.
+- Ruby `Hash` keys that retain full values still verify equality, so ordinary
+  hash collisions cannot alias entries.
+
+## 6. Artifact v2
+
+`lib/liquid_il/artifact.rb` frames the persisted data with:
+
+- format version
+- exact Ruby version/patchlevel/platform stamp
+- LiquidIL runtime and compiler ABI stamp
+- CRC32 over the complete segment payload (the fastest stable checksum available in this Ruby build)
+- ISeq length and framed segments
+
+Known segments contain the ISeq, encoding-tagged immutable compile literals,
+JSON-safe constants, and external partial dependency metadata. JSON is used instead of Marshal for v2
+metadata so envelope decoding cannot instantiate arbitrary Ruby objects.
+Legacy trusted Marshal cache payloads remain readable during migration.
+
+An artifact contains executable ISeq. If an untrusted party can write the
+remote cache, the host must authenticate the entire artifact (for example with
+an HMAC) before calling `load_from_binary`.
+
+## 7. Loading and rendering
+
+`LiquidIL.load_artifact(blob)` returns a `CompiledArtifact`. The same instance
+can render any number of times:
+
+```ruby
+compiled = LiquidIL.load_artifact(blob)
+compiled.render("customer" => { "name" => "Ada" })
+compiled.render("customer" => { "name" => "Grace" })
+```
+
+`lib/liquid_il/render_executor.rb` is the single invocation/error contract used
+by both `Template` and `CompiledArtifact`. It:
+
+1. builds a fresh `Scope` from the current assigns and render options,
+2. installs registers, limits, filters, filesystem, and partial provider,
+3. invokes the reusable compiled proc,
+4. applies identical error formatting.
+
+`TemplateCache` is a byte-bounded LRU for already-loaded artifacts. Its cache-hit
+identity uses the checksum embedded in a validated v2 artifact, avoiding a second
+full-blob pass.
+
+## 8. Performance invariants
+
+All changes are measured in four dimensions:
+
+1. cache-miss compile + render
+2. remote artifact load + first render (primary production workload)
+3. in-process repeated render
+4. artifact and ISeq bytes
+
+The runtime library is assumed loaded and warm with YJIT enabled. Repeated
+protocols belong in runtime helpers when a helper call does not materially hurt
+warm render. Generated code stays specialized where that is required for the
+hot path.
+
+`rake bench:cold` measures both stage-level decode/ISeq/eval timing and the
+public `load_and_render` path. It validates output against fresh compilation and
+the reference Liquid gem before reporting results.

@@ -1,14 +1,22 @@
 # frozen_string_literal: true
 
 require_relative "runtime_helpers"
+require_relative "ruby_compiler/code_fragment"
+require_relative "ruby_compiler/expression"
 require_relative "ruby_compiler/expression_helpers"
+require_relative "ruby_compiler/output"
+require_relative "ruby_compiler/program"
 require_relative "ruby_compiler/statement_dedup"
 
 module LiquidIL
   # Compiles IL to Ruby with native control flow (if/else, each blocks)
   # and direct expressions (no stack). This generates YJIT-friendly code.
   class RubyCompiler
+    extend ProgramSerialization
+
+    include ExpressionEmitter
     include ExpressionHelpers
+    include OutputEmitter
     include StatementDedup
 
     OUTPUT_CAPACITY = 8192
@@ -88,6 +96,8 @@ module LiquidIL
       # gated on this so `optimize: false` yields a faithful un-deduped baseline.
       @optimize = optimize
       @loop_depth = 0 # Track nested loop depth for parentloop support
+      @inline_scope_counter = 0
+      @partial_arg_locals = {}
       # Compile-time current file (nil for the main template, the partial
       # name inside partial compilations — see compile_partial). Baked into
       # emitted error-location literals — no runtime tracking in the code.
@@ -114,8 +124,15 @@ module LiquidIL
       @lambda_called = Set.new
       # Track which partials are fully inlined (no lambda call sites)
       @inlined_partials = Set.new
-      # Pre-built partial constant objects — injected via binding at eval time
-      @partial_constants = {}
+      # Compile-time constants passed separately from the ISeq on every render.
+      # These are immutable template literals only — never assigns or values
+      # observed at render time. Keeping large literals outside the ISeq lowers
+      # cold load_from_binary cost while one loaded proc remains fully reusable.
+      @partial_constants = []
+      @literal_indices = {}
+      @pool_literals = true
+      @required_helpers = Set.new
+      @required_filter_caches = Set.new
       # Deduplicated statement-run lambdas registered by the StatementDedup pass
       # (main template body only; see dedup_statement_runs).
       @sequences = []
@@ -190,6 +207,22 @@ module LiquidIL
       end
     end
 
+    # Every context/codegen input that can affect a cached partial body. The
+    # partial's own name and source are framed separately by the caller.
+    def compilation_cache_fingerprint
+      return @compilation_cache_fingerprint if defined?(@compilation_cache_fingerprint)
+
+      context_fingerprint = if @context&.respond_to?(:compilation_cache_fingerprint)
+        @context.compilation_cache_fingerprint
+      else
+        "no-context"
+      end
+      @compilation_cache_fingerprint = [
+        Artifact::COMPILER_ABI, context_fingerprint, @pretty, @optimize,
+        @partial_index&.class&.name, @partial_index&.object_id
+      ].freeze
+    end
+
     # Compile a partial and store it for later code generation
     def compile_partial(name)
       # If already compiled, skip
@@ -208,7 +241,9 @@ module LiquidIL
         # Partial bodies bake the partial name into emitted error-location
         # literals, so cache identity must include the logical name as well as
         # source bytes.
-        source_key = [name, partial_source].hash
+        source_key = [
+          Artifact::COMPILER_ABI, name, partial_source.dup.freeze, compilation_cache_fingerprint
+        ].freeze
         cached = PARTIAL_CACHE_MUTEX.synchronize { @@partial_cache[source_key] }
         if cached && partial_cache_deps_valid?(cached, fs)
           @partials[name] = cached
@@ -216,8 +251,10 @@ module LiquidIL
           # partial lambdas from its original compilation — re-declare the
           # constants, replay its recorded lambda calls, and compile the
           # nested partials in this compilation too.
-          adopt_frozen_arrays(cached[:compiled_body])
+          @frozen_arrays.merge!(cached[:frozen_arrays]) if cached[:frozen_arrays]
           @lambda_called.merge(cached[:lambda_called]) if cached[:lambda_called]
+          @required_helpers.merge(cached[:required_helpers]) if cached[:required_helpers]
+          @required_filter_caches.merge(cached[:required_filter_caches]) if cached[:required_filter_caches]
           compile_nested_partials(cached[:instructions])
           return
         end
@@ -266,12 +303,17 @@ module LiquidIL
       )
       # Share frozen array usage map so partial constants are declared in the parent proc
       ruby_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
+      # Partial bodies are process-wide cached as source fragments, so keep
+      # their literals inline until that cache carries a relocatable constant
+      # table. The root template still pools its own large raw literals.
+      ruby_compiler.instance_variable_set(:@pool_literals, false)
       # Unique loop-naming base per partial source (process-wide, stable for
       # @@partial_cache hits) — prevents loop-local collisions when this
       # body is inlined inside a caller's loop. Minting is mutex-guarded:
       # a size race here would hand two partials the same base.
       base = NAME_REGISTRY_MUTEX.synchronize do
-        @@partial_loop_bases[[name, source].hash] ||= @@partial_loop_bases.size * 100 + 100
+        loop_key = [Artifact::COMPILER_ABI, name, source.dup.freeze].freeze
+        @@partial_loop_bases[loop_key] ||= @@partial_loop_bases.size * 100 + 100
       end
       ruby_compiler.instance_variable_set(:@loop_name_base, base)
       ruby_compiler.instance_variable_set(:@current_file_lit, name)
@@ -305,6 +347,7 @@ module LiquidIL
       end
 
       @partials[name] = {
+        name: name,
         source: source,
         instructions: instructions,
         compiled_body: partial_body,
@@ -312,9 +355,17 @@ module LiquidIL
         uses_captures: partial_uses_captures || partial_uses_ifchanged,
         uses_ifchanged: partial_uses_ifchanged,
         deps: partial_dependency_hashes(instructions),
-        lambda_called: child_lambda_called.to_a.freeze
+        lambda_called: child_lambda_called.to_a.freeze,
+        required_helpers: ruby_compiler.instance_variable_get(:@required_helpers).to_a.freeze,
+        required_filter_caches: ruby_compiler.instance_variable_get(:@required_filter_caches).to_a.freeze,
+        frozen_arrays: ruby_compiler.instance_variable_get(:@frozen_arrays).dup.freeze,
+        loop_name_base: base,
+        scope_reads: ruby_compiler.instance_variable_get(:@effects).first.reads&.to_a&.freeze,
+        uses_self: instructions.any? { |instruction| instruction[0] == IL::FIND_SELF }
       }
       @lambda_called.merge(child_lambda_called)
+      @required_helpers.merge(@partials[name][:required_helpers])
+      @required_filter_caches.merge(@partials[name][:required_filter_caches])
 
       # Cache for next compile of a template using this partial
       if source_key
@@ -339,7 +390,7 @@ module LiquidIL
         dep = i[1]
         info = @partials[dep]
         next unless info
-        deps[dep] = info[:source].hash if info[:source]
+        deps[dep] = info[:source].dup.freeze if info[:source]
         info[:deps]&.each { |k, v| deps[k] ||= v }
       end
       deps
@@ -349,21 +400,8 @@ module LiquidIL
       deps = cached[:deps]
       return true if deps.nil? || deps.empty?
       deps.all? do |dep_name, source_hash|
-        RuntimeHelpers.read_partial_source(fs, dep_name, @context)&.hash == source_hash
-      end
-    end
-
-    # Re-declare the frozen-array constants a cached body references.
-    # Names are globally unique per literal (see register_frozen_array), so a
-    # body compiled in an earlier compilation resolves to the same constants.
-    def adopt_frozen_arrays(body)
-      return unless body
-      names = body.scan(/_fa\d+__/)
-      return if names.empty?
-      inverse = NAME_REGISTRY_MUTEX.synchronize { @@frozen_array_names.invert }
-      names.uniq.each do |constant_name|
-        literal = inverse[constant_name]
-        @frozen_arrays[literal] = constant_name if literal
+        source = RuntimeHelpers.read_partial_source(fs, dep_name, @context)
+        source == source_hash
       end
     end
 
@@ -472,8 +510,8 @@ module LiquidIL
         code << "proc do |_S|\n"
       end
       code << "  _H = LiquidIL::RuntimeHelpers\n"
-      code << "  _U = LiquidIL::Utils\n" if body_code.include?("_U.") || partial_code.include?("_U.") || seq_code.include?("_U.")
-      code << "  _F = LiquidIL::Filters\n" if body_code.include?("_F") || partial_code.include?("_F") || seq_code.include?("_F")
+      code << "  _U = LiquidIL::Utils\n" if @required_helpers.include?(:utils)
+      code << "  _F = LiquidIL::Filters\n" if @required_helpers.include?(:filters)
       # Frozen array constants and sequence lambdas must be declared before
       # partial lambdas and the body (all are closures that capture them).
       code << generate_frozen_array_constants
@@ -481,8 +519,8 @@ module LiquidIL
       code << partial_code
       code << "  _O = +\"\"\n"
       # Pre-initialize filter caches to avoid ||= check per iteration
-      FILTER_CACHE.each_value do |cache_var|
-        code << "  #{cache_var} = {}\n" if body_code.include?(cache_var) || seq_code.include?(cache_var)
+      @required_filter_caches.each do |cache_var|
+        code << "  #{cache_var} = {}\n"
       end
       code << "  _cs = {}\n" if @uses_cycles
       code << "  _cst = []\n" if @uses_captures || @uses_ifchanged
@@ -584,7 +622,19 @@ module LiquidIL
       hoisted || EMPTY_HOISTS
     end
 
-    # ── Effects frames ──────────────────────────────────────────
+    # ── Emission metadata / effects frames ─────────────────────
+
+    def require_codegen_helper(name)
+      @required_helpers.add(name)
+    end
+
+    def require_filter_cache(name)
+      @required_filter_caches.add(name)
+    end
+
+    # Effects frames carry scope semantics for nested loop/partial planning;
+    # CodeFragment carries expression semantics. Together they replace source
+    # inspection with facts recorded at the point where code is emitted.
     # One frame per loop body being generated. Emitters record scope
     # effects at the moment they emit — which names the body reads through
     # the scope, whether it calls a scope-reading (non-isolated) partial,
@@ -653,6 +703,10 @@ module LiquidIL
     # parentloop becomes reachable; pathed reads go through
     # scope_lookup_pathed, whose callers record parentloop use only when
     # the path actually touches it.
+    def loop_item_binding?(name)
+      @loop_var_aliases.key?(name) && name != "forloop" && name != "tablerowloop"
+    end
+
     def scope_lookup(name)
       return seq_ref_local(name) if name.is_a?(StatementDedup::SeqRef)
       record_parentloop_use if name == "forloop"
@@ -671,6 +725,8 @@ module LiquidIL
       if (alias_var = @loop_var_aliases[name])
         @effects.last.uses_forloop = true if name == "forloop"
         alias_var
+      elsif @scope_bindings && (binding = @scope_bindings[name])
+        binding.source
       elsif (local = @hoisted_lookups[name])
         local
       else
@@ -839,55 +895,28 @@ module LiquidIL
 
     # Cache for indented partial body with assign key replacements
     @@indent_partial_body_cache = {}
+    INDENT_PARTIAL_BODY_CACHE_MAX = 500
     INDENT_PARTIAL_BODY_CACHE_MUTEX = Mutex.new
 
-    # Emitted string literals come exclusively from String#inspect (double-
-    # quoted, escapes, never a raw newline) plus a few simple single-quoted
-    # names ('paginate'). Match them so body rewrites never touch template
-    # text embedded in a literal — raw text like "PRICE_START" contains "_S".
-    EMITTED_STRING_LITERAL = /"(?:[^"\\\n]|\\.)*"|'[^'\n]*'/
+    @@bound_partial_body_cache = {}
+    BOUND_PARTIAL_BODY_CACHE_MAX = 500
+    BOUND_PARTIAL_BODY_CACHE_MUTEX = Mutex.new
 
-    # gsub over generated code that skips string literals. The plain-string
-    # pattern is matched at identifier boundaries.
-    def code_gsub(body, pattern, replacement)
-      re = /(#{EMITTED_STRING_LITERAL.source})|(?<![A-Za-z0-9_])#{Regexp.escape(pattern)}(?![A-Za-z0-9_])/
-      body.gsub(re) { $1 || replacement }
-    end
-
-    # Indent a compiled partial body for splicing. Lambda bodies splice
-    # verbatim — the lambda's _S parameter shadows the outer proc's, so no
-    # scope-variable renaming happens. Inline splices (arg_expressions set)
-    # rewrite the body against an isolated __partial_scope__ with direct
-    # temp-variable access for the passed args.
-    def indent_partial_body(body, spaces, assign_keys: [], arg_expressions: nil)
-      # The indentation is cosmetic (compact_source strips it); only the
-      # arg_expressions rewrites below are semantic. Outside pretty mode treat
-      # the splice as unindented — the line-by-line re-indent is skipped.
+    # Indent a compiled partial body for splicing. Both artifact lambdas and
+    # inline isolated blocks bind a block-local `_S`, so bodies splice verbatim:
+    # no generated-source scope or argument rewriting is required.
+    def indent_partial_body(body, spaces)
       spaces = 0 unless @pretty
       indent = " " * spaces
-      cache_key = [body.hash, assign_keys.sort, spaces, arg_expressions&.hash]
+      cache_key = [body.dup.freeze, spaces]
       cached = INDENT_PARTIAL_BODY_CACHE_MUTEX.synchronize { @@indent_partial_body_cache[cache_key] }
       return cached if cached
 
-      if arg_expressions
-        body = code_gsub(body, "_S", "__partial_scope__")
-        # Use temp variables instead of a scope hash — eliminates hash overhead
-        assign_keys.each do |key|
-          next unless arg_expressions[key]
-          temp_var = "__p_#{key}__"
-          # For constant String args, skip .to_s (String#to_s returns self)
-          is_const_string = arg_expressions[key].is_a?(String) && arg_expressions[key] =~ /\A".*"\z/
-          if is_const_string
-            body = code_gsub(body, "_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << #{temp_var}")
-          else
-            # Inline .to_s for oa calls with temp variables (avoids method dispatch)
-            body = code_gsub(body, "_H.oa(_O, __partial_scope__.lookup(#{key.inspect}))", "_O << (#{temp_var}.to_s)")
-          end
-          body = code_gsub(body, "__partial_scope__.lookup(#{key.inspect})", temp_var)
-        end
-      end
       result = spaces.zero? ? body : body.lines.map { |l| l.strip.empty? ? l : "#{indent}#{l}" }.join
-      INDENT_PARTIAL_BODY_CACHE_MUTEX.synchronize { @@indent_partial_body_cache[cache_key] = result }
+      INDENT_PARTIAL_BODY_CACHE_MUTEX.synchronize do
+        @@indent_partial_body_cache.clear if @@indent_partial_body_cache.size >= INDENT_PARTIAL_BODY_CACHE_MAX
+        @@indent_partial_body_cache[cache_key] = result
+      end
       result
     end
 
@@ -921,9 +950,9 @@ module LiquidIL
           if (fused = try_fuse_raw_with_var_path(merged, 1))
             code << fused
           elsif interrupt
-            code << "  _O << " << merged.inspect << " unless _S.has_interrupt?\n"
+            code << "  _O << " << raw_literal_expression(merged) << " unless _S.has_interrupt?\n"
           else
-            code << "  _O << " << merged.inspect << "\n"
+            code << "  _O << " << raw_literal_expression(merged) << "\n"
           end
         when IL::FIND_VAR, IL::FIND_VAR_PATH, IL::FIND_SELF
           # Needs peek - delegate to generate_statement
@@ -1035,9 +1064,9 @@ module LiquidIL
         if (fused = try_fuse_raw_with_var_path(inst[1], indent))
           fused
         elsif @uses_interrupts
-          %(#{prefix}_O << #{inst[1].inspect} unless _S.has_interrupt?\n)
+          %(#{prefix}_O << #{raw_literal_expression(inst[1])} unless _S.has_interrupt?\n)
         else
-          %(#{prefix}_O << #{inst[1].inspect}\n)
+          %(#{prefix}_O << #{raw_literal_expression(inst[1])}\n)
         end
 
       when IL::WRITE_VAR
@@ -1373,18 +1402,18 @@ module LiquidIL
         if var.dual
           vl = "_sqv#{var.slot}__"
           return temp_code + "#{prefix}#{vl} = #{expr_ruby}\n#{prefix}_H.#{af}(_S, #{name_l}, #{vl})\n"
-        elsif expr_ruby.start_with?("_F.ff(") && expr_ruby.end_with?(")")
+        elsif expr_ruby.filter_dispatch_inner
           aff = local ? "affl" : "aff"
-          return temp_code + "#{prefix}_H.#{aff}(_S, #{name_l}, #{expr_ruby[6..-2]})\n"
+          return temp_code + "#{prefix}_H.#{aff}(_S, #{name_l}, #{expr_ruby.filter_dispatch_inner})\n"
         else
           return temp_code + "#{prefix}_H.#{af}(_S, #{name_l}, #{expr_ruby})\n"
         end
       end
 
       # Normal named assign: single known-filter call fuses into one _H.aff send.
-      if expr_ruby.start_with?("_F.ff(") && expr_ruby.end_with?(")")
+      if expr_ruby.filter_dispatch_inner
         aff = local ? "affl" : "aff"
-        temp_code + "#{prefix}_H.#{aff}(_S, #{var.inspect}, #{expr_ruby[6..-2]})\n"
+        temp_code + "#{prefix}_H.#{aff}(_S, #{var.inspect}, #{expr_ruby.filter_dispatch_inner})\n"
       else
         af = local ? "afl" : "af"
         temp_code + "#{prefix}_H.#{af}(_S, #{var.inspect}, #{expr_ruby})\n"
@@ -1546,6 +1575,137 @@ module LiquidIL
       deps
     end
 
+    # Opcodes that can be emitted against explicit argument bindings without
+    # consulting or mutating a Liquid Scope. This is a semantic IL allowlist,
+    # not a generated-source pattern. Anything outside it uses the canonical
+    # isolated-scope path.
+    BOUND_PARTIAL_OPS = [
+      IL::WRITE_RAW, IL::WRITE_VALUE, IL::WRITE_VAR, IL::WRITE_VAR_PATH,
+      IL::CONST_NIL, IL::CONST_TRUE, IL::CONST_FALSE, IL::CONST_INT,
+      IL::CONST_FLOAT, IL::CONST_STRING, IL::CONST_RANGE, IL::CONST_EMPTY,
+      IL::CONST_BLANK, IL::FIND_VAR, IL::FIND_VAR_PATH, IL::FIND_SELF, IL::LOOKUP_KEY,
+      IL::LOOKUP_CONST_KEY, IL::LOOKUP_CONST_PATH, IL::LOOKUP_COMMAND,
+      IL::COMPARE, IL::CASE_COMPARE, IL::CONTAINS, IL::BOOL_NOT,
+      IL::IS_TRUTHY, IL::BOOL_AND, IL::BOOL_OR, IL::IF, IL::ELSE,
+      IL::END_IF, IL::NEW_RANGE, IL::DUP, IL::POP, IL::BUILD_HASH, IL::HALT,
+      IL::LABEL, IL::JUMP, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT,
+      IL::FOR_INIT, IL::FOR_NEXT,
+      IL::FOR_END, IL::PUSH_SCOPE, IL::POP_SCOPE, IL::PUSH_FORLOOP,
+      IL::POP_FORLOOP, IL::POP_INTERRUPT
+    ].each_with_object({}) { |opcode, out| out[opcode] = true }.freeze
+
+    def bound_partial_scope_free?(instructions, bindings)
+      return false if @has_resource_limits
+      return false if instructions.any? { |instruction| instruction[0] == IL::PUSH_INTERRUPT }
+      loop_names = {}
+      instructions.each do |instruction|
+        next unless instruction[0] == IL::FOR_INIT
+        loop_names[instruction[1]] = true
+        loop_names["forloop"] = true
+        # offset:continue reads/writes the persistent scope offset table.
+        return false if instruction[5]
+      end
+
+      instructions.all? do |instruction|
+        opcode = instruction[0]
+        if opcode == IL::ASSIGN_LOCAL
+          next loop_names[instruction[1]]
+        end
+        next false unless BOUND_PARTIAL_OPS[opcode]
+        if opcode == IL::FIND_SELF
+          bindings.key?("self")
+        elsif opcode == IL::FIND_VAR || opcode == IL::FIND_VAR_PATH ||
+              opcode == IL::WRITE_VAR || opcode == IL::WRITE_VAR_PATH
+          bindings.key?(instruction[1]) || loop_names[instruction[1]]
+        else
+          true
+        end
+      end
+    end
+
+    def bound_partial_body(info, bindings)
+      # A partial that writes one of its argument names must read subsequent
+      # values through its isolated scope, not the immutable caller temp.
+      written = info[:instructions].each_with_object({}) do |instruction, names|
+        case instruction[0]
+        when IL::ASSIGN, IL::ASSIGN_LOCAL, IL::INCREMENT, IL::DECREMENT,
+             IL::FOR_INIT, IL::TABLEROW_INIT
+          names[instruction[1]] = true
+        end
+      end
+      effective_bindings = bindings.reject { |name, _| written[name] }
+      needs_scope = !bound_partial_scope_free?(info[:instructions], effective_bindings)
+
+      cacheable = info[:instructions].none? do |instruction|
+        instruction[0] == IL::RENDER_PARTIAL || instruction[0] == IL::INCLUDE_PARTIAL
+      end
+      cache_key = if cacheable
+        binding_key = effective_bindings.sort_by { |name, _| name }.flat_map do |name, fragment|
+          [name, fragment.source, fragment.value_type]
+        end
+        [
+          Artifact::COMPILER_ABI, info[:name], info[:source].dup.freeze, @pretty,
+          compilation_cache_fingerprint, *binding_key
+        ].freeze
+      end
+      if cache_key
+        cached = BOUND_PARTIAL_BODY_CACHE_MUTEX.synchronize { @@bound_partial_body_cache[cache_key] }
+        if cached
+          @required_helpers.merge(cached[:required_helpers])
+          @required_filter_caches.merge(cached[:required_filter_caches])
+          @frozen_arrays.merge!(cached[:frozen_arrays])
+          return [cached[:body], needs_scope]
+        end
+      end
+
+      emitter = RubyCompiler.new(
+        info[:instructions], context: @context, partials: @partials,
+        partial_names_in_progress: @partial_names_in_progress,
+        pretty: @pretty, optimize: false, partial_index: @partial_index
+      )
+      emitter.instance_variable_set(:@scope_bindings, effective_bindings)
+      emitter.instance_variable_set(:@current_file_lit, info[:name] || @current_file_lit)
+      emitter.instance_variable_set(:@frozen_arrays, {})
+      # Cached bound bodies must not carry parent-relative literal-pool indexes.
+      emitter.instance_variable_set(:@pool_literals, false)
+      emitter.instance_variable_set(:@loop_name_base, info[:loop_name_base] || 0)
+      body = emitter.send(:generate_body)
+      helpers = emitter.instance_variable_get(:@required_helpers)
+      filter_caches = emitter.instance_variable_get(:@required_filter_caches)
+      frozen_arrays = emitter.instance_variable_get(:@frozen_arrays)
+      @required_helpers.merge(helpers)
+      @required_filter_caches.merge(filter_caches)
+      @frozen_arrays.merge!(frozen_arrays)
+      if cache_key
+        entry = {
+          body: body.freeze,
+          required_helpers: helpers.to_a.freeze,
+          required_filter_caches: filter_caches.to_a.freeze,
+          frozen_arrays: frozen_arrays.dup.freeze,
+        }.freeze
+        BOUND_PARTIAL_BODY_CACHE_MUTEX.synchronize do
+          @@bound_partial_body_cache.clear if @@bound_partial_body_cache.size >= BOUND_PARTIAL_BODY_CACHE_MAX
+          @@bound_partial_body_cache[cache_key] = entry
+        end
+      end
+      [body, needs_scope]
+    end
+
+    def partial_arg_local(partial_name, argument_name)
+      key = [partial_name, argument_name]
+      @partial_arg_locals[key] ||= "_pa#{@partial_arg_locals.length}__"
+    end
+
+    def literal_fragment(value)
+      type = case value
+      when String then :string
+      when Numeric then :numeric
+      when TrueClass, FalseClass then :boolean
+      else :unknown
+      end
+      CodeFragment.new(value.inspect, value_type: type)
+    end
+
     # Generate a partial call (render or include)
     def generate_partial_call(inst, indent, isolated:)
       @pc += 1
@@ -1630,46 +1790,61 @@ module LiquidIL
         prefix = "  " * (indent + 1)
       end
 
-      # Build argument setup code
-      # For inlined partials, use temp variables instead of __partial_args__ hash
-      # IMPORTANT: For include, lookup with_expr value BEFORE processing keyword args!
+      # Build the partial's render-time argument hash. This contains values from
+      # the CURRENT render only and is rebuilt for every invocation; it is never
+      # persisted in the template artifact. For include, resolve `with` before
+      # keyword args mutate the shared caller scope.
       if with_expr && !isolated
         expr = generate_var_lookup(with_expr)
         code << "#{prefix}__with_val__ = #{expr}\n"
       end
 
+      @inlined_partials << name if inline_partial
+      inline_setup = nil
+      inline_bound_body = nil
+      inline_needs_scope = false
+      inline_bindings = nil
       if inline_partial
-        @inlined_partials << name
-        # Collect arg expressions for inlining with temp variables
-        arg_expressions = {}
+        bindings = {}
+        setup = String.new
+        @inline_scope_counter += 1
+        referenced_args = @partials[name][:scope_reads]
         args.each do |k, v|
           next if k.start_with?("__")
-          if v.is_a?(Hash) && v[:__var__]
+          next if referenced_args && !referenced_args.include?(k) && !(k == "self" && @partials[name][:uses_self])
+          source_fragment = if v.is_a?(Hash) && v[:__var__]
             var_path = v[:__var__]
-            arg_expressions[k] = var_path.is_a?(Array) ? generate_var_lookup(var_path[0]) : generate_var_lookup(var_path)
+            CodeFragment.new(var_path.is_a?(Array) ? generate_var_lookup(var_path[0]) : generate_var_lookup(var_path))
           else
-            arg_expressions[k] = v.inspect
+            literal_fragment(v)
           end
+          local = partial_arg_local(name, k)
+          setup << "#{prefix}#{local} = #{source_fragment.source}\n"
+          bindings[k] = CodeFragment.new(local, value_type: source_fragment.value_type)
         end
-      else
+        inline_bound_body, inline_needs_scope = bound_partial_body(@partials[name], bindings)
+        inline_setup = setup
+        inline_bindings = bindings
+      end
+
+      if inline_partial && inline_needs_scope
+        code << inline_setup
         code << "#{prefix}__partial_args__ = {}\n"
-        # Regular named arguments
+        inline_bindings.each do |key, fragment|
+          code << "#{prefix}__partial_args__[#{key.inspect}] = #{fragment.source}\n"
+        end
+      elsif !inline_partial
+        code << "#{prefix}__partial_args__ = {}\n"
         args.each do |k, v|
           next if k.start_with?("__")
           if v.is_a?(Hash) && v[:__var__]
             var_path = v[:__var__]
             expr = var_path.is_a?(Array) ? generate_var_lookup(var_path[0]) : generate_var_lookup(var_path)
             code << "#{prefix}__partial_args__[#{k.inspect}] = #{expr}\n"
-            # For include, also assign to current scope
-            unless isolated
-              code << "#{prefix}_S.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
-            end
           else
             code << "#{prefix}__partial_args__[#{k.inspect}] = #{v.inspect}\n"
-            unless isolated
-              code << "#{prefix}_S.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n"
-            end
           end
+          code << "#{prefix}_S.assign(#{k.inspect}, __partial_args__[#{k.inspect}])\n" unless isolated
         end
       end
 
@@ -1708,28 +1883,17 @@ module LiquidIL
       else
         # Simple render
         # For simple isolated partials, inline the body to avoid lambda call overhead
-        if inline_partial
-          info = @partials[name]
-          # Generate temp variables for each arg (arg_expressions already built above)
-          # Only generate for args that are actually referenced in the partial body
-          assign_keys = arg_expressions.keys.select do |k|
-            info[:compiled_body].include?("_S.lookup(#{k.inspect})") ||
-              (k == "self" && info[:compiled_body].include?("lookup_self"))
-          end
-          arg_expressions.each do |k, expr|
-            next unless assign_keys.include?(k)
-            code << "#{prefix}__p_#{k}__ = #{expr}\n"
-          end
-          indented_body = indent_partial_body(info[:compiled_body], indent + 1, assign_keys: assign_keys, arg_expressions: arg_expressions)
-          # Need __partial_args__ hash for __partial_scope__ creation
-          if indented_body.include?("__partial_scope__")
-            code << "#{prefix}__partial_args__ = {}\n"
-            assign_keys.each do |k|
-              code << "#{prefix}__partial_args__[#{k.inspect}] = __p_#{k}__\n"
-            end
-            code << "#{prefix}__partial_scope__ = _S.isolated_with(__partial_args__)\n"
-          end
-          code << indented_body
+        if inline_partial && !inline_needs_scope
+          code << inline_setup << inline_bound_body
+        elsif inline_partial
+          # Rebind the compiler-owned scope local for the duration of the
+          # verbatim inline body, then restore it. This keeps one flat ISeq
+          # and requires no generated-source rewriting.
+          scope_temp = "__caller_scope_#{@loop_name_base + @inline_scope_counter}__"
+          @inline_scope_counter += 1
+          code << "#{prefix}#{scope_temp} = _S; _S = _S.isolated_with(__partial_args__)\n"
+          code << inline_bound_body
+          code << "#{prefix}_S = #{scope_temp}\n"
         else
           code << "#{prefix}_H.ipc(#{lambda_name}, #{name.inspect}, __partial_args__, _O, _S, #{isolated}, #{line_num}#{@partial_call_cycle_suffix})\n"
         end
@@ -1902,211 +2066,6 @@ module LiquidIL
         end
       end
 
-      result
-    end
-
-    # Build a Ruby expression directly from IL instructions.
-    # Returns [ruby_source, terminator_type].
-    def build_expression
-      # Stack of Ruby strings — avoids allocating a second expression tree.
-      stack = []
-
-      while @pc < @instructions.length
-        inst = @instructions[@pc]
-
-        case inst[0]
-        when IL::CONST_INT
-          stack << inst[1].inspect
-          @pc += 1
-        when IL::CONST_FLOAT
-          # Handle special Float values (NaN, Infinity)
-          val = inst[1]
-          if val.nan?
-            stack << "Float::NAN"
-          elsif val.infinite? == 1
-            stack << "Float::INFINITY"
-          elsif val.infinite? == -1
-            stack << "-Float::INFINITY"
-          else
-            stack << val.inspect
-          end
-          @pc += 1
-        when IL::CONST_STRING
-          stack << lit(inst[1])
-          @pc += 1
-        when IL::CONST_TRUE
-          stack << "true"
-          @pc += 1
-        when IL::CONST_FALSE
-          stack << "false"
-          @pc += 1
-        when IL::CONST_NIL
-          stack << "nil"
-          @pc += 1
-        when IL::CONST_EMPTY
-          stack << "LiquidIL::EmptyLiteral.instance"
-          @pc += 1
-        when IL::CONST_BLANK
-          stack << "LiquidIL::BlankLiteral.instance"
-          @pc += 1
-        when IL::CONST_RANGE
-          stack << "LiquidIL::RangeValue.new(#{inst[1]}, #{inst[2]})"
-          @pc += 1
-        when IL::NEW_RANGE
-          right = stack.pop || "0"
-          left = stack.pop || "0"
-          stack << "LiquidIL::RangeValue.new(#{left}, #{right})"
-          @pc += 1
-        when IL::FIND_VAR
-          stack << scope_lookup(inst[1])
-          @pc += 1
-        when IL::FIND_SELF
-          record_dynamic_read
-          stack << "_S.lookup_self"
-          @pc += 1
-        when IL::FIND_VAR_PATH
-          stack << generate_var_path_expr(inst[1], inst[2])
-          @pc += 1
-        when IL::FIND_VAR_DYNAMIC
-          record_dynamic_read
-          name_ruby = stack.pop || "nil"
-          stack << "_S.lookup(#{name_ruby})"
-          @pc += 1
-        when IL::LOOKUP_KEY
-          key_ruby = stack.pop || "nil"
-          obj_ruby = stack.pop || "nil"
-          # Bracket access uses stricter semantics than property access
-          stack << "_H.bl(#{obj_ruby}, #{key_ruby})"
-          @pc += 1
-        when IL::LOOKUP_CONST_KEY
-          obj_ruby = stack.pop || "nil"
-          stack << inline_lookup(obj_ruby, inst[1])
-          @pc += 1
-        when IL::LOOKUP_CONST_PATH
-          obj_ruby = stack.pop || "nil"
-          current = obj_ruby
-          inst[1].each { |key| current = inline_lookup(current, key) }
-          stack << current
-          @pc += 1
-        when IL::LOOKUP_COMMAND
-          obj_ruby = stack.pop || "nil"
-          cmd = inst[1]
-          case cmd
-          when "size", "length"
-            stack << "((__o__ = #{obj_ruby}).respond_to?(:length) ? __o__.length : nil)"
-          when "first", "last"
-            stack << "_H.lookup(#{obj_ruby}, #{cmd.inspect})"
-          else
-            stack << "_H.lookup(#{obj_ruby}, #{cmd.inspect})"
-          end
-          @pc += 1
-        when IL::COMPARE
-          right_ruby = stack.pop || "nil"
-          left_ruby = stack.pop || "nil"
-          op = inst[1]
-          # Inline numeric comparisons: skip _H.cmp for numeric literals
-          if NUMERIC_COMPARE_OPS.key?(op) && right_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/)
-            ruby_op = COMPARE_OPS[op]
-            # For safe expressions (size/length lookups, numeric literals, round/ceil/floor),
-            # use || 0 pattern instead of is_a?(Numeric) check. Saves ~5ns per comparison.
-            if left_ruby.match?(/\A-?[0-9]+\.?[0-9]*\z/) ||
-               left_ruby.include?(").round(") || left_ruby.include?(").ceil") || left_ruby.include?(").floor")
-              stack << "(#{left_ruby} || 0) #{ruby_op} #{right_ruby}"
-            else
-              stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, #{@current_file_lit.inspect})"
-            end
-          else
-            stack << "_H.cmp(#{left_ruby}, #{right_ruby}, #{op.inspect}, _O, #{@current_file_lit.inspect})"
-          end
-          @pc += 1
-        when IL::CONTAINS
-          right_ruby = stack.pop || "nil"
-          left_ruby = stack.pop || "nil"
-          stack << "_H.ct(#{left_ruby}, #{right_ruby})"
-          @pc += 1
-        when IL::BOOL_NOT
-          operand_ruby = stack.pop || "false"
-          stack << "((_t = #{operand_ruby}); _t.nil? || _t == false || _t == \"\")"
-          @pc += 1
-        when IL::BOOL_AND
-          right_ruby = stack.pop || "false"
-          left_ruby = stack.pop || "false"
-          stack << "((#{inline_truthy(left_ruby)}) && (#{inline_truthy(right_ruby)}))"
-          @pc += 1
-        when IL::BOOL_OR
-          right_ruby = stack.pop || "false"
-          left_ruby = stack.pop || "false"
-          stack << "((#{inline_truthy(left_ruby)}) || (#{inline_truthy(right_ruby)}))"
-          @pc += 1
-        when IL::IS_TRUTHY
-          # Conditions are truthy-wrapped at IF emission (inline_truthy); the
-          # marker itself adds nothing to the value expression.
-          @pc += 1
-        when IL::STORE_TEMP
-          if stack.length > 1
-            slot = inst[1]
-            @pc += 1
-            @temp_assignments ||= []
-            @temp_assignments << [slot, stack.pop]
-          else
-            # Single item - this is the terminator case
-            # DON'T increment @pc here - generate_expression_statement will read slot from inst
-            return [stack.last, :store_temp]
-          end
-        when IL::LOAD_TEMP
-          stack << "__temp_#{inst[1]}__"
-          @pc += 1
-        when IL::POP
-          stack.pop
-          @pc += 1
-        when IL::DUP
-          stack << stack.last if stack.any?
-          @pc += 1
-        when IL::CASE_COMPARE
-          right_ruby = stack.pop || "nil"
-          left_ruby = stack.pop || "nil"
-          stack << "_U.ce?(#{right_ruby}, #{left_ruby})"
-          @pc += 1
-        when IL::BUILD_HASH
-          count = inst[1]
-          pairs = stack.pop(count * 2)
-          stack << "{" + pairs.each_slice(2).map { |k, v| "#{k} => #{v}" }.join(", ") + "}"
-          @pc += 1
-        when IL::CALL_FILTER
-          argc = inst[2] || 0
-          args = argc > 0 ? stack.pop(argc) : []
-          input_ruby = stack.pop || "nil"
-          stack << emit_filter_call(inst[1], input_ruby, args, inst[3] || 1)
-          @pc += 1
-        when IL::WRITE_VALUE
-          @pc += 1
-          return [stack.last, :write_value]
-        when IL::ASSIGN
-          @pc += 1
-          return [stack.last, :assign]
-        when IL::ASSIGN_LOCAL
-          @pc += 1
-          return [stack.last, :assign_local]
-        when IL::IF
-          # Structured conditional marker: the finished condition is on the
-          # stack. Leave @pc at the IF so the caller reads its negate flag.
-          return [stack.last, :if]
-        else
-          # Unknown or terminating instruction
-          break
-        end
-      end
-
-      [stack.last, :none]
-    end
-
-    # Generate variable path access (a.b.c)
-    def generate_var_path_expr(var, path)
-      record_parentloop_use if var == "forloop" && path.first.to_s == "parentloop"
-      result = scope_lookup_pathed(var)
-      path.each do |key|
-        result = inline_lookup(result, key)
-      end
       result
     end
 
@@ -3000,18 +2959,24 @@ module LiquidIL
 
     def emit_filter_dispatch(dispatcher, name, input, args, line)
       recv = if dispatcher == "cff"
-        AMBIENT_CONTEXT_FILTERS[name] ? "_H.cff" : "_F.ff"
+        if AMBIENT_CONTEXT_FILTERS[name]
+          "_H.cff"
+        else
+          require_codegen_helper(:filters)
+          "_F.ff"
+        end
       else
         "_H.#{dispatcher}"
       end
-      if args.empty?
-        "#{recv}(#{name.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, #{@current_file_lit.inspect}, #{line})"
+      inner = if args.empty?
+        "#{name.inspect}, #{input}, LiquidIL::EMPTY_ARRAY, _S, #{@current_file_lit.inspect}, #{line}"
       elsif args.all? { |a| a.match?(/\A(?:-?\d+(?:\.\d+)?|"[^"]*")\z/) }
         frozen_name = register_frozen_array(args)
-        "#{recv}(#{name.inspect}, #{input}, #{frozen_name}, _S, #{@current_file_lit.inspect}, #{line})"
+        "#{name.inspect}, #{input}, #{frozen_name}, _S, #{@current_file_lit.inspect}, #{line}"
       else
-        "#{recv}(#{name.inspect}, #{input}, [#{args.join(', ')}], _S, #{@current_file_lit.inspect}, #{line})"
+        "#{name.inspect}, #{input}, [#{args.join(', ')}], _S, #{@current_file_lit.inspect}, #{line}"
       end
+      ["#{recv}(#{inner})", recv == "_F.ff" ? inner : nil]
     end
 
     # Process-wide loop-naming bases per partial source hash (append-only)
@@ -3078,49 +3043,73 @@ module LiquidIL
 
     # Integer-literal argument (safe for inline .round(n) etc.)
     INT_LITERAL_RE = /\A-?\d+\z/
+    STRING_OUTPUT_FILTERS = %w[
+      upcase downcase capitalize strip lstrip rstrip append prepend concat join
+      handleize escape_once xml_escape url_encode url_decode newline_to_br
+      truncate truncatewords base64_encode base64_url_safe_encode json
+    ].each_with_object({}) { |name, out| out[name] = true }.freeze
+    NUMERIC_OUTPUT_FILTERS = %w[round ceil floor].each_with_object({}) { |name, out| out[name] = true }.freeze
 
     def emit_filter_call(filter_name, input_ruby, args, line)
+      input_fragment = CodeFragment.wrap(input_ruby)
+      value_type = if STRING_OUTPUT_FILTERS[filter_name]
+        :string
+      elsif NUMERIC_OUTPUT_FILTERS[filter_name]
+        :numeric
+      else
+        :unknown
+      end
+
       # Arithmetic filters are not identity operations for Liquid values: even
       # plus:0/times:1 coerce strings to numbers (e.g. "6-3" | plus:0 => 6).
-      # Do not skip them based only on literal arguments.
-
-      # If an earlier filter in this chain went through a dispatcher (_F.ff for
-      # known filters, _H.cf/_H.ccf for unknown/custom), its result may be an
-      # ErrorMarker. Keep the rest of the chain in dispatcher-land so the
-      # marker short-circuits through untouched (and so numeric filters like
-      # round don't take the lossy inline .to_f path on a real filter result).
-      chain_may_error = input_ruby.include?("_H.cf") || input_ruby.include?("_F.ff(")
-
-      if !chain_may_error && SAFE_DIRECT_FILTERS[filter_name]
-        # Inline round/ceil/floor with integer-literal args: skip _F dispatch
-        if SAFE_NUMERIC_FILTERS.match?("_F.#{filter_name}(") && args.length > 0 && args.all? { |a| a.match?(INT_LITERAL_RE) }
-          return "(#{input_ruby} || 0).to_f.#{filter_name}(#{args.join(', ')})"
-        elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
-          # Inline simple filters: Utils.to_s(input).method
-          # Use to_liquid_s (defined on all objects via core_ext) for correct
-          # Liquid drop stringification. For Hash/Array, to_liquid_s uses the
-          # legacy inspect format matching Liquid filter behavior.
-          return "#{input_ruby}.to_liquid_s.#{filter_name}"
-        elsif args.empty?
-          return "_F.#{filter_name}(#{input_ruby})"
-        else
-          return "_F.#{filter_name}(#{input_ruby}, #{args.join(', ')})"
+      # A prior dispatch can produce ErrorMarker; the structured may_error bit
+      # keeps the rest of that chain in dispatcher-land without inspecting Ruby.
+      unless input_fragment.may_error
+        if SAFE_DIRECT_FILTERS[filter_name]
+          source = if NUMERIC_OUTPUT_FILTERS[filter_name] && args.length > 0 && args.all? { |a| a.match?(INT_LITERAL_RE) }
+            "(#{input_fragment} || 0).to_f.#{filter_name}(#{args.join(', ')})"
+          elsif args.empty? && INLINE_SIMPLE_FILTERS[filter_name]
+            "#{input_fragment}.to_liquid_s.#{filter_name}"
+          else
+            require_codegen_helper(:filters)
+            args.empty? ? "_F.#{filter_name}(#{input_fragment})" : "_F.#{filter_name}(#{input_fragment}, #{args.join(', ')})"
+          end
+          cache_filter = args.empty? ? FILTER_CACHE[filter_name] && filter_name : nil
+          return CodeFragment.new(source, value_type: value_type,
+            cache_filter: cache_filter, cache_input: cache_filter ? input_fragment.source : nil)
         end
       end
 
-      if Filters.valid_filter_methods[filter_name]
-        emit_filter_dispatch("cff", filter_name, input_ruby, args, line)
+      source, fusion_inner = if Filters.valid_filter_methods[filter_name]
+        emit_filter_dispatch("cff", filter_name, input_fragment, args, line)
       else
-        emit_filter_dispatch("cf", filter_name, input_ruby, args, line)
+        emit_filter_dispatch("cf", filter_name, input_fragment, args, line)
       end
+      CodeFragment.new(source, value_type: value_type, output_policy: :liquid,
+        may_error: true, filter_dispatch_inner: fusion_inner)
     end
 
     # Generate inline property lookup for const string keys (avoids __lookup__ lambda call)
     # Hot path: Hash string key lookup. Falls back to __lookup__ for other types.
     HASH_SPECIAL_KEYS = %w[size length first last].freeze
 
-    # Inline lookup for loop variables (avoids _H.lf method call + is_a? check)
-    LOOP_VAR_RE = /\A_i\d+__\z/
+    # Raw strings at or above this threshold live in the artifact's constants
+    # segment rather than the ISeq. A small indexed read is cheaper than loading
+    # hundreds of literal bytes on every cold artifact load; short strings stay
+    # inline because the extra proc argument/indexing would not pay back.
+    LITERAL_POOL_MIN_BYTES = 1024
+
+    def raw_literal_expression(raw)
+      return raw.inspect unless @pool_literals && raw.bytesize >= LITERAL_POOL_MIN_BYTES
+
+      index = @literal_indices[raw]
+      unless index
+        index = @partial_constants.length
+        @partial_constants << raw.dup.freeze
+        @literal_indices[raw] = index
+      end
+      "_pc[#{index}]"
+    end
 
     # Fuse WRITE_RAW + following WRITE_VAR / WRITE_VAR_PATH into one runtime
     # send: `_O << "pre"` + `_H.olf(_O, base, "k")` → `_H.rolf(_O, "pre",
@@ -3136,7 +3125,7 @@ module LiquidIL
       when IL::WRITE_VAR
         return nil if @loop_var_aliases[nxt[1]]
         @pc += 1
-        "  _H.roa(_O, #{raw.inspect}, #{scope_lookup(nxt[1])})#{guard}\n"
+        "  _H.roa(_O, #{raw_literal_expression(raw)}, #{scope_lookup(nxt[1])})#{guard}\n"
       when IL::WRITE_VAR_PATH
         return nil if @loop_var_aliases[nxt[1]]
         path = nxt[2]
@@ -3146,46 +3135,38 @@ module LiquidIL
         record_parentloop_use if nxt[1] == "forloop" && path.first.to_s == "parentloop"
         base = scope_lookup_pathed(nxt[1])
         if path.length == 1
-          "  _H.rolf(_O, #{raw.inspect}, #{base}, #{path[0].to_s.inspect})#{guard}\n"
+          "  _H.rolf(_O, #{raw_literal_expression(raw)}, #{base}, #{path[0].to_s.inspect})#{guard}\n"
         else
           arr = register_frozen_array(path.map { |k| k.to_s.inspect })
-          "  _H.rolp(_O, #{raw.inspect}, #{base}, #{arr})#{guard}\n"
+          "  _H.rolp(_O, #{raw_literal_expression(raw)}, #{base}, #{arr})#{guard}\n"
         end
       end
     end
 
-    def inline_lookup(obj_ruby, key)
+    def inline_lookup(object, key)
+      object_fragment = CodeFragment.wrap(object)
+      obj_ruby = object_fragment.source
       key_s = key.to_s
-      if RuntimeHelpers::SPECIAL_KEYS[key_s]
+      source = if RuntimeHelpers::SPECIAL_KEYS[key_s]
         # Special keys (size/length/first/last) dispatch through the runtime:
         # lookup() knows the per-type semantics (String#first is a byteslice,
         # Arrays/Hashes differ, to_liquid must unwrap first). Inlining these
         # as ternary chains was both bigger (artifact bytes) and wrong for
         # non-collection receivers.
         "_H.lp(#{obj_ruby}, #{key_s.inspect})"
-      elsif obj_ruby.match?(LOOP_VAR_RE)
+      elsif object_fragment.origin == :loop_item
         # Loop variable is always a Hash — inline the hash lookup directly
         # Skip symbol fallback for performance (string keys are the common case)
         "#{obj_ruby}[#{key_s.inspect}]"
       else
         "_H.lf(#{obj_ruby}, #{key_s.inspect})"
       end
+      CodeFragment.new(source)
     end
 
-    # Generate inline output conversion (avoids __output_string__ lambda call)
-    # Returns code that appends the expression value to _O
-    # Patterns known to always return String — safe to skip output_append type dispatch
-    STRING_RETURN_SUFFIXES = /\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|to_s\.upcase|to_s\.downcase|to_s\.capitalize|to_s\.strip|to_s\.lstrip|to_s\.rstrip|to_s\.reverse|gsub|sub|tr|squeeze|delete|chomp|chop|encode|freeze)\)?\z/
-    # Direct filter calls that always return String — safe to skip output_append type dispatch
-    STRING_FILTER_CALL = /\A_F\.(?:upcase|downcase|capitalize|strip|lstrip|rstrip|append|prepend|concat|join|handleize|escape_once|xml_escape|url_encode|url_decode|newline_to_br|truncate|truncatewords|base64_encode|base64_url_safe_encode|json)\(/
-    STRING_RETURN_PATTERNS = /\A(?:\+?""|_U\.to_s\(|CGI\.escapeHTML\(|\("[^"]*"\s*\+\s*)/
-    # Filters that always return Float/Integer — safe to use .to_s (no BigDecimal issue)
-    SAFE_NUMERIC_FILTERS = /\A_F\.(?:round|ceil|floor)\(|\.(?:round|ceil|floor)\(.*\)\z/    # Filters that can be inlined: Utils.to_s(input).method(input) => input.to_s.method
+    # Output conversion is driven by CodeFragment metadata. No generated Ruby
+    # is re-parsed to infer result type or filter cache requirements.
     INLINE_SIMPLE_FILTERS = {'upcase' => true, 'downcase' => true, 'capitalize' => true, 'strip' => true, 'lstrip' => true, 'rstrip' => true}
-    # Simple loop variable hash lookup — safe to use .to_s for output (Arrays are rare as hash values)
-    SIMPLE_LOOP_LOOKUP = /\A_i\d+__\["\w+"\]\z/
-    # Simple loop variable identifier — safe to use .to_s (scalars are most common)
-    SIMPLE_LOOP_VAR = /\A_i\d+__\z/
     # Cache variable name for each simple filter (per-filter result cache)
     FILTER_CACHE = {
       'capitalize' => '_CAP__',
@@ -3195,78 +3176,6 @@ module LiquidIL
       'lstrip' => '_LSTRIP__',
       'rstrip' => '_RSTRIP__'
     }
-
-    def inline_output_append(expr_ruby, prefix, guard_interrupt: false)
-      # Dominant case first: plain scope/helper lookups can never be
-      # string-typed, numeric-filter, or loop-var expressions — skip the
-      # whole regex classification cascade (it was ~3% of compile time).
-      if expr_ruby.start_with?("_S.lookup(", "_H.l", "_H.olp", "__partial_scope__.lookup(")
-        if guard_interrupt
-          return "#{prefix}_H.oa(_O, #{expr_ruby}) unless _S.has_interrupt?\n"
-        else
-          return "#{prefix}_H.oa(_O, #{expr_ruby})\n"
-        end
-      end
-
-      # When expression is known to return a String, skip the oa type dispatch
-      # For simple inline filters, use a per-filter cache to avoid repeated method calls
-      # e.g., input.to_s.capitalize -> (_CAP__ ||= {})[(_v = input.to_s)] ||= _v.capitalize
-      cache_pattern = nil
-      if (suffix_m = expr_ruby.include?(".to_liquid_s.") && expr_ruby.match(/\.to_liquid_s\.(capitalize|upcase|downcase|strip|lstrip|rstrip)\z/))
-        filter_name = suffix_m[1]
-        if (cache_var = FILTER_CACHE[filter_name])
-          # Extract the input expression (before .to_liquid_s)
-          input_expr = expr_ruby.sub(/\.to_liquid_s\.(?:capitalize|upcase|downcase|strip|lstrip|rstrip)\z/, '')
-          cache_pattern = "(#{cache_var}[(_v = #{input_expr}.to_liquid_s)] || (#{cache_var}[_v] = _v.#{filter_name}))"
-        end
-      end
-      direct = cache_pattern || expr_ruby.match?(STRING_RETURN_SUFFIXES) || expr_ruby.match?(STRING_RETURN_PATTERNS) || expr_ruby.match?(STRING_FILTER_CALL)
-      # For Float/Integer-returning filters, inline .to_s to avoid oa method call overhead
-      numeric_safe = !direct && expr_ruby.match?(SAFE_NUMERIC_FILTERS)
-      # Simple loop variable hash lookups use .to_s instead of oa; bare loop
-      # vars can be Hash iteration [key, value] pairs and need Liquid output.
-      simple_loop = !direct && !numeric_safe && expr_ruby.match?(SIMPLE_LOOP_LOOKUP)
-      if guard_interrupt
-        if direct
-          output_expr = cache_pattern || expr_ruby
-          "#{prefix}_O << #{output_expr} unless _S.has_interrupt?\n"
-        elsif numeric_safe || simple_loop
-          "#{prefix}_O << (#{expr_ruby}.to_s) unless _S.has_interrupt?\n"
-        else
-          "#{prefix}_H.oa(_O, #{expr_ruby}) unless _S.has_interrupt?\n"
-        end
-      else
-        if direct
-          output_expr = cache_pattern || expr_ruby
-          "#{prefix}_O << #{output_expr}\n"
-        elsif numeric_safe || simple_loop
-          "#{prefix}_O << (#{expr_ruby}.to_s)\n"
-        else
-          "#{prefix}_H.oa(_O, #{expr_ruby})\n"
-        end
-      end
-    end
-
-    # Generate an inline truthy check expression (avoids lambda call overhead)
-    # Uses || false to handle nil → false conversion, matching Liquid truthy semantics
-    def inline_truthy(expr_ruby)
-      # Ruby's if/unless already handles nil and false as falsy, matching Liquid semantics
-      # So no need for || false — just use the expression directly
-      # Simple expressions: identifier, __var__, or loop_var["key"]
-      # Boolean expressions: comparisons, logical operators — already produce boolean result
-      is_boolean = expr_ruby.include?("&&") || expr_ruby.include?("||") || expr_ruby =~ /\)[><]=?\s*\d+\s*\)\z/ || expr_ruby =~ /\)[><]=?\s*\)\z/ ||
-        # Runtime helpers that already return a boolean — no truthy wrapper
-        # needed (saves ~80 emitted bytes and two branches per condition)
-        (expr_ruby.end_with?(")") && expr_ruby.start_with?("_H.cmp(", "_U.ce?(", "_H.ct("))
-      if is_boolean
-        "(#{expr_ruby})"
-      else
-        # Unwrap drops via to_liquid_value (BooleanDrop with false should be
-        # falsy) — one send instead of the inline _t temp shuffle (~40B of
-        # ISeq per condition).
-        "_H.t(#{expr_ruby})"
-      end
-    end
 
     # Evaluate generated Ruby code
     # Use TOPLEVEL_BINDING to avoid constant resolution issues in class context
@@ -3283,14 +3192,14 @@ module LiquidIL
     PARTIAL_CACHE_MUTEX = Mutex.new
 
     def eval_ruby(source, partial_constants = nil)
-      key = source.hash
+      key = source
       if (bin = ISEQ_CACHE_MUTEX.synchronize { @@iseq_cache[key] })
         RubyVM::InstructionSequence.load_from_binary(bin).eval
       else
         iseq = RubyVM::InstructionSequence.compile(RubyCompiler.compact_source(source), "(liquid_il_ruby)")
         ISEQ_CACHE_MUTEX.synchronize do
           @@iseq_cache.clear if @@iseq_cache.size >= ISEQ_CACHE_MAX
-          @@iseq_cache[key] = iseq.to_binary.freeze
+          @@iseq_cache[key.dup.freeze] = iseq.to_binary.freeze
         end
         iseq.eval
       end
@@ -3298,102 +3207,11 @@ module LiquidIL
       nil
     end
 
-    # Compact generated source before compiling it: strip indentation, drop
-    # comment-only lines, and fuse all statements onto one line. Whitespace
-    # and comments never reach the ISeq, but per-line metadata in nested
-    # ISeqs costs ~5% of the artifact, and RubyVM compile time scales with
-    # source bytes. The pretty source is kept on the template for
-    # to_ruby/write_ruby/inspection; only the compiled form is compact.
-    # Emitted code is one complete statement per line with no heredocs or
-    # continuation lines, so newline → ";" is semantics-preserving; the
-    # frozen_string_literal magic comment must stay on its own line.
-    # Consecutive output appends that survive IL-level merging (they meet
-    # only after partial inlining assembles the final text) are fused:
-    #   - raw + raw via string literal juxtaposition — `_O << "a" "b"` folds
-    #     into a single literal at parse time (one putstring)
-    #   - raw/expr runs via `<<` chaining — `_O << "a" << (x.to_s)` keeps one
-    #     statement (one getlocal/pop) instead of one per append
-    # Only self-contained right-hand sides chain: string literals, bare
-    # identifiers, or fully parenthesized expressions.
-    APPEND_LINE = /\A_O << ("(?:[^"\\]|\\.)*"|\w+|\(.*\))( unless _S\.has_interrupt\?)?\z/
-
-    def self.compact_source(src)
-      # UTF-8 explicitly: String.new defaults to BINARY, and the buffer's
-      # encoding becomes the compiled file's — every string literal in the
-      # template would otherwise be ASCII-8BIT (breaks encoding-sensitive
-      # filters like unicode normalization in handleize).
-      out = String.new(capacity: src.bytesize, encoding: Encoding::UTF_8)
-      parts = nil   # chained append parts; last-literal juxtaposition applies
-      guard = nil
-      flush = lambda do
-        if parts
-          out << "_O << " << parts.join(" << ") << (guard || "") << ";"
-          parts = nil
-        end
-      end
-      src.each_line do |line|
-        s = line.strip
-        next if s.empty?
-        if s.start_with?("#")
-          out << s << "\n" if out.empty? && s.start_with?("# frozen_string_literal")
-          next
-        end
-        if s.start_with?("_O << ") && (m = APPEND_LINE.match(s)) && (rhs = m[1]) && (rhs[0] != "(" || balanced_expr?(rhs))
-          flush.call if parts && guard != m[2]
-          if parts
-            if rhs[0] == "\"" && parts[-1][-1] == "\""
-              parts[-1] = parts[-1] + " " + rhs
-            else
-              parts << rhs
-            end
-          else
-            parts = [rhs]
-            guard = m[2]
-          end
-        else
-          flush.call
-          out << s << ";"
-        end
-      end
-      flush.call
-      out
-    end
-
-    # True when the string is one parenthesized expression — the closing
-    # paren of the leading "(" is the final character. Skips string literals
-    # so parens/quotes inside them don't confuse the depth scan.
-    def self.balanced_expr?(s)
-      depth = 0
-      in_str = false
-      i = 0
-      len = s.length
-      while i < len
-        c = s.getbyte(i)
-        if in_str
-          if c == 0x5C # backslash
-            i += 1
-          elsif c == 0x22 # "
-            in_str = false
-          end
-        else
-          case c
-          when 0x22 then in_str = true
-          when 0x28 then depth += 1
-          when 0x29
-            depth -= 1
-            return i == len - 1 if depth.zero?
-          end
-        end
-        i += 1
-      end
-      false
-    end
-
     # Look up the ISeq binary for a given Ruby source string.
     # After eval_ruby, the binary is already in @@iseq_cache (free O(1) lookup).
     # Falls back to compiling + serializing if the cache was evicted.
     def self.iseq_binary_for(ruby_source)
-      key = ruby_source.hash
+      key = ruby_source
       cached = ISEQ_CACHE_MUTEX.synchronize { @@iseq_cache[key] }
       return cached if cached
 
@@ -3401,7 +3219,7 @@ module LiquidIL
       bin = iseq.to_binary.freeze
       ISEQ_CACHE_MUTEX.synchronize do
         @@iseq_cache.clear if @@iseq_cache.size >= ISEQ_CACHE_MAX
-        @@iseq_cache[key] = bin
+        @@iseq_cache[key.dup.freeze] = bin
       end
       bin
     end

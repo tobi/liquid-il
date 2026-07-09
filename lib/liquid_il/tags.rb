@@ -20,8 +20,11 @@ module LiquidIL
     TagDef = Struct.new(:name, :end_tag, :mode, :setup, :teardown, keyword_init: true)
 
     @registry = {}
+    @version = 0
 
     class << self
+      attr_reader :version
+
       def register(name, end_tag: nil, mode: :passthrough, setup: nil, teardown: nil)
         name = name.to_s.freeze
         end_tag = end_tag.to_s.freeze if end_tag
@@ -39,6 +42,7 @@ module LiquidIL
           @end_tags ||= Set.new
           @end_tags.add(end_tag)
         end
+        @version += 1
       end
 
       def registered?(name)
@@ -66,6 +70,7 @@ module LiquidIL
       def clear!
         @registry.clear
         @end_tags&.clear
+        @version += 1
       end
     end
 

@@ -1,178 +1,301 @@
 # frozen_string_literal: true
 
+require "json"
 require "zlib"
 
 module LiquidIL
   # Raised when an artifact was produced by a different Ruby version/platform
-  # (ISeq binaries are not portable). The caller owns the template source —
-  # recompile from it and re-persist. NEVER feed a mismatched binary to
-  # load_from_binary: it can crash the VM, not just raise.
+  # or LiquidIL runtime/compiler ABI. The caller owns the source and should
+  # recompile. Never pass a mismatched binary to load_from_binary: it can crash
+  # the VM rather than raising a normal Ruby exception.
   class StaleArtifactError < Error; end
 
-  # Raised when an artifact is structurally invalid (truncated, digest
-  # mismatch, missing segments). Treat like StaleArtifactError: recompile.
+  # Raised when an artifact is structurally invalid or fails its payload checksum.
   class CorruptArtifactError < Error; end
 
-  # The persisted compiled-template format — the string you put in
-  # memcache/DB and load in a process that has never seen the template.
+  # Persisted compiled-template format used in memcache/DB.
   #
-  #   blob = template.to_artifact           # compile once, persist
-  #   ...
-  #   t = LiquidIL::Artifact.load(blob)     # different process: load
-  #   t.render(assigns)
+  # Framed binary v2 (all integers little-endian):
   #
-  # Framed binary v1 (all integers little-endian):
+  #   "LQIL"                         4  magic
+  #   format version                  1
+  #   ruby stamp length               1
+  #   ruby stamp              stamp_len  RUBY_VERSION/RUBY_PATCHLEVEL/platform
+  #   ABI stamp length                1
+  #   ABI stamp                  abi_len  compiler/runtime generated-code ABI
+  #   CRC32(payload)                   4  fastest stable full-payload corruption guard
+  #   ISeq byte length                4  redundant structural guard
+  #   payload byte length             4
+  #   payload:
+  #     segment count                 1
+  #     per segment: type(1), len(4), bytes(len)
+  #       type 1: raw ISeq binary (always present)
+  #       type 2: JSON partial constants (only when non-empty)
+  #       type 3: JSON external partial dependencies (only when non-empty)
+  #       type 4: packed literal pool (count + encoding-tagged strings)
   #
-  #   "LQIL"                     4  magic
-  #   version                    1  format version (1)
-  #   stamp_len                  1
-  #   ruby stamp        stamp_len   RUBY_VERSION "/" RUBY_PLATFORM
-  #   crc32(iseq)                4  content digest — guards load_from_binary
-  #   iseq byte length           4    against corrupted payloads (VM crash)
-  #   segment count              1
-  #   per segment:  type(1) len(4) bytes(len)
-  #     type 1: raw ISeq binary  (always present)
-  #     type 2: Marshal'd partial_constants (only when non-empty)
-  #
-  # Deliberately NOT included: template source. Error locations are
-  # compile-time literals baked into the emitted code, so error output is
-  # byte-identical without it, and the caller already owns the source
-  # (filesystem/DB) if a recompile is ever needed.
-  #
-  # Legacy Marshal-hash payloads (pre-v1 cache_data dumps) are detected by
-  # magic sniffing in .load and still work during the transition window.
+  # Metadata uses JSON rather than Marshal so envelope decoding never performs
+  # arbitrary object construction. Legacy pre-v1 Marshal cache payloads remain
+  # readable during migration, but callers should only load trusted artifacts:
+  # an ISeq is executable code and must be authenticated if the cache can be
+  # written by an untrusted party.
   module Artifact
-    MAGIC = "LQIL"
-    VERSION = 1
-    RUBY_STAMP = "#{RUBY_VERSION}/#{RUBY_PLATFORM}".freeze
+    MAGIC = "LQIL".b.freeze
+    VERSION = 2
+    RUNTIME_ABI = 1
+    COMPILER_ABI = 1
+    RUBY_STAMP = "#{RUBY_VERSION}.#{RUBY_PATCHLEVEL}/#{RUBY_PLATFORM}".freeze
+    ABI_STAMP = "runtime-#{RUNTIME_ABI}/compiler-#{COMPILER_ABI}".freeze
 
     SEG_ISEQ = 1
     SEG_PARTIAL_CONSTANTS = 2
-    # External partial references only ({name => {digest:, disposition: :external}}):
-    # lets a loaded artifact report which per-file artifacts a host must
-    # prefetch. Added ONLY when external partials exist, so artifacts compiled
-    # without a partial_index (every existing user) stay byte-identical.
     SEG_PARTIAL_DEPS = 3
+    SEG_LITERAL_POOL = 4
+
+    MAX_SEGMENTS = 32
+    MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
 
     class << self
-      # Encode a compiled Template into the persistable artifact string.
       def encode(template)
         iseq = template.iseq_binary
         partial_constants = template.partial_constants
         ext_deps = external_deps(template.respond_to?(:partial_dependencies) ? template.partial_dependencies : nil)
 
-        out = MAGIC.b
-        out << VERSION.chr
-        out << RUBY_STAMP.bytesize.chr << RUBY_STAMP
-        out << [Zlib.crc32(iseq), iseq.bytesize].pack("VV")
-
         segments = [[SEG_ISEQ, iseq]]
         if partial_constants && !partial_constants.empty?
-          segments << [SEG_PARTIAL_CONSTANTS, Marshal.dump(partial_constants)]
+          if partial_constants.is_a?(Array) && partial_constants.all? { |value| value.is_a?(String) }
+            segments << [SEG_LITERAL_POOL, encode_literal_pool(partial_constants)]
+          else
+            segments << [SEG_PARTIAL_CONSTANTS, encode_json(partial_constants)]
+          end
         end
         if ext_deps && !ext_deps.empty?
-          segments << [SEG_PARTIAL_DEPS, Marshal.dump(ext_deps)]
+          segments << [SEG_PARTIAL_DEPS, encode_json(ext_deps)]
         end
-        out << segments.length.chr
-        segments.each do |type, bytes|
-          out << [type, bytes.bytesize].pack("CV") << bytes
-        end
+
+        payload = String.new(capacity: 1 + segments.sum { |_type, bytes| 5 + bytes.bytesize }, encoding: Encoding::BINARY)
+        payload << segments.length.chr
+        segments.each { |type, bytes| payload << [type, bytes.bytesize].pack("CV") << bytes }
+
+        out = String.new(capacity: 4 + 1 + 1 + RUBY_STAMP.bytesize + 1 + ABI_STAMP.bytesize + 12 + payload.bytesize,
+                         encoding: Encoding::BINARY)
+        out << MAGIC << VERSION.chr
+        out << RUBY_STAMP.bytesize.chr << RUBY_STAMP
+        out << ABI_STAMP.bytesize.chr << ABI_STAMP
+        out << [Zlib.crc32(payload)].pack("V")
+        out << [iseq.bytesize, payload.bytesize].pack("VV")
+        out << payload
         out
       end
 
-      # The external-only subset of a partial_dependencies hash (or nil).
       def external_deps(deps)
         return nil unless deps
         ext = deps.select { |_name, info| info[:disposition] == :external }
         ext.empty? ? nil : ext
       end
 
-      # True if the blob is a framed artifact (vs a legacy Marshal payload).
       def artifact?(blob)
         blob.is_a?(String) && blob.byteslice(0, 4) == MAGIC
       end
 
-      # Decode the envelope → [iseq_bytes, partial_constants].
-      # Raises StaleArtifactError on version/Ruby-stamp mismatch and
-      # CorruptArtifactError on structural damage.
+      # Cheap stable identity for an already-validated artifact. For v2 this is
+      # the validated payload checksum embedded in the header, so cache-hit
+      # checks do not hash the full blob a second time. Full verification still
+      # happens on every cache miss before the ISeq is loaded.
+      def identity(blob)
+        return Zlib.crc32(blob) unless artifact?(blob)
+        pos = 4
+        return Zlib.crc32(blob) unless blob.getbyte(pos) == VERSION
+        pos += 1
+        stamp_len = read_byte(blob, pos); pos += 1
+        stamp = read_exact(blob, pos, stamp_len); pos += stamp_len
+        return Zlib.crc32(blob) unless stamp == RUBY_STAMP
+        abi_len = read_byte(blob, pos); pos += 1
+        abi = read_exact(blob, pos, abi_len); pos += abi_len
+        return Zlib.crc32(blob) unless abi == ABI_STAMP
+        read_exact(blob, pos, 4).unpack1("V")
+      rescue CorruptArtifactError
+        Zlib.crc32(blob)
+      end
+
+      # Decode the envelope into:
+      #   [iseq_bytes, partial_constants, payload_digest, partial_deps, literal_pool]
       def decode_segments(blob)
         raise CorruptArtifactError, "not a LiquidIL artifact" unless artifact?(blob)
+        raise CorruptArtifactError, "artifact exceeds maximum size" if blob.bytesize > MAX_ARTIFACT_BYTES
 
         pos = 4
-        version = blob.getbyte(pos); pos += 1
+        version = read_byte(blob, pos); pos += 1
         unless version == VERSION
           raise StaleArtifactError, "artifact format v#{version}, expected v#{VERSION} — recompile"
         end
 
-        stamp_len = blob.getbyte(pos); pos += 1
-        stamp = blob.byteslice(pos, stamp_len); pos += stamp_len
+        stamp_len = read_byte(blob, pos); pos += 1
+        stamp = read_exact(blob, pos, stamp_len); pos += stamp_len
         unless stamp == RUBY_STAMP
           raise StaleArtifactError, "artifact built for Ruby #{stamp}, this is #{RUBY_STAMP} — recompile"
         end
 
-        header = blob.byteslice(pos, 8)
-        raise CorruptArtifactError, "truncated artifact" if header.nil? || header.bytesize < 8
-        crc, iseq_len = header.unpack("VV")
-        pos += 8
+        abi_len = read_byte(blob, pos); pos += 1
+        abi = read_exact(blob, pos, abi_len); pos += abi_len
+        unless abi == ABI_STAMP
+          raise StaleArtifactError, "artifact ABI #{abi}, expected #{ABI_STAMP} — recompile"
+        end
 
-        seg_count = blob.getbyte(pos); pos += 1
-        raise CorruptArtifactError, "truncated artifact" if seg_count.nil?
+        expected_digest = read_exact(blob, pos, 4).unpack1("V"); pos += 4
+        lengths = read_exact(blob, pos, 8); pos += 8
+        iseq_len, payload_len = lengths.unpack("VV")
+        payload = read_exact(blob, pos, payload_len); pos += payload_len
+        raise CorruptArtifactError, "trailing bytes after artifact payload" unless pos == blob.bytesize
+        unless Zlib.crc32(payload) == expected_digest
+          raise CorruptArtifactError, "artifact digest mismatch — refusing to decode payload"
+        end
+
+        payload_pos = 0
+        seg_count = read_byte(payload, payload_pos); payload_pos += 1
+        raise CorruptArtifactError, "too many artifact segments" if seg_count > MAX_SEGMENTS
 
         iseq = nil
         partial_constants = nil
         partial_deps = nil
+        literal_pool = nil
+        seen = {}
+
         seg_count.times do
-          type = blob.getbyte(pos)
-          len_bytes = blob.byteslice(pos + 1, 4)
-          raise CorruptArtifactError, "truncated artifact" if type.nil? || len_bytes.nil? || len_bytes.bytesize < 4
+          type = read_byte(payload, payload_pos)
+          len_bytes = read_exact(payload, payload_pos + 1, 4)
           len = len_bytes.unpack1("V")
-          pos += 5
-          bytes = blob.byteslice(pos, len)
-          raise CorruptArtifactError, "truncated artifact" if bytes.nil? || bytes.bytesize != len
-          pos += len
+          payload_pos += 5
+          bytes = read_exact(payload, payload_pos, len)
+          payload_pos += len
+
+          if type.between?(SEG_ISEQ, SEG_LITERAL_POOL)
+            raise CorruptArtifactError, "duplicate artifact segment type #{type}" if seen[type]
+            seen[type] = true
+          end
 
           case type
-          when SEG_ISEQ then iseq = bytes
-          when SEG_PARTIAL_CONSTANTS then partial_constants = Marshal.load(bytes)
-          when SEG_PARTIAL_DEPS then partial_deps = Marshal.load(bytes)
-            # Unknown segment types are skipped (forward compatibility)
+          when SEG_ISEQ
+            iseq = bytes.freeze
+          when SEG_PARTIAL_CONSTANTS
+            partial_constants = deep_freeze(JSON.parse(bytes, create_additions: false))
+          when SEG_PARTIAL_DEPS
+            partial_deps = normalize_partial_deps(JSON.parse(bytes, create_additions: false))
+          when SEG_LITERAL_POOL
+            literal_pool = decode_literal_pool(bytes)
           end
+          # Unknown segment types are skipped for forward-compatible readers.
+        rescue JSON::ParserError => e
+          raise CorruptArtifactError, "invalid artifact metadata: #{e.message}"
         end
 
+        raise CorruptArtifactError, "trailing bytes inside artifact payload" unless payload_pos == payload.bytesize
         raise CorruptArtifactError, "artifact has no ISeq segment" unless iseq
-        unless iseq.bytesize == iseq_len && Zlib.crc32(iseq) == crc
-          raise CorruptArtifactError, "artifact digest mismatch — refusing to load ISeq"
-        end
+        raise CorruptArtifactError, "artifact ISeq length mismatch" unless iseq.bytesize == iseq_len
 
-        [iseq, partial_constants, crc, partial_deps]
+        partial_constants ||= literal_pool
+        [iseq, partial_constants, expected_digest, partial_deps, literal_pool]
+      rescue CorruptArtifactError, StaleArtifactError
+        raise
+      rescue StandardError => e
+        raise CorruptArtifactError, "invalid artifact structure: #{e.message}"
       end
 
-      # Load an artifact (or legacy Marshal payload) into a renderable Template.
       def load(blob)
         if artifact?(blob)
           iseq, partial_constants, = decode_segments(blob)
           Template.from_iseq_binary(iseq, partial_constants: partial_constants)
         else
-          # Legacy Marshal-hash payload from the pre-v1 cache_data format
+          # Trusted transition-only compatibility path for pre-v1 Marshal hash payloads.
           Template.from_cache(**Marshal.load(blob))
         end
       end
 
-      # Load an artifact into a CompiledArtifact — the leanest render path
-      # (no Template wrapper, Scope built directly at render).
       def load_compiled(blob)
-        # The digest is the WHOLE-blob CRC (identity for TemplateCache
-        # staleness checks); the ISeq segment integrity check happens inside
-        # decode_segments.
         if artifact?(blob)
-          iseq, partial_constants, _crc, partial_deps = decode_segments(blob)
+          iseq, partial_constants, payload_digest, partial_deps = decode_segments(blob)
           compiled_proc = RubyVM::InstructionSequence.load_from_binary(iseq).eval
-          CompiledArtifact.new(compiled_proc, partial_constants, blob.bytesize, Zlib.crc32(blob), partial_deps)
+          CompiledArtifact.new(compiled_proc, partial_constants, blob.bytesize,
+            payload_digest, partial_deps)
         else
           data = Marshal.load(blob)
           compiled_proc = RubyVM::InstructionSequence.load_from_binary(data[:iseq_binary]).eval
-          CompiledArtifact.new(compiled_proc, data[:partial_constants], blob.bytesize, Zlib.crc32(blob))
+          CompiledArtifact.new(compiled_proc, data[:partial_constants], blob.bytesize,
+            Zlib.crc32(blob))
         end
+      end
+
+      private
+
+      def encode_literal_pool(strings)
+        capacity = 4 + strings.sum { |value| 1 + value.encoding.name.bytesize + 4 + value.bytesize }
+        out = String.new(capacity: capacity, encoding: Encoding::BINARY)
+        out << [strings.length].pack("V")
+        strings.each do |value|
+          encoding_name = value.encoding.name
+          raise ArgumentError, "literal encoding name is too long" if encoding_name.bytesize > 255
+          out << encoding_name.bytesize.chr << encoding_name
+          out << [value.bytesize].pack("V") << value.b
+        end
+        out
+      end
+
+      def decode_literal_pool(bytes)
+        count = read_exact(bytes, 0, 4).unpack1("V")
+        raise CorruptArtifactError, "too many literal-pool entries" if count > 1_000_000
+        pos = 4
+        values = Array.new(count)
+        count.times do |index|
+          encoding_length = read_byte(bytes, pos); pos += 1
+          encoding_name = read_exact(bytes, pos, encoding_length); pos += encoding_length
+          encoding = Encoding.find(encoding_name)
+          length = read_exact(bytes, pos, 4).unpack1("V"); pos += 4
+          value = read_exact(bytes, pos, length); pos += length
+          values[index] = value.dup.force_encoding(encoding).freeze
+        end
+        raise CorruptArtifactError, "trailing bytes in literal pool" unless pos == bytes.bytesize
+        values.freeze
+      end
+
+      def encode_json(value)
+        JSON.generate(value).b
+      rescue JSON::GeneratorError, TypeError => e
+        raise ArgumentError, "artifact metadata must contain JSON-safe values: #{e.message}"
+      end
+
+      def read_byte(bytes, pos)
+        bytes.getbyte(pos) || raise(CorruptArtifactError, "truncated artifact")
+      end
+
+      def read_exact(bytes, pos, length)
+        value = bytes.byteslice(pos, length)
+        if value.nil? || value.bytesize != length
+          raise CorruptArtifactError, "truncated artifact"
+        end
+        value
+      end
+
+      def normalize_partial_deps(value)
+        raise CorruptArtifactError, "partial dependencies must be an object" unless value.is_a?(Hash)
+        value.each_value do |info|
+          raise CorruptArtifactError, "partial dependency must be an object" unless info.is_a?(Hash)
+          disposition = info.delete("disposition") || info.delete(:disposition)
+          normalized = {}
+          info.each { |key, item| normalized[key.to_sym] = deep_freeze(item) }
+          normalized[:disposition] = disposition.to_sym if disposition
+          info.replace(normalized.freeze)
+        end
+        deep_freeze(value)
+      end
+
+      def deep_freeze(value)
+        case value
+        when Hash
+          value.each { |key, item| deep_freeze(key); deep_freeze(item) }
+        when Array
+          value.each { |item| deep_freeze(item) }
+        end
+        value.freeze
       end
     end
   end

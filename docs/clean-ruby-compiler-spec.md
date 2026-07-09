@@ -2,7 +2,11 @@
 
 ## Status
 
-Draft design spec for replacing the autoresearch prototype with a maintainable implementation.
+Active migration plan. The first architecture tranche landed in July 2026:
+`CodeFragment` metadata, extracted expression/output emitters, structured bound-partial
+lowering, option-complete bounded caches, Artifact v2 ABI/integrity framing, a shared
+render executor, and a large-literal pool. Remaining emitter extraction is tracked by
+the review checklist below.
 
 ## Goal
 
@@ -384,7 +388,7 @@ Current risk: source-only cache may ignore options/context.
 
 Key should include:
 
-- source digest,
+- complete immutable source value,
 - strict variable/filter/error modes,
 - registered custom filters version,
 - tag registry version if applicable,
@@ -396,19 +400,21 @@ Key should include:
 Key should include:
 
 - partial name,
-- source digest,
+- complete immutable source value,
 - context modes,
 - custom filter registry version,
 - file system identity/version,
 - compiler version/cache schema version.
 
-Use a content digest, not Ruby `String#hash`.
+For process-local caches, retain complete immutable String/Array keys and let
+Ruby Hash bucket them; equality makes collisions harmless without extra hashing.
+Cross-process body identity is supplied by the host partial index.
 
 #### ISeq cache
 
 Key should include:
 
-- Ruby source digest,
+- complete generated Ruby source,
 - Ruby version,
 - LiquidIL compiler version/cache schema version.
 
@@ -533,7 +539,7 @@ Each extraction should preserve benchmark numbers within noise.
 
 ### Phase 7: Cache correctness cleanup
 
-- Replace `String#hash` keys with digest keys.
+- Replace bare `String#hash` integer identities with complete immutable keys.
 - Add cache schema versioning.
 - Include context-relevant options in keys.
 - Bound every cache.
@@ -547,11 +553,11 @@ Before merging the cleaned version, verify:
 - [ ] No benchmark-specific names or literal keys appear in optimization rules.
 - [ ] Filter optimizations live in a rule table.
 - [ ] Lookup optimizations have explicit preconditions.
-- [ ] Output append decisions use metadata, not regexes.
-- [ ] Loop fast paths use a `LoopPlan` or equivalent structured plan.
-- [ ] Partial inlining does not use `gsub` over generated Ruby.
-- [ ] Cache keys include context-sensitive inputs.
-- [ ] Product-code wins are reported separately from YJIT/harness wins.
+- [x] Output append decisions use metadata, not regexes.
+- [x] Loop fast paths use structured effects metadata.
+- [x] Partial inlining does not use `gsub` over generated Ruby.
+- [x] Cache keys include context-sensitive inputs.
+- [x] Product-code wins are reported separately from YJIT/harness wins.
 - [ ] Every fast path has fallback-equivalence tests.
 
 ## Distilled core ideas worth keeping

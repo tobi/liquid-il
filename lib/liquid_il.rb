@@ -11,6 +11,7 @@ require_relative "liquid_il/utils"
 require_relative "liquid_il/context"
 require_relative "liquid_il/drops"
 require_relative "liquid_il/filters"
+require_relative "liquid_il/render_executor"
 require_relative "liquid_il/pretty_printer"
 require_relative "liquid_il/ruby_compiler"
 
@@ -119,6 +120,8 @@ module LiquidIL
   end
 
   class Context
+    COMPILE_CACHE_MAX = 500
+
     attr_accessor :file_system, :strict_errors, :registers, :partial_index
     attr_reader :custom_filters, :strict_variables, :strict_filters, :resource_limits, :error_mode
 
@@ -196,25 +199,48 @@ module LiquidIL
       clear_cache
     end
 
-    # Parse a template string, returning a compiled Template.
+    # Stable description of every context input that can change generated
+    # partial code. Used by the process-wide partial cache; source bytes alone
+    # are insufficient when filters, limits, tags, or partial disposition vary.
+    def compilation_cache_fingerprint
+      filter_parts = (@custom_filters || EMPTY_HASH).sort_by { |name, _| name }.flat_map do |name, info|
+        method = info[:method]
+        [name, info[:pure] ? "pure" : "impure", info[:module].name, info[:module].object_id,
+         method&.name, method&.source_location&.join(":")]
+      end
+      limit_parts = if @resource_limits.is_a?(Hash)
+        @resource_limits.sort_by { |key, _| key.to_s }.flatten
+      else
+        [@resource_limits]
+      end
+      [
+        Artifact::COMPILER_ABI, @error_mode, @strict_variables, @strict_filters,
+        @strict_errors, Tags.version, @partial_index&.class&.name,
+        @partial_index&.object_id, *limit_parts, *filter_parts
+      ].freeze
+    end
+
+    # Parse a template string, returning a compiled Template. The key includes
+    # parse options and the global tag-registry generation; Ruby Hash still
+    # verifies equality, so ordinary hash collisions cannot alias templates.
     def parse(source, **options)
       options = options.merge(file_system: @file_system) if @file_system && !options.key?(:file_system)
-      # In-memory compile cache: same source → same result
       @compile_cache ||= {}
-      return @compile_cache[source] if @compile_cache.key?(source)
+      key = [source, Tags.version, options]
+      return @compile_cache[key] if @compile_cache.key?(key)
+
       result = Compiler::Ruby.compile(source, context: self, **options)
-      @compile_cache[source] = result
+      @compile_cache.clear if @compile_cache.size >= COMPILE_CACHE_MAX
+      @compile_cache[[source.dup.freeze, Tags.version, options.dup.freeze]] = result
       result
     end
 
-    # Hash-style access with caching.
+    # Hash-style access uses the same option-complete cache as #parse.
     def [](source)
-      @cache ||= {}
-      @cache[source] ||= parse(source)
+      parse(source)
     end
 
     def clear_cache
-      @cache&.clear
       @compile_cache&.clear
     end
 
@@ -326,68 +352,18 @@ module LiquidIL
                output: nil,
                **extra_assigns)
       assigns = assigns.merge(extra_assigns) unless extra_assigns.empty?
-      ctx = @context
-      # Merge context-level and render-time registers
-      base_regs = ctx&.registers
-      if registers
-        regs = base_regs ? base_regs.merge(registers) : registers
-      else
-        regs = base_regs ? base_regs.dup : EMPTY_HASH
-      end
-      # static_environments are visible inside isolated {% render %} partials
-      # (assigns are not) — mirrors reference Liquid's Context.build
-      scope = Scope.new(assigns, registers: regs, strict_errors: ctx&.strict_errors || false,
-        static_environments: static_environments)
-      # file_system: context wins; registers allow artifact-loaded templates
-      # (no context) to resolve dynamic partials at render time.
-      scope.file_system = ctx&.file_system || regs["file_system"] || regs[:file_system]
-      scope.render_errors = render_errors
-      # strict_variables: render-time overrides context-level
-      scope.strict_variables = strict_variables.nil? ? (ctx&.strict_variables || false) : strict_variables
-      # strict_filters: render-time overrides context-level
-      scope.strict_filters = strict_filters.nil? ? (ctx&.strict_filters || false) : strict_filters
-      # Custom filters from context, falling back to global registry (needed for from_cache templates where @context is nil)
-      custom_filters = ctx&.custom_filters
-      if custom_filters && !custom_filters.empty?
-        scope.custom_filters = custom_filters
-      else
-        global = LiquidIL::Filters.global_registry
-        scope.custom_filters = global unless global.empty?
-      end
-      # Resource limits from render options override context defaults. Duplicate
-      # render-time hashes so cumulative counters are shared only within this render.
-      limits = resource_limits.is_a?(Hash) ? resource_limits.dup : resource_limits
-      scope.resource_limits = limits || ctx&.resource_limits if limits || ctx&.resource_limits
-      # Render-time PartialProvider for external partial references. An explicit
-      # option wins over a registers["partial_provider"] entry (already picked
-      # up by Scope#initialize).
-      scope.partial_provider = partial_provider if partial_provider
-
-      result =
-        if @partial_constants
-          @compiled_proc[scope, @partial_constants]
-        else
-          @compiled_proc[scope]
-        end
-      # Optional caller-provided buffer (render_to_output_buffer): append and
-      # return it. The compiled proc still builds its own _O — see the note on
-      # render_to_output_buffer for why threading the buffer into the proc is
-      # incompatible with the byte-identical-emission gate.
-      output ? (output << result) : result
-    rescue LiquidIL::ResourceLimitError => e
-      raise unless render_errors
-      out = (e.partial_output || "") + "Liquid error: #{LiquidIL.clean_error_message(e.message)}"
-      output ? (output << out) : out
-    rescue LiquidIL::RuntimeError => e
-      raise unless render_errors
-      pre = e.partial_output || ""
-      location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
-      out = pre + "Liquid error (#{location}): #{e.message}"
-      output ? (output << out) : out
-    rescue StandardError => e
-      raise unless render_errors
-      out = "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}"
-      output ? (output << out) : out
+      scope = RenderExecutor.build_scope(
+        assigns,
+        context: @context,
+        registers: registers,
+        render_errors: render_errors,
+        static_environments: static_environments,
+        strict_variables: strict_variables,
+        strict_filters: strict_filters,
+        resource_limits: resource_limits,
+        partial_provider: partial_provider,
+      )
+      RenderExecutor.call(@compiled_proc, scope, @partial_constants, output: output)
     end
 
     # Strict render — raises on any error instead of rendering inline.

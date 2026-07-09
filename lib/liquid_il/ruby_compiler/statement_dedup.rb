@@ -100,9 +100,10 @@ module LiquidIL
         @optimize && ENV["LIQUID_DEDUP"] != "0"
       end
 
-      # Discovery is a pure function of the final IL: cache groups by
-      # @instructions content hash (same keying discipline as @@iseq_cache's
-      # source.hash). Cache hits skip find_dedup_groups; selection, sequence
+      # Discovery is a pure function of the final IL. Ruby's fast structural
+      # hash selects a bucket and a retained IL snapshot verifies equality, so
+      # collisions are harmless without serializing/hashing the entire stream.
+      # Cache hits skip find_dedup_groups; selection, sequence
       # build, and the rewrite still run against the current (content-equal)
       # instruction array — build_sequence re-derives the abstract body from
       # positions, which are valid on any content-equal IL.
@@ -112,13 +113,18 @@ module LiquidIL
 
       def cached_dedup_groups
         key = @instructions.hash
-        cached = DISCOVERY_CACHE_MUTEX.synchronize { @@discovery_cache[key] }
-        return cached if cached
+        bucket = DISCOVERY_CACHE_MUTEX.synchronize { @@discovery_cache[key] }
+        if bucket && (entry = bucket.find { |snapshot, _groups| snapshot == @instructions })
+          return entry[1]
+        end
 
         groups = find_dedup_groups
+        # Dedup rewrites the outer instruction array later, so retain a shallow
+        # structural snapshot as the equality witness for this bucket.
+        snapshot = @instructions.map { |instruction| instruction.dup }.freeze
         DISCOVERY_CACHE_MUTEX.synchronize do
           @@discovery_cache.clear if @@discovery_cache.size >= DISCOVERY_CACHE_MAX
-          @@discovery_cache[key] = groups
+          (@@discovery_cache[key] ||= []) << [snapshot, groups]
         end
         groups
       end
