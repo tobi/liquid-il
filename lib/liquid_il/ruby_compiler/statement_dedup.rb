@@ -96,7 +96,7 @@ module LiquidIL
         # original all-windows enumeration cost 75ms on the storefront set)
         # and its result is cached class-level by IL content hash below, so
         # repeat compiles of the same template skip discovery entirely —
-        # the same treatment @@iseq_cache gives generated source.
+        # the same treatment CompilerCaches::ISEQ gives generated source.
         @optimize && ENV["LIQUID_DEDUP"] != "0"
       end
 
@@ -107,26 +107,16 @@ module LiquidIL
       # build, and the rewrite still run against the current (content-equal)
       # instruction array — build_sequence re-derives the abstract body from
       # positions, which are valid on any content-equal IL.
-      DISCOVERY_CACHE_MAX = 500
-      @@discovery_cache = {}
-      DISCOVERY_CACHE_MUTEX = Mutex.new
-
       def cached_dedup_groups
         key = @instructions.hash
-        bucket = DISCOVERY_CACHE_MUTEX.synchronize { @@discovery_cache[key] }
-        if bucket && (entry = bucket.find { |snapshot, _groups| snapshot == @instructions })
-          return entry[1]
-        end
+        cached = CompilerCaches::DEDUP_DISCOVERY.find(key, @instructions)
+        return cached if cached
 
         groups = find_dedup_groups
         # Dedup rewrites the outer instruction array later, so retain a shallow
         # structural snapshot as the equality witness for this bucket.
-        snapshot = @instructions.map { |instruction| instruction.dup }.freeze
-        DISCOVERY_CACHE_MUTEX.synchronize do
-          @@discovery_cache.clear if @@discovery_cache.size >= DISCOVERY_CACHE_MAX
-          (@@discovery_cache[key] ||= []) << [snapshot, groups]
-        end
-        groups
+        snapshot = @instructions.map { |instruction| instruction.dup.freeze }.freeze
+        CompilerCaches::DEDUP_DISCOVERY.store_entry(key, snapshot, groups)
       end
 
       # Entry point — called from generate_ruby BEFORE compute_hoisted_lookups.
@@ -609,7 +599,7 @@ module LiquidIL
         @pc = 0
         @loop_var_aliases = {}
         @uses_interrupts = false
-        @effects = [Effects.new] # throwaway parent to absorb the pop merge
+        @effects = [AnalysisEmitter::Effects.new] # throwaway parent to absorb the pop merge
         push_effects
 
         code = String.new

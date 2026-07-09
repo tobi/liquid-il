@@ -8,7 +8,7 @@ require_relative "../lib/liquid_il"
 #    {% render %} / {% include %}.
 # 2. A partial inlined at one call site had its lambda body skipped even when
 #    another call site (with/for/include) still emitted a lambda call → nil.call.
-# 3. A @@partial_cache hit never compiled the cached partial's nested partials,
+# 3. A process partial-cache hit never compiled the cached partial's nested partials,
 #    so the second template compiled in a process raised
 #    "undefined local variable __partial_x__".
 class PartialCodegenTest < Minitest::Test
@@ -66,10 +66,19 @@ class PartialCodegenTest < Minitest::Test
     assert_equal "[]|[top]", out
   end
 
+  def test_distinct_punctuation_names_use_distinct_lambda_locals
+    out = render(
+      "{% render 'a-b' for items as item %}|{% render 'a_b' for items as item %}",
+      { "items" => [1, 2] },
+      partials: { "a-b" => "A{{ item }}", "a_b" => "B{{ item }}" }
+    )
+    assert_equal "A1A2|B1B2", out
+  end
+
   def test_partial_cache_hit_compiles_nested_partials
     partials = { "outer" => "<{% render 'inner' with v as item %}>", "inner" => "[{{ item }}]" }
 
-    # First parse warms the class-level @@partial_cache for 'outer'.
+    # First parse warms the process partial cache for 'outer'.
     first = render("{% render 'outer', v: v %}", { "v" => "hi" }, partials: partials)
     assert_equal "<[hi]>", first
 
@@ -87,9 +96,8 @@ class PartialCodegenTest < Minitest::Test
     assert_equal "abab", render("{% for i in (1..4) %}{% cycle 'a','b' %}{% endfor %}")
   end
 
-  # Partial-body rewrites are string-level gsubs over generated code; they
-  # must skip string literals or raw text containing "_S" corrupts
-  # (PRICE_START became PRICE__partial_scope__TART).
+  # Partial bodies are structurally lowered from IL. Raw text containing the
+  # compiler's scope-local spelling must remain ordinary text.
   def test_partial_raw_text_containing_scope_var_name_is_not_rewritten
     partials = { "chunk" => "PRICE_START {{ x }} _S.lookup OK_END" }
     assert_equal "PRICE_START 42 _S.lookup OK_END",

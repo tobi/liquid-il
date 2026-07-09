@@ -68,9 +68,11 @@ passes.
 
 ## 3. Ruby lowering
 
-`lib/liquid_il/ruby_compiler.rb` lowers IL to native Ruby control flow and
-expressions. Generated code is specialized for template structure, not render
-input values.
+`lib/liquid_il/ruby_compiler.rb` is the orchestration shell for IL-to-Ruby
+lowering. Focused modules own analysis/effects, statements, expressions,
+filters, output, loops, partials, program serialization, and compile caches
+under `lib/liquid_il/ruby_compiler/`. Generated code is specialized for
+template structure, not render input values.
 
 ### CodeFragment
 
@@ -147,7 +149,11 @@ Cache rules:
   and partial-index identity.
 - ISeq and IL-discovery caches retain complete immutable keys rather than using
   a bare `String#hash` value as identity.
-- Every process-wide cache is bounded.
+- `CompilerCaches` owns every process-wide compiler cache; all are bounded and
+  mutex-protected.
+- `CodegenSymbols` owns bounded monotonic symbol tables for frozen-array names
+  and partial loop-name ranges. Eviction drops only key deduplication entries;
+  generated names are never reused, so still-cached bodies cannot alias them.
 - Ruby `Hash` keys that retain full values still verify equality, so ordinary
   hash collisions cannot alias entries.
 

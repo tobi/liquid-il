@@ -2,11 +2,13 @@
 
 ## Status
 
-Active migration plan. The first architecture tranche landed in July 2026:
-`CodeFragment` metadata, extracted expression/output emitters, structured bound-partial
-lowering, option-complete bounded caches, Artifact v2 ABI/integrity framing, a shared
-render executor, and a large-literal pool. Remaining emitter extraction is tracked by
-the review checklist below.
+Implemented in July 2026. `RubyCompiler` is now a small orchestration shell over
+focused analysis, statement, expression, filter, output, loop, partial, program,
+cache, and symbol-table modules. The implementation also includes `CodeFragment`
+metadata, structured bound-partial lowering, bounded option-complete caches,
+Artifact v2 framing, a shared render executor, and a measured large-literal pool.
+The remaining unchecked review items are future optimization coverage, not missing
+parts of this decomposition.
 
 ## Goal
 
@@ -117,14 +119,16 @@ Split `lib/liquid_il/ruby_compiler.rb` into focused modules:
 ```text
 lib/liquid_il/ruby_compiler.rb                 # orchestration only
 lib/liquid_il/ruby_compiler/code_fragment.rb   # generated source + metadata
-lib/liquid_il/ruby_compiler/emitter.rb         # shared emitter state/utilities
+lib/liquid_il/ruby_compiler/analysis.rb        # lookup analysis + scope effects
+lib/liquid_il/ruby_compiler/statement.rb       # statement walk + conditionals
 lib/liquid_il/ruby_compiler/expression.rb      # expression lowering
 lib/liquid_il/ruby_compiler/output.rb          # output append policy
-lib/liquid_il/ruby_compiler/filters.rb         # filter lowering/inlining
-lib/liquid_il/ruby_compiler/loops.rb           # for/tablerow lowering
-lib/liquid_il/ruby_compiler/partials.rb        # partial compilation/calls/inlining
-lib/liquid_il/ruby_compiler/analysis.rb        # instruction feature analysis
-lib/liquid_il/ruby_compiler/cache.rb           # ISeq/partial/cache keys
+lib/liquid_il/ruby_compiler/filter.rb          # filter/literal/lookup lowering
+lib/liquid_il/ruby_compiler/loop.rb            # for/tablerow lowering
+lib/liquid_il/ruby_compiler/partial.rb         # partial planning/emission
+lib/liquid_il/ruby_compiler/cache_store.rb     # bounded compiler caches
+lib/liquid_il/ruby_compiler/symbol_table.rb    # bounded monotonic codegen names
+lib/liquid_il/ruby_compiler/program.rb         # source serialization
 ```
 
 The top-level compiler should read like this:
@@ -509,13 +513,13 @@ The redesign is acceptable if:
 
 Move code without changing behavior:
 
-1. `OutputEmitter`
-2. `FilterEmitter`
-3. `ExpressionEmitter`
-4. `LoopEmitter`
-5. `PartialEmitter`
-6. `Analysis`
-7. `Cache`
+1. [x] `OutputEmitter`
+2. [x] `FilterEmitter`
+3. [x] `ExpressionEmitter`
+4. [x] `LoopEmitter`
+5. [x] `PartialEmitter`
+6. [x] `AnalysisEmitter` and `StatementEmitter`
+7. [x] `CompilationCache`, `CompilerCaches`, and `CodegenSymbols`
 
 Each extraction should preserve benchmark numbers within noise.
 
@@ -539,20 +543,20 @@ Each extraction should preserve benchmark numbers within noise.
 
 ### Phase 7: Cache correctness cleanup
 
-- Replace bare `String#hash` integer identities with complete immutable keys.
-- Add cache schema versioning.
-- Include context-relevant options in keys.
-- Bound every cache.
+- [x] Replace bare `String#hash` integer identities with complete immutable keys.
+- [x] Add cache schema versioning.
+- [x] Include context-relevant options in keys.
+- [x] Bound every cache and codegen symbol registry.
 
 ## Review checklist
 
 Before merging the cleaned version, verify:
 
-- [ ] No major compiler file exceeds its previous size without decomposition.
-- [ ] No generated Ruby is parsed with regex/string matching to infer semantics.
-- [ ] No benchmark-specific names or literal keys appear in optimization rules.
-- [ ] Filter optimizations live in a rule table.
-- [ ] Lookup optimizations have explicit preconditions.
+- [x] The orchestration compiler is decomposed into focused modules.
+- [x] No generated Ruby is parsed with regex/string matching to infer semantics.
+- [x] No benchmark-specific names or literal keys appear in optimization rules.
+- [x] Filter optimizations live in rule tables.
+- [x] Lookup optimizations have explicit preconditions.
 - [x] Output append decisions use metadata, not regexes.
 - [x] Loop fast paths use structured effects metadata.
 - [x] Partial inlining does not use `gsub` over generated Ruby.

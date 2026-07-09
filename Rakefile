@@ -17,6 +17,7 @@ LIQUID_VM_DEFAULT_PATH = "/tmp/liquid-vm"
 TEST_FILES = %w[
   test/liquid_il_test.rb
   test/ruby_compiler_test.rb
+  test/partial_codegen_test.rb
   test/optimization_passes_test.rb
   test/error_handling_test.rb
   test/case_when_semantics_test.rb

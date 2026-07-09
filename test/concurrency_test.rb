@@ -140,27 +140,11 @@ class ConcurrencyTest < Minitest::Test
   end
 
   def clear_compiler_caches
-    compiler = LiquidIL::RubyCompiler
-    {
-      ISEQ_CACHE_MUTEX: :@@iseq_cache,
-      PARTIAL_CACHE_MUTEX: :@@partial_cache,
-      INDENT_PARTIAL_BODY_CACHE_MUTEX: :@@indent_partial_body_cache,
-      NAME_REGISTRY_MUTEX: [:@@frozen_array_names, :@@partial_loop_bases],
-    }.each do |mutex_name, vars|
-      mutex = compiler.const_get(mutex_name)
-      Array(vars).each do |var|
-        mutex.synchronize { compiler.class_variable_get(var).clear }
-      end
-    end
+    LiquidIL::RubyCompiler::CompilerCaches.clear
+    LiquidIL::RubyCompiler::CodegenSymbols.clear
   end
 
   def prefill_iseq_cache
-    compiler = LiquidIL::RubyCompiler
-    mutex = compiler.const_get(:ISEQ_CACHE_MUTEX)
-    cache = compiler.class_variable_get(:@@iseq_cache)
-    mutex.synchronize do
-      cache.clear
-      1000.times { |i| cache[i] = "dummy".b.freeze }
-    end
+    LiquidIL::RubyCompiler::CompilerCaches::ISEQ.fill_for_test("dummy".b.freeze)
   end
 end

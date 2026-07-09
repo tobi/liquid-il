@@ -87,7 +87,7 @@ The budget is accounted by the summed size of the loaded artifacts; once it is e
 
 LiquidIL's render path is thread-safe and lock-free for the production shape: compile once, load an artifact, then render it many times. A single `Template` or `CompiledArtifact` may be shared by many Ruby threads; each render builds its own `Scope`, output buffer, cycle state, capture stack, counters, and ifchanged state. Partial lambdas created when an artifact is loaded are shared, but they are stateless closures over immutable compile-time constants.
 
-Compilation is also safe to run from multiple threads. The process-wide compile caches in `RubyCompiler` (`@@iseq_cache`, `@@partial_cache`, and `@@indent_partial_body_cache`) are guarded by compile-time mutexes, following the same pattern as `NAME_REGISTRY_MUTEX` for frozen-array names and partial loop-name bases. Those locks are not touched by `Template#render` or `CompiledArtifact#render`.
+Compilation is also safe to run from multiple threads. `RubyCompiler::CompilerCaches` owns bounded, mutex-protected ISeq, partial, indented-body, bound-body, and IL-discovery caches. `RubyCompiler::CodegenSymbols` uses bounded monotonic symbol tables for frozen-array names and partial loop-name ranges: key entries may be evicted, but emitted names are never reused while cached bodies can reference them. These compile-time locks are not touched by `Template#render` or `CompiledArtifact#render`.
 
 For Ractors, do not share a proc created in another Ractor. Share the frozen artifact bytes and load/eval the ISeq inside each Ractor:
 

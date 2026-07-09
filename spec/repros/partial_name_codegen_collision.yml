@@ -1,0 +1,13 @@
+---
+_metadata:
+  hint: Generated partial-lambda locals must use a collision-free encoding of the complete partial name; punctuation replacement aliases names such as a-b and a_b.
+  render_errors: true
+specs:
+- name: distinct_punctuation_partial_names_do_not_alias_codegen_lambdas
+  template: "{% render 'a-b' for items as item %}|{% render 'a_b' for items as item %}"
+  environment:
+    items: [1, 2]
+  filesystem:
+    a-b: "A{{ item }}"
+    a_b: "B{{ item }}"
+  expected: "A1A2|B1B2"

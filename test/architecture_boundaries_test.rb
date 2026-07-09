@@ -5,6 +5,66 @@ require_relative "../lib/liquid_il"
 
 # Focused contracts for the cross-process compiler/artifact architecture.
 class ArchitectureBoundariesTest < Minitest::Test
+  CollisionKey = Struct.new(:value) do
+    def hash = 0
+  end
+
+  def test_compiler_responsibilities_are_owned_by_focused_modules
+    compiler = LiquidIL::RubyCompiler
+    expected = {
+      scope_lookup: compiler::AnalysisEmitter,
+      eval_ruby: compiler::CompilationCache,
+      emit_filter_call: compiler::FilterEmitter,
+      generate_for_loop: compiler::LoopEmitter,
+      compile_partial: compiler::PartialEmitter,
+      generate_body: compiler::StatementEmitter,
+    }
+
+    expected.each do |method_name, owner|
+      assert_equal owner, compiler.instance_method(method_name).owner
+    end
+  end
+
+  def test_dedup_bucket_cache_verifies_complete_snapshots
+    cache = LiquidIL::RubyCompiler::BoundedBucketCache.new(2)
+    first = [[1, "a"].freeze].freeze
+    second = [[1, "b"].freeze].freeze
+    cache.store_entry(0, first, :first)
+    cache.store_entry(0, second, :second)
+
+    assert_equal :first, cache.find(0, first)
+    assert_equal :second, cache.find(0, second)
+    assert_nil cache.find(0, [[1, "missing"]])
+
+    cache.store_entry(0, [[1, "third"]].freeze, :third)
+    assert_operator cache.size, :<=, cache.limit
+  end
+
+  def test_symbol_table_is_bounded_collision_safe_and_never_reuses_names
+    table = LiquidIL::RubyCompiler::SymbolTable.new(2) { |id| "symbol#{id}" }
+    first = table.intern(CollisionKey.new("a"))
+
+    assert_equal first, table.intern(CollisionKey.new("a"))
+    refute_equal first, table.intern(CollisionKey.new("b"))
+    table.intern(CollisionKey.new("c")) # capacity clear
+    replacement = table.intern(CollisionKey.new("a"))
+
+    refute_equal first, replacement
+    assert_operator table.size, :<=, table.limit
+  end
+
+  def test_symbol_table_interning_is_thread_safe
+    table = LiquidIL::RubyCompiler::SymbolTable.new(128) { |id| "symbol#{id}" }
+    threads = 8.times.map do
+      Thread.new { 100.times.map { |index| [index, table.intern(CollisionKey.new(index))] } }
+    end
+    grouped = threads.flat_map(&:value).group_by(&:first)
+
+    assert grouped.values.all? { |entries| entries.map(&:last).uniq.one? }
+    assert_equal 100, grouped.values.map { |entries| entries.first.last }.uniq.size
+    assert_operator table.size, :<=, table.limit
+  end
+
   def test_context_compile_cache_includes_parse_options
     context = LiquidIL::Context.new
     optimized = context.parse("{% assign x = 1 %}{{ x }}", optimize: true)

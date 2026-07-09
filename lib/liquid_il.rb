@@ -283,7 +283,7 @@ module LiquidIL
 
     # Returns the ISeq binary for this template's compiled proc.
     # After normal compilation, the binary is already in RubyCompiler's
-    # @@iseq_cache — so this is a free O(1) lookup, not a recompilation.
+    # CompilerCaches::ISEQ — so this is a free O(1) lookup, not a recompilation.
     # For templates created via from_cache / load_iseq, @iseq_binary is preset.
     def iseq_binary
       @iseq_binary ||= RubyCompiler.iseq_binary_for(@compiled_source)

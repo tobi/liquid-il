@@ -88,21 +88,14 @@ stage_times = Hash.new(0)
     stage_times[:lex_parse_il] += Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - s
 
     s = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
-    sc = LiquidIL::RubyCompiler.new(result[:instructions], spans: result[:spans], template_source: t[:source], context: ctx)
+    sc = LiquidIL::RubyCompiler.new(result[:instructions], hoist_data: result[:hoist], context: ctx)
     compiled = sc.compile
     stage_times[:ruby_compile] += Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - s
 
     src = compiled.source
     s = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
-    key = src.hash
-    cache = LiquidIL::RubyCompiler.class_variable_get(:@@iseq_cache)
-    if (bin = cache[key])
-      RubyVM::InstructionSequence.load_from_binary(bin).eval
-    else
-      iseq = RubyVM::InstructionSequence.compile(src, "(bench)")
-      cache[key] = iseq.to_binary
-      iseq.eval
-    end
+    bin = LiquidIL::RubyCompiler.iseq_binary_for(src)
+    RubyVM::InstructionSequence.load_from_binary(bin).eval
     stage_times[:iseq_eval] += Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - s
   end
 end
