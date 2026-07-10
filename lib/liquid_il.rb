@@ -584,3 +584,4 @@ end
 
 require_relative "liquid_il/artifact"
 require_relative "liquid_il/template_cache"
+require_relative "liquid_il/renderer"

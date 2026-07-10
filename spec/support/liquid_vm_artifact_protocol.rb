@@ -7,31 +7,45 @@
 module LiquidVmArtifactProtocol
   module_function
 
-  FORMAT_VERSION = 1
+  FORMAT_VERSION = 2
 
   def install!(backend:)
     original_compile = LiquidSpec.compile_block
+    original_render = LiquidSpec.render_block
     raise "liquid-vm adapter must define compile before installing artifact protocol" unless original_compile
+    raise "liquid-vm adapter must define render before installing artifact protocol" unless original_render
+
+    # The private adapter passes the caller's register Hash directly to
+    # Liquid::Registers. VM render state (including cycle counters) can then
+    # leak into the next benchmark render. Give every render its own register
+    # container, matching Liquid's per-render Context semantics without
+    # cloning the potentially large assigns tree.
+    LiquidSpec.render do |ctx, assigns, render_options|
+      options = render_options.dup
+      options[:registers] = render_options[:registers].dup if render_options[:registers]
+      original_render.call(ctx, assigns, options)
+    end
 
     LiquidSpec.compile do |ctx, source, compile_options|
       original_compile.call(ctx, source, compile_options)
       ctx[:artifact_error_mode] = (compile_options[:error_mode] || :strict).to_s
-      # Capture bytecode immediately after compile. liquid-vm mutates some
-      # bytecode-embedded runtime state (notably cycle indexes) during render,
-      # while liquid-spec verifies output before asking the adapter to dump an
-      # artifact. Dumping this pristine snapshot models compile-once -> persist.
-      ctx[:artifact_template_bytes] = ctx[:template].serialize
-      ctx[:artifact_template_name] = ctx[:template].respond_to?(:name) ? ctx[:template].name : nil
-      ctx[:artifact_partials] = serialize_partials(backend, compile_options)
+      ctx[:artifact_compile_options] = compile_options
     end
 
     LiquidSpec.dump_artifact do |ctx|
+      template = ctx.fetch(:template)
+      # Serialization belongs exclusively to the dump hook. Doing it in the
+      # compile hook would charge liquid-vm's source workflow for artifact work
+      # that the other adapters do not perform and make timings incomparable.
+      # Persist the exact partial bytecode produced by the adapter's normal
+      # shared compiler; independently recompiling it changes VM identities.
+      partials = serialize_partials(ctx, ctx.fetch(:artifact_compile_options))
       Marshal.dump(
         "version" => FORMAT_VERSION,
-        "template" => ctx.fetch(:artifact_template_bytes),
-        "name" => ctx[:artifact_template_name],
+        "template" => template.serialize,
+        "name" => template.respond_to?(:name) ? template.name : nil,
         "error_mode" => ctx[:artifact_error_mode] || "strict",
-        "partials" => ctx[:artifact_partials] || {},
+        "partials" => partials,
       )
     end
 
@@ -48,45 +62,27 @@ module LiquidVmArtifactProtocol
     end
   end
 
-  def serialize_partials(backend, compile_options)
+  def serialize_partials(ctx, compile_options)
     file_system = compile_options[:file_system]
-    return {} unless file_system&.respond_to?(:data)
+    store = ctx[:cached_partials]
+    return {} unless store && file_system&.respond_to?(:data)
 
-    opts = parse_options(compile_options)
-    error_mode = compile_options[:error_mode] || :strict
-    compiler = Liquid::Vm::Compiler.new
+    error_mode = (compile_options[:error_mode] || :strict).to_s
     partials = {}
 
     file_system.data.each_key do |partial_name|
-      source = file_system.read_template_file(partial_name)
-      partial_template = Liquid::Template.parse(source, **opts.merge(error_mode: error_mode))
-      partial_template.name ||= partial_name
-      compiled_partial = compile_template(compiler, partial_template, backend, top_level: false)
-      partials[partial_name] = compiled_partial.serialize
-    rescue StandardError
-      # Match the private adapter: partials that cannot be precompiled are
-      # resolved by liquid-vm's runtime partial retriever on first render.
+      cached = store.fetch(partial_name, 0, error_mode)
+      next unless cached
+      next if cached.custom_renderer
+
+      template = cached.compiled_template
+      partials[partial_name] = {
+        "template" => template.serialize,
+        "name" => template.respond_to?(:name) ? template.name : partial_name,
+      }
     end
 
     partials
-  end
-
-  def parse_options(compile_options)
-    allowed_keys = [:line_numbers, :error_mode, :disable_liquid_c_nodes]
-    opts = compile_options.slice(*allowed_keys)
-    if defined?(Helpers::LiquidHelper::DEFAULT_OPTIONS)
-      Helpers::LiquidHelper::DEFAULT_OPTIONS.merge(opts)
-    else
-      opts
-    end
-  end
-
-  def compile_template(compiler, template, backend, top_level:)
-    if backend.to_sym == :ssa
-      compiler.compile_template(template, optimised: true, top_level: top_level)
-    else
-      compiler.compile_template(template)
-    end
   end
 
   def deserialize_template(bytes, name = nil)
@@ -99,8 +95,8 @@ module LiquidVmArtifactProtocol
     return nil if serialized_partials.empty?
 
     store = Liquid::Vm::CachedPartialsStore.new
-    serialized_partials.each do |name, bytes|
-      partial = deserialize_template(bytes, name)
+    serialized_partials.each do |name, entry|
+      partial = deserialize_template(entry.fetch("template"), entry["name"] || name)
       store.preload(name, 0, error_mode.to_s, Liquid::Vm::CachedPartial.new(partial, nil))
     end
     store

@@ -721,7 +721,7 @@ module LiquidIL
     def parse_filter(lexer)
       unless lexer.current == ExpressionLexer::IDENTIFIER
         return unless strict?
-        raise syntax_error("Expected filter name after '|'", lexer)
+        raise syntax_error("Expected filter name (Expected id) after '|'", lexer)
       end
 
       filter_name = lexer.value

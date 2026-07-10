@@ -63,13 +63,13 @@ module LiquidIL
       def compute_theme_source(path)
         path = "#{path}.liquid" unless path.end_with?(".liquid", ".json")
         full_path = File.join(STOREFRONT_DAWN_ROOT, path)
-        return File.read(full_path) if File.file?(full_path)
+        return File.read(full_path, encoding: Encoding::UTF_8) if File.file?(full_path)
 
         unless path.include?("/")
           snippet_name = path.sub(/\.liquid\z/, "")
           if snippet_name.start_with?("icon-")
             full_path = File.join(STOREFRONT_DAWN_ROOT, "snippets", path)
-            return File.read(full_path) if File.file?(full_path)
+            return File.read(full_path, encoding: Encoding::UTF_8) if File.file?(full_path)
           end
         end
 

@@ -34,6 +34,8 @@ TEST_FILES = %w[
   test/external_partials_test.rb
   test/liquid_vm_optional_test.rb
   test/storefront_mock_integration_test.rb
+  test/benchmark_harness_test.rb
+  test/renderer_test.rb
 ].freeze
 
 module LiquidVmRake
@@ -158,16 +160,19 @@ end
 # reports. These are THE optimization and test scenarios for LiquidIL — see
 # README.md "The three render scenarios" and AGENTS.md.
 #
-#   cache-miss  → render : parse + compile + render (template never seen)
-#   remote-hit  → render : compiled artifact fetched as a string (memcache/DB)
-#                          → load → render
+#   cache-miss  → render : source compile + first render, timed atomically
+#   remote-hit  → render : artifact load + first render, timed atomically
 #   in-process  → render : template already loaded in this process → render
-#   artifact             : compiled artifact size (drives remote-hit load
-#                          cost, ~3µs/KB)
+#   artifact             : compiled artifact size
+#
+# liquid-spec measures the two atomic workflows in the same warmed adapter
+# process, interleaving their samples to limit ordering bias. Environment setup
+# and JSONL serialization remain outside the timed regions; process startup is
+# deliberately not part of these application-level measurements.
 module CacheScenarios
   module_function
 
-  def capture_bench_jsonl!(*argv)
+  def capture_bench_jsonl!(*argv, expected_adapters:)
     command = ["bundle", "exec", "liquid-spec", "bench", *argv.flatten.map(&:to_s), "--jsonl"]
     puts command.shelljoin
     stdout, stderr, status = Open3.capture3({ "RUBY_YJIT_ENABLE" => "1" }, *command)
@@ -176,7 +181,45 @@ module CacheScenarios
       abort("command failed: #{command.shelljoin}")
     end
     warn stderr unless stderr.empty?
+    validate_jsonl!(stdout, expected_adapters: expected_adapters)
     stdout
+  end
+
+  # Multi-adapter liquid-spec runs use subprocesses. A child that fails during
+  # adapter boot can otherwise leave a valid JSONL stream containing only the
+  # surviving engines, which makes a comparison table look successful. Require
+  # every requested adapter, every spec, and the atomic same-process workflow
+  # fields before publishing benchmark results.
+  def validate_jsonl!(jsonl, expected_adapters:)
+    events = jsonl.each_line.filter_map { |line| JSON.parse(line, symbolize_names: true) rescue nil }
+    rows = events.select { |event| event[:type] == "spec" }
+    metadata = events.select { |event| event[:type] == "run_metadata" }.to_h { |event| [event[:adapter], event] }
+
+    actual_adapters = rows.map { |row| row[:adapter] }.uniq
+    missing = expected_adapters - actual_adapters
+    abort("benchmark produced no spec results for: #{missing.join(', ')}") if missing.any?
+
+    failed = rows.select { |row| expected_adapters.include?(row[:adapter]) && row[:status] != "success" }
+    if failed.any?
+      details = failed.map { |row| "#{row[:adapter]}/#{spec_name(row)}: #{row[:error] || row[:status]}" }
+      abort("benchmark specs failed:\n  #{details.join("\n  ")}")
+    end
+
+    expected_adapters.each do |adapter|
+      meta = metadata[adapter]
+      abort("benchmark metadata missing for #{adapter}") unless meta
+      unless meta[:workflow_execution_model] == "same_process" && meta[:workflow_process_isolated] == false
+        abort("#{adapter} did not use same-process atomic workflows")
+      end
+
+      adapter_rows = rows.select { |row| row[:adapter] == adapter }
+      unless adapter_rows.all? { |row| row.dig(:workflows, :source_compile_render, :mean) && row.dig(:workflows, :source_compile_render, :freshness) == "same_process_compile_each_sample" }
+        abort("same-process source workflow missing for #{adapter}")
+      end
+      if meta[:artifact_protocol] && !adapter_rows.all? { |row| row.dig(:workflows, :artifact_load_first_render, :mean) && row.dig(:workflows, :artifact_load_first_render, :freshness) == "same_process_load_each_sample" && row.dig(:artifact, :bytes) }
+        abort("same-process artifact workflow missing for #{adapter}")
+      end
+    end
   end
 
   def print_table(jsonl)
@@ -192,10 +235,11 @@ module CacheScenarios
 
     puts "Cache scenario benchmark table"
     puts
-    puts "  cache-miss → render : parse + compile + render (template never seen)"
-    puts "  remote-hit → render : compiled artifact fetched as a string (memcache/DB) → load → render"
-    puts "  in-process → render : template already loaded in this process → render"
-    puts "  artifact            : compiled artifact size (drives remote-hit load cost, ~3µs/KB)"
+    puts "  cache-miss → render : source compile + first render in the warmed adapter process"
+    puts "  remote-hit → render : artifact load + first render in the warmed adapter process"
+    puts "  in-process → render : resident template render in the adapter process"
+    puts "  artifact            : exact persisted payload size"
+    puts "  environment setup and JSONL serialization are outside every timed region"
     puts
     puts "Geomean across common successful specs (n=#{common.size})"
     print_rows(rows.select { |row| common.include?(spec_name(row)) })
@@ -224,9 +268,13 @@ module CacheScenarios
     render = row.dig(:render, :mean) || row[:render_mean]
     load = row.dig(:artifact, :load_mean) || row[:load_mean]
     bytes = row.dig(:artifact, :bytes) || row[:artifact_bytes]
+    source_workflow = row.dig(:workflows, :source_compile_render, :mean)
+    artifact_workflow = row.dig(:workflows, :artifact_load_first_render, :mean)
     {
-      cache_miss: parse && render && parse + render,
-      remote_hit: load && render && load + render,
+      # Prefer liquid-spec's atomically timed workflows. The sums remain as a
+      # compatibility fallback for old JSONL files only.
+      cache_miss: source_workflow || (parse && render && parse + render),
+      remote_hit: artifact_workflow || (load && render && load + render),
       in_process: render,
       artifact_bytes: bytes,
     }
@@ -425,7 +473,8 @@ desc "Benchmark vs reference liquid: the three core scenarios (cache-miss / remo
 task :bench do
   jsonl = CacheScenarios.capture_bench_jsonl!(
     "--adapters=liquid_ruby",
-    "--adapter=#{File.expand_path(ADAPTER)}"
+    "--adapter=#{File.expand_path(ADAPTER)}",
+    expected_adapters: %w[liquid_ruby liquid_il]
   )
   FileUtils.mkdir_p("tmp")
   File.write("tmp/scenarios.jsonl", jsonl)
@@ -537,6 +586,10 @@ namespace :liquid_vm do
       "--adapter=#{File.expand_path(ADAPTER_VM_SSA)}",
       "--jsonl",
       LiquidVmRake.extra_args
+    )
+    CacheScenarios.validate_jsonl!(
+      jsonl,
+      expected_adapters: %w[liquid_ruby liquid_il liquid_vm liquid_vm_ssa]
     )
     FileUtils.mkdir_p("tmp")
     File.write("tmp/liquid_vm_scenarios.jsonl", jsonl)

@@ -1,380 +1,599 @@
 # LiquidIL
 
-A high-performance [Liquid](https://shopify.github.io/liquid/) template engine that compiles templates to optimized Ruby via an Intermediate Language (IL).
-
-**Pipeline:** Source → Lexer → Parser → IL → Optimizer → Structured Compiler → Ruby
-
-Templates are parsed into an IL instruction set, optimized through multiple passes (constant folding, dead code elimination, partial inlining, etc.), then compiled to YJIT-friendly Ruby with native control flow — no interpreter loop, no VM.
-
-## Why It's Fast
-
-LiquidIL achieves its performance through a combination of compile-time decisions and runtime optimizations:
-
-**Compile to native Ruby, not interpret.** Instead of walking an AST or dispatching bytecodes at runtime, LiquidIL compiles each template to a Ruby proc with real `if/else`, `each`, and local variables. YJIT then compiles *that* to machine code. The result is two levels of compilation — Liquid → Ruby → native — with zero interpreter overhead.
-
-**Solve problems at the right level.** Constant folding happens during IL optimization (`"hello" | upcase` becomes `"HELLO"` at parse time). Filter dispatch is resolved during structured compilation (common filters like `upcase`, `escape`, `size` compile to direct Ruby calls, not method_missing). Type checks are eliminated at code generation when the compiler can prove a value's type.
-
-**Zero-allocation hot paths.** The lexer uses `StringScanner#skip` instead of `scan`, deferring string extraction until needed. Expression lexers are reused (one instance per parse, reset via `reset_source`). IL instructions for zero-argument opcodes are pre-frozen constants. Frozen string tables avoid `Integer#to_s` for small numbers. Filter arguments are hoisted as frozen constants outside loops.
-
-**Inline everything that can be inlined.** Comparisons (`==`, `<`, `>`) compile to native Ruby operators with a Numeric fast path. Filters compile to direct method calls. Partial templates compile as inline lambdas. The escape filter skips `CGI.escapeHTML` entirely when the input contains no special characters.
-
-**Cache aggressively.** ISeq binaries are cached by the complete generated source string (Ruby Hash handles fast bucketing and equality resolves collisions) — repeated compilation loads from a bounded binary cache instead of re-parsing Ruby source. Cross-process dependency identities come from the host partial index.
-
-See [OPTIMIZATION_GUIDE.md](OPTIMIZATION_GUIDE.md) for detailed profiling data and future optimization paths.
-
-## The Optimization Target
-
-LiquidIL is optimized, by default and without tuning knobs, for one specific production workload:
-
-> **Compile a template once, persist the compiled artifact (memcache / database), then in some other process — one that has never seen this template — fetch the artifact and execute it.**
-
-```ruby
-blob = memcache.get(key)                  # a compiled artifact string
-LiquidIL.load_and_render(blob, assigns)   # load → render, cold
-```
-
-The hot path is therefore **deserialize → callable proc → first render**, *not* re-rendering a template already resident in memory. That single assumption drives every design decision, and there are no `optimize_for:`-style switches — the one default *is* the optimized configuration:
-
-- **The emitted code is kept small.** The generated Ruby (and thus the ISeq binary) is the thing we load cold, and `RubyVM::InstructionSequence.load_from_binary` cost scales with binary size (~3µs/KB). Repeated codegen patterns are pulled into the runtime library instead of being emitted per-template, so the artifact carries as little code as possible.
-- **The load process is optimized and guarded.** Artifact v2 carries a raw ISeq plus JSON-safe immutable constants/dependencies, exact Ruby and LiquidIL ABI stamps, and a full-payload CRC32 checked before `load_from_binary`. It contains no source or spans; error locations are baked into generated code.
-- **The source is not embedded.** Callers already hold their templates in a filesystem or database; the artifact stays lean and the source is refetched only if a Ruby-version change forces a recompile.
-
-### The three render scenarios
-
-Every render in production falls into one of three cache scenarios, and every benchmark in this repo reports all three (plus the artifact size that links them). These are **the** core optimization and test scenarios:
-
-| scenario | what happens | dominated by |
-|---|---|---|
-| **cache-miss → render** | template never seen: parse + compile + render | parser + IL optimizer + codegen |
-| **remote-hit → render** | compiled artifact fetched as a string (memcache/DB) → load → render | artifact size (~3µs/KB ISeq load) |
-| **in-process → render** | template already loaded in this process → render | generated-code quality under JIT |
-
-`rake bench` (alias `rake scenarios`) prints exactly this table against reference liquid; `rake liquid_vm:scenarios` adds Shopify/liquid-vm classic and SSA. Current standing (Ruby 4.0, YJIT, geomean over the common bench specs, 2026-07-05):
-
-| adapter | cache-miss | remote-hit | in-process | artifact |
-|---|---:|---:|---:|---:|
-| liquid_il | 503µs | **104µs** | **68µs** | 7.5KB |
-| liquid_ruby | 455µs | — | 194µs | — |
-| liquid_vm | 441µs | 108µs | 92µs | 1.7KB |
-| liquid_vm_ssa | 1.04ms | 113µs | 94µs | 1.8KB |
-
-remote-hit is the production workload and the primary target; in-process shows the ceiling of the generated code; cache-miss is the cost of a cold fleet. LiquidIL wins remote-hit and in-process on the geomean (order_email's remote-hit, 84 vs 77µs, is the one remaining red row — its 13KB artifact vs liquid-vm's 5KB), trails liquid-vm on cache-miss by ~14% (an accepted trade: the statement-dedup pass spends compile time to shrink artifacts — the production-facing columns), and still trails liquid-vm's compact bytecode on artifact size — the remaining lever on the biggest templates. The plan to win all four columns, with per-tranche results, is [docs/win_all_scenarios.md](docs/win_all_scenarios.md).
-
-### Runtime environment assumptions
-
-LiquidIL assumes and is tuned for:
-
-- **Ruby 4+ with a JIT always enabled** (YJIT today, ZJIT later). Emitted code is written to be JIT-friendly: minimal branching, minimal allocation, and hot patterns lifted into the runtime so the JIT compiles them **once** and reuses them across every template.
-- **The LiquidIL runtime already loaded and warm** in the executing process (the JIT has already compiled the shared helpers). Only the per-template ISeq is cold.
-- **Templates delivered as compiled string artifacts** that are loaded and executed, rather than re-parsed.
-
-### Memory-bounded template cache
-
-For processes that render the same templates repeatedly, an optional LRU cache loads each artifact once and keeps the live proc resident, evicting least-recently-used entries when a byte budget is exceeded:
-
-```ruby
-cache = LiquidIL::TemplateCache.new(max_bytes: 64 * 1024 * 1024)
-
-blob = memcache.get(key)             # fetch the compiled artifact
-compiled = cache.fetch(key, blob)    # load exactly once
-compiled.render(first_assigns)       # fresh Scope for this call
-compiled.render(second_assigns)      # same code, different inputs
-```
-
-The budget is accounted by the summed size of the loaded artifacts; once it is exceeded, the least-recently-used templates are dropped. Each entry remembers the validated artifact payload digest, so republishing a template under the same key transparently reloads it. Assigns are never cached or bound into generated code.
-
-### Concurrency
-
-LiquidIL's render path is thread-safe and lock-free for the production shape: compile once, load an artifact, then render it many times. A single `Template` or `CompiledArtifact` may be shared by many Ruby threads; each render builds its own `Scope`, output buffer, cycle state, capture stack, counters, and ifchanged state. Partial lambdas created when an artifact is loaded are shared, but they are stateless closures over immutable compile-time constants.
-
-Compilation is also safe to run from multiple threads. `RubyCompiler::CompilerCaches` owns bounded, mutex-protected ISeq, partial, indented-body, bound-body, and IL-discovery caches. `RubyCompiler::CodegenSymbols` uses bounded monotonic symbol tables for frozen-array names and partial loop-name ranges: key entries may be evicted, but emitted names are never reused while cached bodies can reference them. These compile-time locks are not touched by `Template#render` or `CompiledArtifact#render`.
-
-For Ractors, do not share a proc created in another Ractor. Share the frozen artifact bytes and load/eval the ISeq inside each Ractor:
-
-```ruby
-template = LiquidIL.parse("{% for item in items %}{{ item | upcase }}{% endfor %}")
-artifact = template.to_artifact.freeze
-Ractor.make_shareable(artifact)
-
-ractor = Ractor.new(artifact) do |bytes|
-  require "liquid_il"
-  assigns = { "items" => %w[a b c] } # build assigns inside the Ractor
-  LiquidIL.load_artifact(bytes).render(assigns)
-end
-
-ractor.value # => "ABC"
-```
-
-Ractor v1 supports static compiled artifacts: the artifact bytes are shipped to each Ractor, and `RubyVM::InstructionSequence.load_from_binary(...).eval` runs inside that Ractor. Dynamic includes/render calls whose template name is resolved at render time are excluded for now because they compile partials during render and still touch runtime compile caches and file-system objects.
-
-`rake bench:threads` reports concurrent render throughput for loaded LiquidIL artifacts and pre-parsed reference Liquid templates. One local run (Ruby 4.0, YJIT, 4000 renders per worker) produced:
-
-same template: `bench_nested_partials`
-
-| adapter | threads | renders/sec | scaling |
-|---|---:|---:|---:|
-| liquid_il | 1 | 121591 | 1.00x |
-| liquid_il | 2 | 169428 | 1.39x |
-| liquid_il | 4 | 164791 | 1.36x |
-| liquid_il | 8 | 170472 | 1.40x |
-| liquid_ruby | 1 | 29699 | 1.00x |
-| liquid_ruby | 2 | 25411 | 0.86x |
-| liquid_ruby | 4 | 27209 | 0.92x |
-| liquid_ruby | 8 | 28312 | 0.95x |
-
-mixed templates: `bench_simple_product_listing`, `bench_render_with_params`, `bench_render_for_loop`, `bench_nested_partials`
-
-| adapter | threads | renders/sec | scaling |
-|---|---:|---:|---:|
-| liquid_il | 1 | 116713 | 1.00x |
-| liquid_il | 2 | 120142 | 1.03x |
-| liquid_il | 4 | 71311 | 0.61x |
-| liquid_il | 8 | 69189 | 0.59x |
-| liquid_ruby | 1 | 22939 | 1.00x |
-| liquid_ruby | 2 | 16115 | 0.70x |
-| liquid_ruby | 4 | 13394 | 0.58x |
-| liquid_ruby | 8 | 13009 | 0.57x |
-
-### The artifact format
-
-`Template#to_artifact` produces a v2 framed binary (`"LQIL"` magic, format version, exact Ruby stamp, LiquidIL runtime/compiler ABI, full-payload CRC32, length-prefixed segments — see `lib/liquid_il/artifact.rb`). Metadata is JSON-safe rather than Marshal-loaded. A Ruby/ABI mismatch raises `LiquidIL::StaleArtifactError`; damaged data raises `LiquidIL::CorruptArtifactError`. In both cases the caller recompiles from its own source and re-persists. Artifacts contain executable ISeq and must be authenticated by the host if untrusted parties can write the cache.
-
-### Measured cold-path numbers
-
-`rake bench:cold` (Ruby 4.0, YJIT, medians; hard-fails unless artifact output == fresh-compile output == reference liquid gem output):
-
-| spec | artifact | decode | ISeq load | cold total | warm render |
-|---|---|---|---|---|---|
-| bench_nested_partials | 3.6KB | 1.4µs | 7.0µs | **8.7µs** | 1.6µs |
-| bench_theme_cart_page | 10.9KB | 2.5µs | 18.9µs | **21.7µs** | 21.3µs |
-| bench_theme_product_page | 13.7KB | 2.9µs | 24.7µs | **27.9µs** | 16.7µs |
-
-Three optimization waves got here. The first (45–81µs cold, 18–37KB artifacts → ~30–40µs, 15–21KB) hoisted per-partial boilerplate into the (already-jitted) runtime, introduced a census-based inline-vs-shared-lambda policy for partials, baked error locations in as compile-time literals, and replaced the Marshal envelope with the framed binary. The second (the emitted-bytes tranches of [docs/win_all_scenarios.md](docs/win_all_scenarios.md)) compacted the compiled source before ISeq compilation, fused the dominant output patterns into single runtime sends (`raw+lookup+append` in one call), and merged appends across partial-inline seams via parse-time literal juxtaposition. The third moved whole protocols into runtime drivers — loops (`_H.ei/eif/eifs`), `render … for` collection dispatch (`_H.rpf/ipf`), partial invocation (`_H.ipc`) — and added IL-decided hoisting of repeated scope lookups; cart went 18.7 → 15.5KB and its remote-hit row flipped against liquid-vm.
-
-All benchmarking runs through liquid-spec's harness (GC-disciplined timing, real percentiles, allocation counts). The adapter implements liquid-spec's **compiled-artifact protocol** (`LiquidSpec.dump_artifact` / `LiquidSpec.load_artifact`), so every bench reports the artifact stage — payload bytes, cold load, load+first-render, steady-state load time and allocations — with a dump → load → render roundtrip check per spec:
-
-- `rake bench` (alias `rake scenarios`) — the three-scenario table (cache-miss / remote-hit / in-process + artifact size) vs reference liquid, geomean plus per-spec
-- `rake bench:detail` — liquid-spec's detailed per-stage output (parse/render/load distributions, allocation counts, YJIT stats)
-- `rake bench:partials` — the partial-heavy matrix in `specs/partials/` (a local liquid-spec suite; its `expected:` blocks are generated from the reference liquid gem)
-- `rake bench:cold` — per-stage breakdown plus the public `load_and_render` path and reusable `CompiledArtifact` first/warm render, hard-validated against the reference gem
-- `rake bench:threads` — concurrent render throughput for shared loaded artifacts/templates at 1, 2, 4, and 8 threads
-- `rake liquid_vm:scenarios` — the same three-scenario table including Shopify/liquid-vm classic and SSA; `rake liquid_vm:bench` for their detailed output. This private repo is cloned to `/tmp/liquid-vm` by default and skipped by all default tasks; see [docs/liquid_vm.md](docs/liquid_vm.md).
-
-## Quick Start
+LiquidIL is a Ruby library for compiling [Liquid](https://shopify.github.io/liquid/) templates to optimized Ruby bytecode. It parses Liquid into a compact intermediate language (IL), applies semantic optimizations, and lowers the result to Ruby that CRuby and YJIT can execute without an interpreter loop.
 
 ```ruby
 require "liquid_il"
 
-# One-shot render
-LiquidIL.render("Hello {{ name }}!", "name" => "World")
-# => "Hello World!"
-
-# Parse once, render many times
-template = LiquidIL.parse("{{ greeting }}, {{ name }}!")
-template.render("greeting" => "Hi", "name" => "Alice")
-# => "Hi, Alice!"
-template.render("greeting" => "Hey", "name" => "Bob")
-# => "Hey, Bob!"
+LiquidIL.render("Hello {{ name | upcase }}!", "name" => "Ada")
+# => "Hello ADA!"
 ```
 
-## Context
+LiquidIL is designed for applications that compile a template once, persist the compiled artifact, and load it in another process:
 
-Use `Context` for templates that need a file system (partials), registers, or strict error mode:
+```text
+Liquid source → IL → optimized Ruby → Ruby ISeq → persisted artifact
+                                                   ↓
+remote cache → artifact bytes → loaded callable → render
+```
+
+## Requirements
+
+- CRuby 3.1 or newer
+- Ruby 4.x with YJIT is the primary performance target
+- A JIT is recommended but not required for correctness
+
+Compiled artifacts contain CRuby instruction sequences. They are tied to the exact Ruby version, patchlevel, platform, and LiquidIL compiler/runtime ABI that produced them.
+
+## Installation
+
+Add the gem to your bundle:
+
+```bash
+bundle add liquid-il
+```
+
+Or in a `Gemfile`:
 
 ```ruby
-ctx = LiquidIL::Context.new(
-  file_system: my_file_system,  # responds to #read(name) -> String
-  strict_errors: false,
-  registers: {}
+gem "liquid-il"
+```
+
+Then load the library with:
+
+```ruby
+require "liquid_il"
+```
+
+## Basic usage
+
+### Render once
+
+```ruby
+output = LiquidIL.render(
+  "Hello {{ customer.name }}!",
+  "customer" => { "name" => "Ada" }
 )
 
-template = ctx.parse("{% include 'header' %} Hello {{ name }}!")
-template.render("name" => "World")
+output # => "Hello Ada!"
 ```
 
-## Generating Standalone Ruby
+String and symbol keys are accepted in assigns. Liquid variable names are normalized to strings.
 
-Compiled templates can be exported as standalone Ruby modules. The generated code depends on `liquid_il` for runtime helpers (Scope, Filters, RuntimeHelpers) but is otherwise self-contained.
+### Compile once and render repeatedly
 
 ```ruby
-template = LiquidIL.parse("Hello {{ name | upcase }}!")
+template = LiquidIL.parse("{{ greeting }}, {{ name }}!")
 
-# Get Ruby source as a string
-ruby_source = template.to_ruby("Greeting")
+template.render("greeting" => "Hello", "name" => "Ada")
+# => "Hello, Ada!"
 
-# Or write directly to a file
-template.write_ruby("greeting.rb", module_name: "Greeting")
+template.render(greeting: "Welcome", name: "Grace")
+# => "Welcome, Grace!"
 ```
 
-The generated module:
+A compiled `Template` can be reused. Each render gets fresh scope, output, cycle, capture, counter, and loop state.
+
+## Production API: `Renderer` and `RenderSession`
+
+For an application with named templates and memcache, this is the predominant API. Create one `Renderer` per process and one session per request:
 
 ```ruby
-# greeting.rb (auto-generated)
+require "dalli"
 require "liquid_il"
 
-module Greeting
-  extend self
+RENDERER = LiquidIL::Renderer.new(
+  remote_cache: Dalli::Client.new("memcache.internal:11211"),
+  max_local_bytes: 64 * 1024 * 1024,
+  # Change this when host filters, source-resolution rules, or deployment code
+  # that affects rendering changes. Ruby and LiquidIL ABI stamps are added too.
+  namespace: "storefront:#{ENV.fetch('RELEASE_SHA')}",
+  instrumenter: ->(event, payload) {
+    Metrics.emit(event, payload)
+  }
+)
 
-  def render(assigns = {}, render_errors: true)
-    # ... compiled template code ...
+html = RENDERER.session(
+  templates: theme.templates,
+  preload_key: "shop:#{shop.id}:route:product"
+) do |render|
+  render.render(
+    "layout/theme",
+    assigns,
+    registers: { request_id: request.id }
+  )
+end
+```
+
+`Renderer` owns process-wide state and is thread-safe. `RenderSession` owns request memoization, touched keys, the external-partial provider, and per-request statistics; do not share a session between threads. The block form always closes the session and writes its bounded preload fingerprint, even when rendering raises.
+
+### Template source protocol
+
+`templates:` is a lightweight metadata/body lookup:
+
+```ruby
+class ThemeTemplates
+  def initialize(asset_index, body_store)
+    @asset_index = asset_index # name => { digest:, bytesize: }
+    @body_store = body_store   # content-addressed bodies
+  end
+
+  # These two calls must not fetch the body.
+  def digest(name) = @asset_index[name]&.fetch(:digest)
+  def bytesize(name) = @asset_index[name]&.fetch(:bytesize)
+
+  # Called only when compilation is actually required.
+  def read(name)
+    asset = @asset_index.fetch(name)
+    @body_store.fetch(asset.fetch(:digest))
   end
 end
 ```
 
-Use it:
+`read_template_file(name, context = nil)` may be used instead of `read`. A source can also implement `canonical_name(name)`, `external?(name)`, or `inline?(name)` when the host has an authoritative partition policy.
+
+### Cache lookup order
+
+Every named entry and every lazily executed external partial uses the same path:
+
+1. request memo
+2. process-local loaded-proc LRU
+3. lazily loaded batch preload for the request shape
+4. remote cache (`Rails.cache`-style `read/write/read_multi` or Dalli-style `get/set/get_multi`)
+5. source read and compilation
+
+The preload record is only a performance hint, never an invalidation authority. It is not fetched when the loaded-proc LRU can satisfy the request, so a hot render performs no remote-cache operation. On a fresh process, one multi-get can warm the entry, its dependency plan, and the external partials touched by the previous request.
+
+Remote records are published artifact-first and head-pointer-second. Corrupt, stale, missing, or ABI-incompatible records become cache misses and are rebuilt from source. Process-local striped singleflight suppresses duplicate compilation without making correctness depend on locking across machines.
+
+### Partial compilation policy
+
+Static partials are planned automatically, with no per-request tuning switch:
+
+- Small partials are compiled into the caller as inline code or a shared lambda. Their current digests are part of the caller's artifact identity, so editing one invalidates the caller.
+- Large or source-opaque partials are emitted as external call sites. They have independent content-addressed artifacts and are looked up only if the call site executes. Editing one does not invalidate its caller.
+- Crossing the inline/external boundary invalidates and replans the caller.
+- Nested static partials follow the same rules transitively.
+- Dynamic partial names resolve at render time.
+
+A dependency plan sidecar lets a remote hit compute and validate the exact artifact key using only `digest`/`bytesize` metadata. Template bodies are not fetched on local or remote hits. Source identities are rechecked around compilation; a moving source is retried and never published under a stale key.
+
+### Individual lookup and prewarming
+
+A session can fetch one named template explicitly. The returned object remains bound to the session's external-partial provider:
 
 ```ruby
+RENDERER.session(templates: theme.templates) do |render|
+  product = render.fetch("templates/product")
+  product.render(assigns)
+end
+```
+
+Use `render.render(...)` for the common path. A fetched template should not outlive its session.
+
+### Statistics and instrumentation
+
+```ruby
+session = RENDERER.session(templates: theme.templates)
+output = session.render("layout/theme", assigns)
+pp session.stats
+session.close
+```
+
+Stats include request/local/preload/remote hits and misses, source metadata/body lookups, compile count, invalid plans/artifacts, bytes written, preload width, and renders. The instrumenter receives events such as:
+
+- `liquid_il.cache.lookup`
+- `liquid_il.cache.write`
+- `liquid_il.cache.preload`
+- `liquid_il.source.lookup`
+- `liquid_il.compile`
+- `liquid_il.render`
+- `liquid_il.artifact.invalid`
+- `liquid_il.session.start` / `liquid_il.session.finish`
+
+An object responding to `instrument`, including `ActiveSupport::Notifications`, can be passed directly instead of a callable.
+
+### Buffered output
+
+```ruby
+buffer = +"<main>"
+
+RENDERER.session(templates: theme.templates) do |render|
+  render.render_to_output_buffer(
+    "snippets/greeting",
+    { "name" => "Ada" },
+    buffer
+  )
+end
+# => "<main>Hello Ada"
+```
+
+The method returns the supplied buffer. The lower-level `Template` and `CompiledArtifact` objects expose the same `render_to_output_buffer` shape.
+
+## Lower-level compilation with `Context`
+
+`Renderer` is the recommended named-template and cache API. Use `LiquidIL::Context` directly for uncached compilation, tooling, standalone exports, or applications that provide their own artifact-cache coordinator.
+
+```ruby
+context = LiquidIL::Context.new(
+  file_system: MyFileSystem.new,
+  registers: { request_id: "abc-123" },
+  strict_variables: true,
+  strict_filters: true,
+  error_mode: :strict2,
+  resource_limits: {
+    output_limit: 1_000_000,
+    render_score_limit: 100_000
+  }
+)
+
+template = context.parse("{% render 'card', product: product %}")
+output = template.render("product" => product)
+```
+
+`Context#parse` keeps a bounded per-context compilation cache. Call `context.clear_cache` after changing application configuration that LiquidIL cannot observe directly.
+
+### Parse modes
+
+`error_mode:` controls parser behavior:
+
+- `:lax` — accept Liquid's permissive syntax where supported
+- `:warn` — continue and collect parser warnings
+- `:strict` — reject invalid syntax
+- `:strict2` — the strictest supported parser behavior
+
+### Render errors
+
+By default, Liquid runtime errors are rendered inline, matching Liquid's normal storefront behavior:
+
+```ruby
+template.render(assigns)
+```
+
+Use `render!` to raise instead:
+
+```ruby
+template.render!(assigns)
+# may raise LiquidIL::RuntimeError,
+# LiquidIL::UndefinedVariable, LiquidIL::UndefinedFilter, etc.
+```
+
+Strictness can also be overridden for one render:
+
+```ruby
+template.render!(
+  assigns,
+  strict_variables: true,
+  strict_filters: true
+)
+```
+
+## Partials
+
+A file system may implement either `read_template_file(name, context = nil)` or `read(name)`. The Liquid-compatible form is recommended:
+
+```ruby
+class MemoryFileSystem
+  def initialize(files)
+    @files = files
+  end
+
+  def read_template_file(name, _context = nil)
+    @files.fetch(name.to_s)
+  end
+end
+
+context = LiquidIL::Context.new(
+  file_system: MemoryFileSystem.new(
+    "product_card" => "<article>{{ product.title }}</article>"
+  )
+)
+
+template = context.parse("{% render 'product_card', product: product %}")
+template.render("product" => { "title" => "Snowboard" })
+# => "<article>Snowboard</article>"
+```
+
+Static partials are analyzed at compile time and may be inlined or emitted once as shared lambdas. Dynamic names, recursive partials, `include`, and `render ... for` remain supported.
+
+For large template stores, a host can externalize partial artifacts and resolve them through `partial_index:` and the render-time `partial_provider:` API. See [ARCHITECTURE.md](ARCHITECTURE.md) and the storefront integration in [`integration/storefront_mock/`](integration/storefront_mock/).
+
+## Custom filters
+
+Register filters on one context:
+
+```ruby
+module MoneyFilters
+  def money(input, currency = "USD")
+    format("%.2f %s", input.to_f, currency)
+  end
+end
+
+context = LiquidIL::Context.new
+context.register_filter(MoneyFilters)
+
+context.render("{{ price | money: 'CAD' }}", "price" => 12.5)
+# => "12.50 CAD"
+```
+
+A pure filter cannot access render scope and can use direct compiled dispatch:
+
+```ruby
+module MathFilters
+  def double(input)
+    input.to_f * 2
+  end
+end
+
+context.register_filter(MathFilters, pure: true)
+```
+
+Register globally for subsequently created contexts:
+
+```ruby
+LiquidIL.register_filter(MoneyFilters)
+```
+
+Custom tags, filter purity, strict modes, registers, and the Drop protocol are documented in [EXTENSIBILITY.md](EXTENSIBILITY.md).
+
+## Safe objects and Drops
+
+Template property lookup does not expose arbitrary Ruby methods. Use hashes, supported scalar/collection values, `to_liquid`, `LiquidIL::Drop`, or compatible `Liquid::Drop` subclasses.
+
+```ruby
+class ProductDrop < LiquidIL::Drop
+  def initialize(product)
+    @product = product
+  end
+
+  def title = @product.title
+  def price = @product.price
+end
+
+template = LiquidIL.parse("{{ product.title }} — {{ product.price }}")
+template.render("product" => ProductDrop.new(product))
+```
+
+Only the intended Drop surface is visible to templates. Methods inherited from `Object` and `Kernel`, including reflective dispatch, are blocked.
+
+## Persisting compiled templates
+
+`Renderer` manages these details automatically. The APIs below are the lower-level persistence primitives for hosts that need a custom cache coordinator.
+
+### Framed artifacts
+
+`Template#to_artifact` returns a binary `String` suitable for memcache, a database, or an object store:
+
+```ruby
+source = "Hello {{ name }}"
+template = LiquidIL.parse(source)
+artifact_bytes = template.to_artifact
+
+cache.set("templates/greeting", artifact_bytes)
+```
+
+Load and render in another process:
+
+```ruby
+bytes = cache.get("templates/greeting")
+compiled = LiquidIL.load_artifact(bytes)
+
+compiled.render("name" => "Ada")
+# => "Hello Ada"
+```
+
+For a one-shot cold load:
+
+```ruby
+LiquidIL.load_and_render(bytes, "name" => "Ada")
+```
+
+The artifact envelope contains:
+
+- an exact Ruby version/patchlevel/platform stamp
+- LiquidIL compiler and runtime ABI stamps
+- a CRC32 over the complete payload
+- the ISeq binary
+- immutable compile-time constants and external partial metadata, when needed
+
+It does **not** embed the Liquid source or render assigns.
+
+Handle stale and damaged entries by recompiling from source:
+
+```ruby
+begin
+  compiled = LiquidIL.load_artifact(cache.get(key))
+rescue LiquidIL::StaleArtifactError, LiquidIL::CorruptArtifactError
+  template = LiquidIL.parse(source)
+  bytes = template.to_artifact
+  cache.set(key, bytes)
+  compiled = LiquidIL.load_artifact(bytes)
+end
+```
+
+Artifacts contain executable code. If an untrusted party can write to the cache, authenticate the complete artifact before loading it.
+
+### Loaded-template LRU
+
+`Renderer` already owns a `TemplateCache`. When building a custom coordinator, `TemplateCache` avoids repeatedly loading popular artifacts and enforces a byte budget:
+
+```ruby
+cache = LiquidIL::TemplateCache.new(max_bytes: 64 * 1024 * 1024)
+
+compiled = cache.fetch(template_key) { memcache.get(template_key) }
+compiled.render(assigns)
+
+# Or load/reuse and render in one call:
+cache.render(template_key, artifact_bytes, assigns)
+```
+
+Republishing different artifact bytes under the same key automatically invalidates the loaded entry. Oversized single artifacts are rendered but not retained.
+
+### Files and lower-level formats
+
+```ruby
+template.write_cache("template.ilc")
+restored = LiquidIL::Template.load_cache("template.ilc")
+
+# Raw, unframed Ruby ISeq; only use in a fully controlled environment.
+template.write_iseq("template.iseq")
+raw = LiquidIL::Template.load_iseq("template.iseq")
+```
+
+See [docs/compiled_templates.md](docs/compiled_templates.md) for the lower-level APIs and caveats.
+
+## Standalone generated Ruby
+
+LiquidIL can export a compiled template as a Ruby module. The generated file still uses `liquid_il` runtime helpers.
+
+```ruby
+template = LiquidIL.parse("Hello {{ name | upcase }}!")
+
+template.write_ruby("greeting.rb", module_name: "Greeting")
+
 require_relative "greeting"
-Greeting.render("name" => "World")  # => "Hello WORLD!"
+Greeting.render("name" => "Ada")
+# => "Hello ADA!"
 ```
 
-## Saving and Loading Compiled Templates (ISeq)
+Use `to_ruby("Greeting")` to get the source as a string.
 
-LiquidIL can persist compiled templates as RubyVM ISeq binaries.
+## Concurrency
+
+A `Template` or `CompiledArtifact` can be shared by Ruby threads. Rendering is lock-free and creates request-local execution state for every call. Compilation caches are separately bounded and mutex-protected.
+
+ISeq-backed procs are not shareable across Ractors. Share frozen artifact bytes and load them inside each Ractor:
 
 ```ruby
-template = LiquidIL.parse("Hello {{ name }}")
+bytes = LiquidIL.parse("Hello {{ name }}").to_artifact.freeze
+Ractor.make_shareable(bytes)
 
-# 1) Raw ISeq binary (fastest, minimal payload)
-template.write_iseq("greeting.iseq")
-restored = LiquidIL::Template.load_iseq("greeting.iseq", source: "Hello {{ name }}")
-restored.render("name" => "World")
-# => "Hello World"
+worker = Ractor.new(bytes) do |artifact|
+  require "liquid_il"
+  LiquidIL.load_artifact(artifact).render("name" => "Ada")
+end
 
-# 2) Artifact envelope (versioned + digest-checked; same format as to_artifact)
-template.write_cache("greeting.ilc")
-restored2 = LiquidIL::Template.load_cache("greeting.ilc")
-restored2.render("name" => "World")
-# => "Hello World"
+worker.value # => "Hello Ada"
 ```
 
-Low-level direct call (no Template wrapper):
-
-```ruby
-iseq = RubyVM::InstructionSequence.load_from_binary(File.binread("greeting.iseq"))
-proc_obj = iseq.eval
-scope = LiquidIL::Scope.new({ "name" => "World" })
-output = proc_obj.call(scope)
-# => "Hello World"
-```
-
-Notes:
-- ISeq binaries are Ruby-version specific (and generally architecture-specific).
-- Prefer `write_cache`/`load_cache` (the framed artifact envelope) for persistence: it stamps the Ruby version and digest-checks the payload, so a stale or corrupt blob raises instead of being fed to `load_from_binary`.
-- Use raw `write_iseq`/`load_iseq` only when you fully control the environment; error locations are compile-time literals either way — no source or metadata is needed at render time.
-
-See also: [`docs/compiled_templates.md`](docs/compiled_templates.md)
+Static artifacts are supported in this shape. Dynamic partial compilation still depends on process-local compiler and file-system state.
 
 ## CLI
 
+The repository includes `bin/liquidil` for inspection and debugging:
+
 ```bash
-# Render a template
-bin/liquidil render "Hello {{ name }}" -e name=World
-
-# Show IL instructions
+bin/liquidil render "Hello {{ name }}" -e name=Ada
 bin/liquidil parse "{% for i in (1..3) %}{{ i }}{% endfor %}"
-
-# Show generated Ruby
-bin/liquidil compile "{{ x | upcase }}"
-
-# Parse, show IL, then render
+bin/liquidil compile "{{ value | upcase }}"
 bin/liquidil eval "{{ x | plus: y }}" -e x=2 -e y=3
-
-# Show optimization passes
 bin/liquidil passes
 ```
 
-## Architecture
+## How compilation works
 
-### Pipeline
-
-```
-Source Text
-    ↓
- Lexer (StringScanner, two-stage: template + expression)
-    ↓
- Parser (recursive descent → IL instructions)
-    ↓
- IL (flat instruction array; structured IF/ELSE/END_IF markers for
-     conditionals — labels + jumps exist only for loops)
-    ↓
- Optimizer (on by default: one fused compacting peephole + const folding;
-            the VM-era global analyses are permanently skipped)
-    ↓
- Linker (resolve loop labels → indices; skipped when no loops)
-    ↓
- Structured Compiler (IL → Ruby proc with native if/else/while)
-    ↓
- Compact source → ISeq (statements fused before RubyVM compile)
+```text
+Liquid source
+  → TemplateLexer / ExpressionLexer
+  → Parser + IL builder
+  → semantic optimization and label linking
+  → structured Ruby lowering
+  → compact Ruby source
+  → RubyVM::InstructionSequence
+  → optional artifact envelope
 ```
 
-### IL Instruction Set
+The generated code uses native Ruby control flow and shared runtime helpers rather than interpreting an AST or dispatching a Liquid bytecode loop. Compiler decisions are carried by typed code fragments and effect metadata; generated Ruby strings are not re-parsed to recover semantics.
 
-The IL is a flat array of instructions, each a small Ruby Array. Conditionals are block-structured markers (always properly nested), not jumps — the backend never reconstructs control flow:
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete pipeline and [docs/win_all_scenarios.md](docs/win_all_scenarios.md) for current performance work.
 
-```ruby
-[:WRITE_RAW, "Hello "]           # Emit literal text
-[:FIND_VAR, "name"]              # Look up variable
-[:CALL_FILTER, "upcase", 0, 3]   # Apply filter (line number rides along)
-[:WRITE_VALUE]                   # Emit top of stack
-[:IF, false]                     # Pop condition, begin then-block
-[:ELSE]                          # (elsif desugars to ELSE + nested IF)
-[:END_IF]                        # Close the conditional
-[:FOR_INIT, "item", ...]         # Begin for loop (loops still use labels)
-[:HALT]                          # End of template
-```
+## Benchmarks
 
-### Optimization Passes
+### Methodology
 
-Optimization is on by default (`optimize: false` opts out for debugging). Most work happens in one fused, in-place compacting peephole scan — O(1) per fuse, no `delete_at` — plus targeted folding passes:
+The benchmark suite is provided by [Shopify/liquid-spec](https://github.com/Shopify/liquid-spec). LiquidIL is pinned to liquid-spec commit `c4c7931` for the results below.
 
-| Pass | Effect |
-|------|--------|
-| fold_const_ops | Constant comparisons/booleans; static `{% if true %}` branch elimination via the IF markers |
-| fold_const_filters | `"hello" \| upcase` → `"HELLO"` at compile time |
-| fused peephole | Const writes → raw text, raw-write merging, lookup-path collapse, redundant-IS_TRUTHY removal, constant propagation (with substitutions feeding the const folds in the same scan), `FIND_VAR+WRITE_VALUE` fusion |
-| fold_const_captures | `capture x; "literal"; endcapture` → constant assign |
-| remove_unreachable | Dead code after loop-back jumps |
+The current harness measures three distinct workflows:
 
-Re-runs are conditional (a pass only re-runs when an earlier one changed something). The VM-era analyses (loop-invariant hoisting, lookup caching, value numbering) are permanently skipped: measured, they make the generated native Ruby *worse*. `FIND_VAR + LOOKUP_CONST_KEY` fusion happens at IL-emit time in the Builder, so that pattern never reaches the optimizer at all.
+1. **Source → first render** — compile and render as one atomic sample.
+2. **Artifact → first render** — load persisted bytes and render as one atomic sample.
+3. **Resident render** — repeatedly render a template already loaded in the adapter process.
 
-### Structured Compiler
+The two atomic workflows run in the same warmed adapter process. Liquid-spec takes 10 samples of each and interleaves their order to reduce ordering bias. This deliberately measures application-level compile/load workflows without process-fork noise; it is not a process-start benchmark.
 
-The structured compiler converts IL to Ruby with native control flow:
+Resident measurements use operation batches with normal GC policy. Assign preparation happens outside the timer. Raw batches and workflow samples are retained as integer nanoseconds, and JSONL output preserves floating-point precision without rounding. Environment setup, JSON generation, parsing, and transport therefore do not contribute to the timed values.
 
-- `if/else/end` emitted directly from the IF/ELSE/END_IF markers — a linear walk, no jump-target analysis
-- Loops emit one block-taking runtime-driver send (`_H.ei` plain, `_H.eif` forloop-bearing, `_H.eifs` scope-synced for bodies that call partials) — coercion, index walk, and ForloopDrop management live in the already-jitted runtime; `{% break %}`/`{% continue %}` are plain Ruby `break`/`next`
-- Direct variable access instead of stack operations; a variable read 3+ times and never written is hoisted to a local, decided on the IL before codegen (`scope_lookup` primitive, same mechanism as loop-var aliases)
-- Partial bodies compiled once, then inlined or shared as lambdas by a per-template census; lambdas receive their scope as a `_S` parameter (shadowing — bodies splice verbatim, no renaming) and are invoked through runtime drivers (`_H.ipc` single call, `_H.rpf`/`_H.ipf` for `render`/`include … for` collection dispatch)
-- The dominant output patterns collapse to single runtime sends (`_H.rolf(_O, "raw", obj, "key")` = raw text + lookup + append in one call — a helper send costs 63B of ISeq where the inline expansion costs 109B)
-- The final source is compacted (comments/indentation dropped, statements fused, adjacent string literals juxtaposed) before `RubyVM::InstructionSequence` compilation
+`rake bench` also validates every requested adapter process, every benchmark result, the same-process workflow metadata and freshness fields, and the artifact roundtrip before printing a table. A missing or crashed adapter fails the task instead of silently shrinking the comparison.
 
-This produces code that YJIT can optimize effectively — no megamorphic dispatch, no interpreter loop, predictable branch shapes — while keeping the ISeq artifact small.
+### Latest results
 
-## Test Suite
+Run on **2026-07-10** with Ruby **4.0.5**, YJIT, Linux x86-64, and an AMD Ryzen Threadripper PRO 7975WX. Values are geometric means across all 10 common benchmark templates; lower is better.
+
+| adapter | source → first render | artifact → first render | resident render | artifact payload |
+|---|---:|---:|---:|---:|
+| **LiquidIL** | 863µs | **269µs** | **52µs** | 9.0KB |
+| liquid_ruby | **419µs** | — | 155µs | — |
+| liquid_vm classic | 1.75ms | 297µs | 190µs | **2.3KB** |
+| liquid_vm SSA | 2.77ms | 328µs | 279µs | 2.4KB |
+
+Reference Liquid does not expose liquid-spec's persistent compiled-artifact protocol, so it has no artifact lane. For liquid-vm, LiquidIL's optional adapter serializes both the root bytecode and the exact precompiled partial bytecode produced by the normal VM compile path; load timing therefore measures deserialization, not source recompilation. Serialization runs only in liquid-spec's dump hook, outside the timed source and artifact-load workflows—no post-hoc timing subtraction is used. The adapter also isolates per-render register state so cycle counters cannot leak between validation renders.
+
+On the geomean, LiquidIL has the fastest artifact-to-first-render and resident-render lanes: resident rendering is about **3.0× faster than Liquid**, **3.7× faster than liquid-vm classic**, and **5.4× faster than SSA**. LiquidIL's source workflow beats both VM modes but remains slower than reference Liquid. Its persisted artifact is about **3.9× larger** than liquid-vm classic's compact bytecode.
+
+Full per-template results from the same run:
+
+| benchmark | LiquidIL source → first | liquid_ruby source → first | LiquidIL artifact → first | LiquidIL resident | liquid_ruby resident | payload |
+|---|---:|---:|---:|---:|---:|---:|
+| dynamic_partials | **157µs** | 162µs | 185µs | **48µs** | 107µs | 1.5KB |
+| liquid_tag_inventory_report | 2.77ms | **592µs** | 2.32ms | **55µs** | 286µs | 5.2KB |
+| liquid_tag_leaderboard | 910µs | **342µs** | 489µs | **83µs** | 174µs | 4.9KB |
+| storefront_product_page | 2.27ms | **1.11ms** | 670µs | **142µs** | 394µs | 33.1KB |
+| storefront_collection_page | 2.30ms | **962µs** | 1.03ms | **171µs** | 393µs | 23.3KB |
+| storefront_cart_page | 1.62ms | **525µs** | 110µs | **45µs** | 145µs | 15.6KB |
+| storefront_order_email | 945µs | **503µs** | 110µs | **42µs** | 96µs | 13.3KB |
+| storefront_cms_page | 302µs | **224µs** | 91µs | **60µs** | 162µs | 4.5KB |
+| shopify_theme_full_page | 293µs | **188µs** | 26µs | **7µs** | 31µs | 6.7KB |
+| shopify_theme_product_page | 815µs | **428µs** | 484µs | **34µs** | 137µs | 18.0KB |
+
+`rake liquid_vm:scenarios` prints all four adapters for every template, validates every artifact roundtrip, and writes the raw rows to `tmp/liquid_vm_scenarios.jsonl`.
+
+These numbers are not comparable to older README tables that added separately measured parse, load, and warm-render means, nor to the briefly used fork-isolated workflow. The current source and artifact columns are atomic, same-process workflow samples.
+
+Run the benchmark locally:
 
 ```bash
-# Run unit tests
-bundle exec rake unit
-
-# Run liquid-spec (5,335 specifications, including Shopify production
-# recordings, the Shopify Theme Dawn suite, and filesystem-lookup
-# semantics — all passing)
-bundle exec rake spec
-
-# Run full suite (unit tests + liquid-spec)
-bundle exec rake test
-
-# Compare against reference Liquid implementation
-bundle exec rake matrix
+bundle exec rake bench                 # source/artifact/resident table vs Liquid
+bundle exec rake bench:detail          # distributions, allocations, raw batches, YJIT stats
+bundle exec rake bench:partials        # local partial-heavy suite
+bundle exec rake bench:cold            # LiquidIL-specific artifact stage breakdown
+bundle exec rake bench:threads         # loaded-template thread throughput
+bundle exec rake liquid_vm:scenarios   # optional liquid-vm classic + SSA comparison
 ```
 
-## Feature Coverage
+Shopify/liquid-vm is private and optional. Setup and environment variables are documented in [docs/liquid_vm.md](docs/liquid_vm.md).
 
-Every template compiles — there is no interpreter fallback and no unsupported-template path (`can_compile?` is always true). Cases that historically needed special handling all work through the compiled path:
+## Tests
 
-- **Dynamic partial names** — `{% include variable_name %}` compiles the partial at render time, cached per name across renders
-- **Break/continue in included partials** — interrupts propagate out of `{% include %}` into the caller's loop
-- **Recursive partials** — direct and mutual recursion resolve through the dynamic-partial path
+```bash
+bundle exec rake unit    # Ruby unit and integration tests
+bundle exec rake spec    # complete liquid-spec suite
+bundle exec rake test    # unit tests + liquid-spec
+bundle exec rake matrix  # differential matrix against reference Liquid
+```
 
-The full liquid-spec suite (5,335 specs: core Liquid, lax mode, Shopify production recordings, Shopify Theme Dawn, filesystem lookup) passes, with output validated byte-for-byte against the reference `liquid` gem in every benchmark run. Remaining adapter opt-outs: `shopify_includes` and `shopify_error_handling` (Shopify-internal include quirks and production error formatting).
+Focused liquid-spec commands:
+
+```bash
+bundle exec liquid-spec run spec/liquid_il.rb -n "for"
+bundle exec liquid-spec eval spec/liquid_il.rb -l "{{ 'hi' | upcase }}"
+```
+
+Every supported template goes through the compiled path; there is no interpreter fallback. The adapter currently opts out of Shopify-internal include behavior and Shopify production error formatting.
+
+## Project status
+
+LiquidIL is an experimental `0.1.x` library. `Renderer`/`RenderSession` is the recommended production API; `Context`, artifacts, and `TemplateCache` remain available as composable lower-level primitives. Artifact ABI compatibility is intentionally strict and may change between releases. Persist source alongside cache identity so stale artifacts can always be rebuilt.
+
+## License
+
+MIT

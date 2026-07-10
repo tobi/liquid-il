@@ -86,6 +86,17 @@ module LiquidIL
       @mutex = Mutex.new
     end
 
+    # Return an already-loaded artifact without requiring artifact bytes.
+    # A hit touches the LRU; a miss returns nil. Production cache coordinators
+    # use this to avoid even a remote-cache lookup on the hottest path.
+    def get(key)
+      @mutex.synchronize do
+        entry = @entries.delete(key)
+        @entries[key] = entry if entry
+        entry
+      end
+    end
+
     # Fetch the loaded artifact for `key`, loading (and caching) `blob` on a
     # miss or when the blob content changed. `blob` may also be supplied
     # lazily via the block, so callers can skip the memcache fetch on a hit:

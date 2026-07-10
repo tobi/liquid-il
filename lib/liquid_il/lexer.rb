@@ -670,7 +670,7 @@ module LiquidIL
         @peeked = false
         advance
       else
-        raise SyntaxError.new("Unterminated string", position: full_position, source: @template_source)
+        raise SyntaxError.new("Unexpected character: Unterminated string", position: full_position, source: @template_source)
       end
     end
 
