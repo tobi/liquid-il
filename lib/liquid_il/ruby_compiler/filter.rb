@@ -59,12 +59,12 @@ module LiquidIL
       # filters go through _H.cf (they may be custom filters registered at
       # render time, or unknown → input passthrough).
       SAFE_DIRECT_FILTERS = %w[
-        append prepend capitalize downcase upcase t strip lstrip rstrip
+        append prepend capitalize downcase upcase strip lstrip rstrip
         strip_html strip_newlines squish newline_to_br
         replace_first replace_last remove remove_first remove_last split
         escape_once url_encode base64_encode base64_url_safe_encode
         plus minus times abs ceil floor round at_least at_most
-        size first last join reverse date json default
+        size first last join reverse date default
       ].each_with_object({}) { |n, h| h[n] = true }.freeze
 
       # Integer-literal argument (safe for inline .round(n) etc.)
@@ -72,7 +72,7 @@ module LiquidIL
       STRING_OUTPUT_FILTERS = %w[
         upcase downcase capitalize strip lstrip rstrip append prepend concat join
         handleize escape_once xml_escape url_encode url_decode newline_to_br
-        truncate truncatewords base64_encode base64_url_safe_encode json
+        truncate truncatewords base64_encode base64_url_safe_encode
       ].each_with_object({}) { |name, out| out[name] = true }.freeze
       NUMERIC_OUTPUT_FILTERS = %w[round ceil floor].each_with_object({}) { |name, out| out[name] = true }.freeze
 
@@ -90,7 +90,7 @@ module LiquidIL
         # plus:0/times:1 coerce strings to numbers (e.g. "6-3" | plus:0 => 6).
         # A prior dispatch can produce ErrorMarker; the structured may_error bit
         # keeps the rest of that chain in dispatcher-land without inspecting Ruby.
-        unless input_fragment.may_error
+        unless input_fragment.may_error || @context&.prefer_custom_filters?
           if SAFE_DIRECT_FILTERS[filter_name]
             source = if NUMERIC_OUTPUT_FILTERS[filter_name] && args.length > 0 && args.all? { |a| a.match?(INT_LITERAL_RE) }
               "(#{input_fragment} || 0).to_f.#{filter_name}(#{args.join(', ')})"
@@ -106,7 +106,7 @@ module LiquidIL
           end
         end
 
-        source, fusion_inner = if Filters.valid_filter_methods[filter_name]
+        source, fusion_inner = if Filters.valid_filter_methods[filter_name] && !@context&.prefer_custom_filters?
           emit_filter_dispatch("cff", filter_name, input_fragment, args, line)
         else
           emit_filter_dispatch("cf", filter_name, input_fragment, args, line)
@@ -161,10 +161,10 @@ module LiquidIL
           record_parentloop_use if nxt[1] == "forloop" && path.first.to_s == "parentloop"
           base = scope_lookup_pathed(nxt[1])
           if path.length == 1
-            "  _H.rolf(_O, #{raw_literal_expression(raw)}, #{base}, #{path[0].to_s.inspect})#{guard}\n"
+            "  _H.rolf(_O, #{raw_literal_expression(raw)}, #{base}, #{path[0].to_s.inspect}, _S)#{guard}\n"
           else
             arr = register_frozen_array(path.map { |k| k.to_s.inspect })
-            "  _H.rolp(_O, #{raw_literal_expression(raw)}, #{base}, #{arr})#{guard}\n"
+            "  _H.rolp(_O, #{raw_literal_expression(raw)}, #{base}, #{arr}, _S)#{guard}\n"
           end
         end
       end
@@ -179,13 +179,13 @@ module LiquidIL
           # Arrays/Hashes differ, to_liquid must unwrap first). Inlining these
           # as ternary chains was both bigger (artifact bytes) and wrong for
           # non-collection receivers.
-          "_H.lp(#{obj_ruby}, #{key_s.inspect})"
+          "_H.lp(#{obj_ruby}, #{key_s.inspect}, _S)"
         elsif object_fragment.origin == :loop_item
           # Loop variable is always a Hash — inline the hash lookup directly
           # Skip symbol fallback for performance (string keys are the common case)
           "#{obj_ruby}[#{key_s.inspect}]"
         else
-          "_H.lf(#{obj_ruby}, #{key_s.inspect})"
+          "_H.lf(#{obj_ruby}, #{key_s.inspect}, _S)"
         end
         CodeFragment.new(source)
       end

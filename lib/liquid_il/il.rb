@@ -71,6 +71,11 @@ module LiquidIL
     # Filter opcodes
     CALL_FILTER = :CALL_FILTER       # [:CALL_FILTER, name, argc, line]
 
+    # Host-owned tag. The source digest + zero-based slot form a deterministic
+    # identity within cached artifacts; template_name is supplied by codegen.
+    # Parsed nodes and source text remain request-owned by the host.
+    HOST_TAG = :HOST_TAG             # [:HOST_TAG, source_id, slot, name, line]
+
     # Loop and interrupt opcodes
     FOR_INIT = :FOR_INIT             # [:FOR_INIT, var_name, loop_name, has_limit, has_offset, offset_continue, reversed, recovery_label]
                                      #   recovery_label: label past the for block, reserved for error recovery (not read by codegen)
@@ -386,6 +391,10 @@ module LiquidIL
 
       def call_filter(name, argc, line = 1)
         emit3(CALL_FILTER, name, argc, line)
+      end
+
+      def host_tag(source_id, slot, name, line = 1)
+        emit(HOST_TAG, source_id, slot, name, line)
       end
 
       def for_init(var_name, loop_name, has_limit = false, has_offset = false, offset_continue = false, reversed = false, recovery_label = nil)

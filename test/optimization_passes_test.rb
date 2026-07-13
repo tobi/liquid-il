@@ -245,8 +245,13 @@ class Pass2FoldConstFiltersTest < Minitest::Test
     assert_filter_folded "{{ 'hello  ' | rstrip }}", "hello"
   end
 
-  def test_json_folded
-    assert_filter_folded "{{ 'hello' | json }}", '"hello"'
+  def test_host_only_filters_are_not_folded
+    %w[json t].each do |filter|
+      template = @ctx.parse("{{ 'hello' | #{filter} }}", optimize: true)
+
+      assert_includes template.instructions.map(&:first), LiquidIL::IL::CALL_FILTER
+      assert_equal "hello", template.render
+    end
   end
 
   def test_chained_filters_folded

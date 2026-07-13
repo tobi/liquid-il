@@ -96,6 +96,8 @@ module LiquidIL
           when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
             isolated = inst[0] == IL::RENDER_PARTIAL
             code << generate_partial_call(inst, 1, isolated: isolated)
+          when IL::HOST_TAG
+            code << generate_host_tag(inst, 1)
           when IL::ASSIGN_LOCAL
             @pc += 1
             code << "  _S.assign_local(#{inst[1].inspect}, #{scope_lookup(inst[2])})\n"
@@ -220,10 +222,10 @@ module LiquidIL
             base = scope_lookup_pathed(inst[1])
             guard = @uses_interrupts ? " unless _S.has_interrupt?" : ""
             if path.length == 1
-              "#{prefix}_H.olf(_O, #{base}, #{path[0].to_s.inspect})#{guard}\n"
+              "#{prefix}_H.olf(_O, #{base}, #{path[0].to_s.inspect}, _S)#{guard}\n"
             else
               arr = register_frozen_array(path.map { |k| k.to_s.inspect })
-              "#{prefix}_H.olp(_O, #{base}, #{arr})#{guard}\n"
+              "#{prefix}_H.olp(_O, #{base}, #{arr}, _S)#{guard}\n"
             end
           else
             var_expr = generate_var_path_expr(inst[1], path)
@@ -455,6 +457,9 @@ module LiquidIL
         when IL::INCLUDE_PARTIAL
           generate_partial_call(inst, indent, isolated: false)
 
+        when IL::HOST_TAG
+          generate_host_tag(inst, indent)
+
         when :SHOPIFY_SECTION_RENDER
           @pc += 1
           record_open_partial_call
@@ -468,7 +473,7 @@ module LiquidIL
           # Generate runtime paginate setup using helper method
           parts = coll_path.split(".")
           lookup = scope_lookup(parts[0])
-          parts[1..].each { |p| lookup = "_H.l(#{lookup}, #{p.inspect})" }
+          parts[1..].each { |p| lookup = "_H.l(#{lookup}, #{p.inspect}, _S)" }
           # _pgc, not _pc: _pc is the proc's partial-constants parameter
           code = String.new
           code << "#{prefix}_pgc = #{lookup}\n"
@@ -485,6 +490,19 @@ module LiquidIL
         else
           generate_expression_statement(indent)
         end
+      end
+
+      def generate_host_tag(inst, indent)
+        @pc += 1
+        # A host node can read any lexical local (notably `render block`) and
+        # can assign through the real Liquid context, so optimized loops must
+        # publish their bindings into Scope before invoking it.
+        record_dynamic_read
+        prefix = @indent[indent]
+        source_id, slot, name, line = inst[1], inst[2], inst[3], inst[4]
+        "#{prefix}_S.render_host_tag(#{slot}, source_id: #{source_id.inspect}, " \
+          "template_name: #{@current_file_lit.inspect}, name: #{name.inspect}, " \
+          "line: #{line}, output: _O)\n"
       end
 
       # Build expression until we hit STORE_TEMP
@@ -626,7 +644,7 @@ module LiquidIL
             key_match = expr_str[i..]&.match(/\A[a-zA-Z_]\w*/)
             break unless key_match
             key = key_match[0]
-            result = "_H.lookup(#{result}, #{key.inspect})"
+            result = "_H.lookup(#{result}, #{key.inspect}, _S)"
             i += key.length
           when 91 # [
             close = expr_str.index("]", i + 1)
@@ -639,7 +657,7 @@ module LiquidIL
             else
               generate_var_lookup(inner)
             end
-            result = "_H.lookup(#{result}, #{key_ruby})"
+            result = "_H.lookup(#{result}, #{key_ruby}, _S)"
             i = close + 1
           else
             break

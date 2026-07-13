@@ -102,9 +102,9 @@ module LiquidIL
           when "size", "length"
             stack << "((__o__ = #{obj_ruby}).respond_to?(:length) ? __o__.length : nil)"
           when "first", "last"
-            stack << "_H.lookup(#{obj_ruby}, #{cmd.inspect})"
+            stack << "_H.lookup(#{obj_ruby}, #{cmd.inspect}, _S)"
           else
-            stack << "_H.lookup(#{obj_ruby}, #{cmd.inspect})"
+            stack << "_H.lookup(#{obj_ruby}, #{cmd.inspect}, _S)"
           end
           @pc += 1
         when IL::COMPARE

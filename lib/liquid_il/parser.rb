@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "digest"
+
 module LiquidIL
   # Recursive descent parser that emits IL directly
   class Parser
@@ -18,7 +20,7 @@ module LiquidIL
     # error_mode is required: the default lives in Compiler#compile (:lax),
     # and the public entry point (Compiler::Ruby.compile) forces :strict2
     # for the main template.
-    def initialize(source, error_mode:, warnings: nil)
+    def initialize(source, error_mode:, warnings: nil, bug_compatible_whitespace_trimming: false)
       @source = source
       @template_lexer = TemplateLexer.new(source)
       @builder = IL::Builder.new
@@ -36,6 +38,12 @@ module LiquidIL
       @blank_raw_indices_stack = []
       @expr_lexer = ExpressionLexer.new
       @cycle_counter = 0 # For unique cycle identities
+      # Host-tag slots are deterministic occurrence indexes local to this parser's
+      # root source. {% liquid %} temporarily swaps in synthesized tag text, but
+      # those tags still belong to the original template and retain its identity
+      # and monotonic slot sequence. Separately compiled partials use new Parsers.
+      @host_source_id = Digest::SHA256.hexdigest(source)
+      @host_tag_slot = 0
       @pending_trim_left = false # When true, next RAW should have leading whitespace trimmed
       # True only when the token just consumed was a literal RAW text node.
       # A left-trim marker ({%-, {{-) strips whitespace from the source text
@@ -44,6 +52,7 @@ module LiquidIL
       # so trim must not reach back across it.
       @prev_token_was_raw = false
       @error_mode = error_mode  # :lax, :warn, :strict, :strict2
+      @bug_compatible_whitespace_trimming = bug_compatible_whitespace_trimming
       @warnings = warnings || []  # Collect non-fatal warnings
     end
 
@@ -236,8 +245,7 @@ module LiquidIL
         if current_template_type == TemplateLexer::TAG
           tag_name = @template_lexer.tag_name
           # Track nesting for tags that can nest
-          tag_def = Tags[tag_name]
-          if NESTING_OPEN_TAGS.include?(tag_name) || (tag_def && tag_def.end_tag)
+          if NESTING_OPEN_TAGS.include?(tag_name) || Tags.block_start?(tag_name)
             depth += 1
           elsif NESTING_CLOSE_TAGS.include?(tag_name) || Tags.end_tag?(tag_name)
             if tag_name == end_tag_name && depth == 1
@@ -300,7 +308,20 @@ module LiquidIL
       tag_name = @template_lexer.tag_name
       tag_args = extract_tag_args
 
+      # Storefront's quirk parser accepts `{% render: 'name' %}` in lax and
+      # strict modes. The colon is attached to the tag token, so normalize it
+      # before host selection/native dispatch; strict2 deliberately keeps the
+      # unknown `render:` tag and reports the syntax error.
+      tag_name = "render" if tag_name == "render:" && !strict2?
+
       @line_pos = start_pos
+
+      # Host policies run before native dispatch so selected render/include
+      # forms can be delegated while quoted literal partials retain the native
+      # compile-time strategy.
+      if (host_tag_def = Tags.host_for(tag_name, tag_args))
+        return parse_host_tag(host_tag_def, tag_name, tag_args, start_pos)
+      end
 
       case tag_name
       when 'if'
@@ -420,6 +441,34 @@ module LiquidIL
       true
     end
 
+    def parse_host_tag(tag_def, tag_name, tag_args, start_pos)
+      source_id = @host_source_id
+      slot = @host_tag_slot
+      @host_tag_slot += 1
+      line = current_line
+
+      if tag_def.end_tag
+        # The host's already-parsed node owns whitespace control inside the
+        # block. LiquidIL only carries the closing tag's right trim forward to
+        # the next outer raw token.
+        @pending_trim_left = false
+        closed, _closing_trim_left, closing_trim_right =
+          @template_lexer.scan_opaque_block(tag_name, tag_def.end_tag)
+        if !closed && strict?
+          raise SyntaxError.new(
+            "Host tag '#{tag_name}' was not closed with '#{tag_def.end_tag}'",
+            position: start_pos,
+            source: @source,
+          )
+        end
+        @pending_trim_left = closing_trim_right
+      end
+
+      @builder.host_tag(source_id, slot, tag_name, line)
+      advance_template
+      false
+    end
+
     # Scan raw content until we hit a specific end tag
     def scan_until_end_tag(end_tag_name)
       pattern = /\{%-?\s*#{Regexp.escape(end_tag_name)}\s*-?%\}/
@@ -448,9 +497,14 @@ module LiquidIL
       last = @builder.instructions.last
       return unless last && last[0] == IL::WRITE_RAW
 
-      trimmed = last[1].rstrip
+      raw = last[1]
+      trimmed = raw.rstrip
       if trimmed.empty?
-        @builder.instructions[-1] = [IL::NOOP]
+        if @bug_compatible_whitespace_trimming && !raw.empty?
+          last[1] = raw.byteslice(0, 1)
+        else
+          @builder.instructions[-1] = [IL::NOOP]
+        end
       else
         last[1] = trimmed
       end

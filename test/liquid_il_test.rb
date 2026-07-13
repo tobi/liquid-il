@@ -676,6 +676,13 @@ class WhitespaceTrimTest < Minitest::Test
   def test_trim_right_on_tag
     assert_equal "yesafter", @ctx.render("{% if true -%}yes{%- endif %}after")
   end
+
+  def test_bug_compatible_left_trim_preserves_first_whitespace_byte
+    context = LiquidIL::Context.new(bug_compatible_whitespace_trimming: true)
+    source = "{{ value }}\n   {%- if false %}ignored{% endif %}after"
+
+    assert_equal "value\nafter", context.render(source, "value" => "value")
+  end
 end
 
 class EchoTagTest < Minitest::Test
@@ -724,5 +731,16 @@ class IncludeRenderTest < Minitest::Test
 
   def test_render_simple
     assert_equal "HEADER", @ctx.render("{% render 'header' %}")
+  end
+
+  def test_render_colon_quirk_syntax
+    %i[lax strict].each do |error_mode|
+      context = LiquidIL::Context.new(file_system: @fs, error_mode: error_mode)
+
+      assert_equal "HEADER", context.render("{% render: 'header' %}")
+    end
+
+    context = LiquidIL::Context.new(file_system: @fs, error_mode: :strict2)
+    assert_raises(LiquidIL::SyntaxError) { context.parse("{% render: 'header' %}") }
   end
 end

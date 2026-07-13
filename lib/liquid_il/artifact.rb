@@ -43,7 +43,7 @@ module LiquidIL
     MAGIC = "LQIL".b.freeze
     VERSION = 2
     RUNTIME_ABI = 1
-    COMPILER_ABI = 1
+    COMPILER_ABI = 2
     RUBY_STAMP = "#{RUBY_VERSION}.#{RUBY_PATCHLEVEL}/#{RUBY_PLATFORM}".freeze
     ABI_STAMP = "runtime-#{RUNTIME_ABI}/compiler-#{COMPILER_ABI}".freeze
 

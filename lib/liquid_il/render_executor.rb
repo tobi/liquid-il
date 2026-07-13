@@ -28,6 +28,9 @@ module LiquidIL
       scope.render_errors = render_errors
       scope.strict_variables = strict_variables.nil? ? (context&.strict_variables || false) : strict_variables
       scope.strict_filters = strict_filters.nil? ? (context&.strict_filters || false) : strict_filters
+      scope.prefer_custom_filters = context&.prefer_custom_filters? || false
+      scope.host_tag_renderer = regs["host_tag_renderer"] || regs[:host_tag_renderer]
+      scope.partial_render_observer = regs["partial_render_observer"] || regs[:partial_render_observer]
 
       custom_filters = context&.custom_filters
       if custom_filters && !custom_filters.empty?
@@ -52,14 +55,20 @@ module LiquidIL
       output ? (output << result) : result
     rescue LiquidIL::ResourceLimitError => e
       raise unless scope.render_errors
+      return scope.handle_render_error(e, output: output) if scope.respond_to?(:handle_render_error)
+
       append_error(output, (e.partial_output || "") + "Liquid error: #{LiquidIL.clean_error_message(e.message)}")
     rescue LiquidIL::RuntimeError => e
       raise unless scope.render_errors
+      return scope.handle_render_error(e, output: output) if scope.respond_to?(:handle_render_error)
+
       prefix = e.partial_output || ""
       location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
       append_error(output, prefix + "Liquid error (#{location}): #{e.message}")
     rescue StandardError => e
       raise unless scope.render_errors
+      return scope.handle_render_error(e, output: output) if scope.respond_to?(:handle_render_error)
+
       append_error(output, "Liquid error (line 1): #{LiquidIL.clean_error_message(e.message)}")
     end
 

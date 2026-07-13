@@ -10,7 +10,7 @@ module LiquidIL
       IL::LABEL, IL::JUMP, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT,
       IL::IF, IL::ELSE, IL::END_IF,
       IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END, IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
-      IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HALT,
+      IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HOST_TAG, IL::HALT,
       IL::ASSIGN, IL::ASSIGN_LOCAL,
       IL::INCREMENT, IL::DECREMENT
     ].to_set.freeze
@@ -29,7 +29,7 @@ module LiquidIL
       IL::IF, IL::ELSE, IL::END_IF,
       IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END,
       IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
-      IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
+      IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HOST_TAG
     ].each_with_object({}) { |op, h| h[op] = true }.freeze
 
     def initialize(source, **options)
@@ -49,6 +49,7 @@ module LiquidIL
         # partials) parse lax, matching the liquid gem; Compiler::Ruby.compile
         # supplies :strict2 for the main template.
         error_mode: @options[:error_mode] || :lax,
+        bug_compatible_whitespace_trimming: @options[:bug_compatible_whitespace_trimming] || false,
         warnings: @options[:warnings]
       )
       instructions = parser.parse
@@ -438,6 +439,8 @@ module LiquidIL
     end
 
     def fold_const_filters(instructions)
+      return if @options[:prefer_custom_filters]
+
       i = 0
       while i < instructions.length
         inst = instructions[i]
@@ -869,7 +872,7 @@ module LiquidIL
       instructions.any? do |inst|
         # Included partials share the caller's scope, so break/continue inside
         # them propagates out — assume interrupts are possible.
-        inst[0] == IL::PUSH_INTERRUPT || inst[0] == IL::INCLUDE_PARTIAL
+        inst[0] == IL::PUSH_INTERRUPT || inst[0] == IL::INCLUDE_PARTIAL || inst[0] == IL::HOST_TAG
       end
     end
 
@@ -1031,8 +1034,6 @@ module LiquidIL
       "truncate" => true,
       "truncatewords" => true,
       "default" => true,
-      "json" => true,
-      "t" => true,
       "base64_encode" => true,
       "base64_decode" => true,
       "base64_url_safe_encode" => true,

@@ -44,7 +44,10 @@ module LiquidIL
         Artifact::VERSION, Artifact::RUNTIME_ABI, Artifact::COMPILER_ABI,
         Artifact::RUBY_STAMP,
       ].join("/").freeze
-      @configuration_digest = digest_key(canonical_json(@context_options))
+      @configuration_digest = digest_key(canonical_json([
+        @context_options,
+        Tags.compilation_cache_fingerprint,
+      ]))
     end
 
     # With a block, closes the request session automatically and returns the
@@ -582,6 +585,19 @@ module LiquidIL
     def render_to_output_buffer(assigns = {}, output = +"", **options)
       @artifact.render_to_output_buffer(assigns, output,
         **options.merge(partial_provider: @provider))
+    end
+
+    # Execute this cached artifact against a host-owned Scope. The session's
+    # provider is still installed so compile-time planned external partials
+    # use the same request cache and source as the entry template.
+    def render_scope(scope, output: nil)
+      scope.partial_provider = @provider
+      @artifact.render_scope(scope, output: output)
+    end
+
+    def render_scope!(scope, output: nil)
+      scope.render_errors = false
+      render_scope(scope, output: output)
     end
   end
 

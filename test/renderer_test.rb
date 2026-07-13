@@ -63,6 +63,54 @@ class RendererTest < Minitest::Test
     end
   end
 
+  class HostFilterScope < LiquidIL::Scope
+    def initialize(...)
+      super
+      self.prefer_custom_filters = true
+    end
+
+    def custom_filter?(_name)
+      true
+    end
+
+    def apply_custom_filter(name, input, args)
+      "host-#{name}(#{([input] + args).join(',')})"
+    end
+  end
+
+  class HostErrorScope < LiquidIL::Scope
+    attr_reader :handled_error
+
+    def lookup(_key)
+      raise LiquidIL::RuntimeError.new("host lookup failed", line: 1)
+    end
+
+    def handle_render_error(error, output: nil)
+      @handled_error = error
+      output ? output << "host-handled" : "host-handled"
+    end
+  end
+
+  class HostTagScope < LiquidIL::Scope
+    attr_reader :calls
+
+    def initialize(...)
+      super
+      @calls = []
+    end
+
+    def render_host_tag(slot, source_id:, template_name:, name:, line:, output:)
+      @calls << {
+        slot: slot,
+        source_id: source_id,
+        template_name: template_name,
+        name: name,
+        line: line,
+      }
+      output << "[host:#{slot}]"
+    end
+  end
+
   SMALL = "<b>{{ title }}</b>"
   LARGE = "<section>#{"x" * 700} {{ title | upcase }}</section>"
   LAYOUT = "{% render 'small', title: title %}|{% render 'large', title: title %}"
@@ -174,5 +222,63 @@ class RendererTest < Minitest::Test
     assert_operator stats[:preload_keys], :>=, 4
     assert @events.any? { |name, payload| name == "liquid_il.cache.lookup" && payload.key?(:hit) },
       "every cache tier should be available to telemetry"
+  end
+
+  def test_session_template_can_render_to_a_host_scope_and_output_buffer
+    renderer = LiquidIL::Renderer.new(
+      namespace: "renderer-test:host-scope",
+      context_options: { prefer_custom_filters: true },
+    )
+    source = Source.new("template" => "{{ title | upcase }}")
+    scope = HostFilterScope.new({ "title" => "Ada" })
+    output = +"prefix:"
+
+    renderer.session(templates: source) do |session|
+      returned = session.fetch("template").render_scope(scope, output: output)
+
+      assert_same output, returned
+      assert_equal "prefix:host-upcase(Ada)", output
+    end
+  end
+
+  def test_host_scope_can_handle_render_errors
+    renderer = LiquidIL::Renderer.new(namespace: "renderer-test:host-errors")
+    source = Source.new("template" => "{{ value }}")
+    scope = HostErrorScope.new
+    output = +"prefix:"
+
+    renderer.session(templates: source) do |session|
+      returned = session.fetch("template").render_scope(scope, output: output)
+
+      assert_same output, returned
+      assert_equal "prefix:host-handled", output
+      assert_instance_of LiquidIL::RuntimeError, scope.handled_error
+    end
+  end
+
+  def test_registered_host_tags_compile_to_source_local_slots
+    LiquidIL::Tags.register_host("renderer_host", end_tag: "endrenderer_host")
+    source_body = <<~LIQUID
+      before
+      {% renderer_host %}opaque {{ ignored }}{% endrenderer_host %}
+      {% liquid
+        renderer_host
+        endrenderer_host
+      %}
+      after
+    LIQUID
+    renderer = LiquidIL::Renderer.new(namespace: "renderer-test:host-tag")
+    source = Source.new("template" => source_body)
+    scope = HostTagScope.new
+
+    output = renderer.session(templates: source) do |session|
+      session.fetch("template").render_scope(scope)
+    end
+
+    assert_equal "before\n[host:0]\n[host:1]\nafter\n", output
+    assert_equal [0, 1], scope.calls.map { |call| call[:slot] }
+    assert_equal [Digest::SHA256.hexdigest(source_body)], scope.calls.map { |call| call[:source_id] }.uniq
+    assert_equal ["template"], scope.calls.map { |call| call[:template_name] }.uniq
+    assert_equal ["renderer_host"], scope.calls.map { |call| call[:name] }.uniq
   end
 end

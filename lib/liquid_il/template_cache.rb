@@ -49,8 +49,8 @@ module LiquidIL
     # resource accounting, filters, file_system) and hands it to the engine
     # to execute the loaded artifact's proc. Errors are formatted inline
     # exactly like #render when scope.render_errors is true.
-    def render_scope(scope)
-      RenderExecutor.call(@proc, scope, @partial_constants)
+    def render_scope(scope, output: nil)
+      RenderExecutor.call(@proc, scope, @partial_constants, output: output)
     end
 
     # Append into a caller-provided buffer instead of returning a fresh string;

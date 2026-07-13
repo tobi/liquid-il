@@ -151,7 +151,7 @@ module LiquidIL
 
     # Check if template uses break/continue
     def detect_uses_interrupts
-      @instructions.any? { |inst| inst[0] == IL::PUSH_INTERRUPT }
+      @instructions.any? { |inst| inst[0] == IL::PUSH_INTERRUPT || inst[0] == IL::HOST_TAG }
     end
 
     def compile
@@ -291,6 +291,12 @@ module LiquidIL
         elsif !context
           # No context: use strict2 default
           opts = opts.merge(error_mode: :strict2)
+        end
+        if context
+          opts = opts.merge(
+            bug_compatible_whitespace_trimming: context.bug_compatible_whitespace_trimming,
+            prefer_custom_filters: context.prefer_custom_filters?,
+          )
         end
         warnings = []
         # pretty is a backend-only concern (human-readable source); keep it out

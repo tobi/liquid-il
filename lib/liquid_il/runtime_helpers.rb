@@ -18,28 +18,27 @@ module LiquidIL
 
     # Property lookup — replaces inline_lookup generated code.
     # Hot path: Hash string key (most common in Liquid templates).
-    def self.lookup_prop(obj, key)
+    def self.lookup_prop(obj, key, scope = nil)
       # Fast path: avoid to_liquid call for Hash (most common case)
       if obj.is_a?(Hash)
-        if SPECIAL_KEYS[key]
-          lookup(obj, key)
-        else
-          obj.fetch(key) { obj[key.to_sym] }
-        end
+        return lookup(obj, key, scope) if SPECIAL_KEYS[key]
+
+        contextualize_lookup(obj.fetch(key) { obj[key.to_sym] }, scope)
       else
-        lookup(obj, key)
+        lookup(obj, key, scope)
       end
     end
 
     # Fast path for hash property access with non-special keys
     # Skips SPECIAL_KEYS check — caller guarantees key isn't size/length/first/last
-    def self.lookup_prop_fast(obj, key)
+    def self.lookup_prop_fast(obj, key, scope = nil)
       if obj.is_a?(Hash)
         # Avoid fetch block allocation: try string key first, sym fallback only if absent
         v = obj[key]
-        v.nil? && !obj.key?(key) ? obj[key.to_sym] : v
+        result = v.nil? && !obj.key?(key) ? obj[key.to_sym] : v
+        contextualize_lookup(result, scope)
       else
-        lookup(obj, key)
+        lookup(obj, key, scope)
       end
     end
 
@@ -79,16 +78,16 @@ module LiquidIL
     # emission needs two or more (~50B of ISeq per fused call site; see
     # docs/win_all_scenarios.md workstream A).
     # olf: output_append(lookup_prop_fast(obj, key))
-    def self.olf(output, obj, key)
-      output_append(output, lookup_prop_fast(obj, key))
+    def self.olf(output, obj, key, scope = nil)
+      output_append(output, lookup_prop_fast(obj, key, scope))
     end
 
     # olp: output_append after walking a frozen key path
-    def self.olp(output, obj, path)
+    def self.olp(output, obj, path, scope = nil)
       i = 0
       n = path.length
       while i < n
-        obj = lookup_prop_fast(obj, path[i])
+        obj = lookup_prop_fast(obj, path[i], scope)
         i += 1
       end
       output_append(output, obj)
@@ -333,14 +332,14 @@ module LiquidIL
 
     # rolf/rolp: raw text + looked-up value in one send — the raw/lookup/raw
     # sandwich is the most common statement pair in real templates.
-    def self.rolf(output, raw, obj, key)
+    def self.rolf(output, raw, obj, key, scope = nil)
       output << raw
-      output_append(output, lookup_prop_fast(obj, key))
+      output_append(output, lookup_prop_fast(obj, key, scope))
     end
 
-    def self.rolp(output, raw, obj, path)
+    def self.rolp(output, raw, obj, path, scope = nil)
       output << raw
-      olp(output, obj, path)
+      olp(output, obj, path, scope)
     end
 
     # roa: raw text + any appended value (variable writes, filter results)
@@ -412,11 +411,11 @@ module LiquidIL
       end
     }
 
-    def self.lookup(obj, key)
+    def self.lookup(obj, key, scope = nil)
       return nil if obj.nil?
 
       # Call to_liquid to unwrap drops/proxies before property access
-      obj = obj.to_liquid
+      obj = contextualize_lookup(obj, scope)
 
       result = case obj
       when Hash
@@ -477,8 +476,12 @@ module LiquidIL
         end
       end
 
-      # to_liquid on the result for nested drops
-      result.to_liquid
+      # to_liquid on the result for nested drops, with an optional host context.
+      contextualize_lookup(result, scope)
+    end
+
+    def self.contextualize_lookup(value, scope)
+      scope ? scope.contextualize_lookup(value) : value.to_liquid
     end
 
     # Lambda wrapper for backward compatibility with generated code
@@ -487,6 +490,11 @@ module LiquidIL
     def self.call_filter(name, input, args, scope, current_file = nil, line = 1)
       # An earlier filter in the chain errored — pass the marker through
       return input if input.is_a?(LiquidIL::ErrorMarker)
+      # Host renderers may override built-in names or need every filter call to
+      # retain request-bound context. Give their dispatcher first refusal.
+      if scope.prefer_custom_filters? && scope.custom_filter?(name)
+        return scope.apply_custom_filter(name, input, args)
+      end
       # Try built-in filters first
       if LiquidIL::Filters.valid_filter_methods[name]
         return LiquidIL::Filters.apply(name, input, args, scope)
@@ -833,6 +841,7 @@ module LiquidIL
       if scope.render_depth_exceeded?(strict: !isolated)
         raise LiquidIL::RuntimeError.new("Nesting too deep", file: partial_file, line: caller_line)
       end
+      scope.partial_rendered(name)
       yield
     rescue LiquidIL::ResourceLimitError
       raise  # Resource limits abort the whole render — never recovered inline
@@ -914,6 +923,7 @@ module LiquidIL
       end
 
       begin
+        scope.partial_rendered(name)
         compiled = cached_template || compile_dynamic_partial(source, fs, scope)
         name_cache[name] = compiled if name_cache && !cached_template
         child_scope = isolated ? scope.isolated : scope

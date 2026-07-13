@@ -123,11 +123,14 @@ module LiquidIL
     COMPILE_CACHE_MAX = 500
 
     attr_accessor :file_system, :strict_errors, :registers, :partial_index
-    attr_reader :custom_filters, :strict_variables, :strict_filters, :resource_limits, :error_mode
+    attr_reader :custom_filters, :strict_variables, :strict_filters, :resource_limits, :error_mode,
+                :bug_compatible_whitespace_trimming
 
     def initialize(file_system: nil, strict_errors: false, registers: {},
                    strict_variables: false, strict_filters: false,
                    resource_limits: nil, error_mode: :strict2,
+                   prefer_custom_filters: false,
+                   bug_compatible_whitespace_trimming: false,
                    partial_index: nil)
       @file_system = file_system
       # Digest index (name -> content_digest) for the external-partial compile
@@ -138,11 +141,21 @@ module LiquidIL
       @registers = registers
       @strict_variables = strict_variables
       @strict_filters = strict_filters
+      @prefer_custom_filters = prefer_custom_filters
+      @bug_compatible_whitespace_trimming = bug_compatible_whitespace_trimming
       @resource_limits = resource_limits  # { output_limit: N, render_score_limit: N }
       @error_mode = error_mode  # :lax, :warn, :strict, :strict2
       # Seed custom filters from global registry; per-context register_filter can override
       global = LiquidIL::Filters.global_registry
       @custom_filters = global.empty? ? {} : global.dup
+    end
+
+    # Host renderers can opt out of LiquidIL's built-in filter fast paths and
+    # route every filter through a request-bound Scope dispatcher instead.
+    # This is required when the host overrides standard filter names (for
+    # example `date` or `json`) or its filters depend on a Liquid context.
+    def prefer_custom_filters?
+      @prefer_custom_filters
     end
 
     # Register custom filter methods from a module.
@@ -215,7 +228,8 @@ module LiquidIL
       end
       [
         Artifact::COMPILER_ABI, @error_mode, @strict_variables, @strict_filters,
-        @strict_errors, Tags.version, @partial_index&.class&.name,
+        @strict_errors, @prefer_custom_filters, @bug_compatible_whitespace_trimming,
+        Tags.version, @partial_index&.class&.name,
         @partial_index&.object_id, *limit_parts, *filter_parts
       ].freeze
     end

@@ -131,7 +131,13 @@ module LiquidIL
         # parse :lax even under a :strict2 context (matches the liquid gem's
         # include behavior).
         begin
-          compiler = LiquidIL::Compiler.new(source, optimize: true, skip_passes: PARTIAL_SKIP_PASSES)
+          compiler = LiquidIL::Compiler.new(
+            source,
+            optimize: true,
+            skip_passes: PARTIAL_SKIP_PASSES,
+            bug_compatible_whitespace_trimming: @context&.bug_compatible_whitespace_trimming,
+            prefer_custom_filters: @context&.prefer_custom_filters?,
+          )
           result = compiler.compile
         rescue LiquidIL::SyntaxError => e
           @partial_names_in_progress.delete(name)
@@ -806,6 +812,7 @@ module LiquidIL
         else
           # Simple render
           # For simple isolated partials, inline the body to avoid lambda call overhead
+          code << "#{prefix}_S.partial_rendered(#{name.inspect})\n" if inline_partial
           if inline_partial && !inline_needs_scope
             code << inline_setup << inline_bound_body
           elsif inline_partial

@@ -6,7 +6,8 @@ module LiquidIL
   class RenderScope
     attr_accessor :file_system, :render_errors, :current_file,
                   :strict_variables, :strict_filters, :custom_filters, :resource_limits,
-                  :dynamic_name_cache, :partial_provider, :external_partial_cache
+                  :dynamic_name_cache, :partial_provider, :external_partial_cache,
+                  :prefer_custom_filters, :host_tag_renderer, :partial_render_observer
     attr_reader :strict_errors, :user_registers
 
     def initialize(static_environments, file_system, depth = 0, strict_errors: false, render_errors: true, locals: nil)
@@ -19,6 +20,9 @@ module LiquidIL
       @current_file = nil
       @partial_provider = nil
       @external_partial_cache = nil
+      @prefer_custom_filters = false
+      @host_tag_renderer = nil
+      @partial_render_observer = nil
       # Lazy-init everything else
       @interrupts = nil
       @capture_stack = nil
@@ -30,6 +34,36 @@ module LiquidIL
     end
 
     def disable_include = true
+
+    def prefer_custom_filters? = @prefer_custom_filters
+
+    def partial_rendered(name)
+      @partial_render_observer&.call(name)
+    end
+
+    def contextualize_lookup(value)
+      value.to_liquid
+    rescue LiquidIL::NoMethodError
+      nil
+    end
+
+    def render_host_tag(slot, source_id:, template_name:, name:, line:, output:)
+      unless @host_tag_renderer
+        raise LiquidIL::RuntimeError.new(
+          "host tag #{name.inspect} has no render callback",
+          file: template_name,
+          line: line,
+        )
+      end
+      @host_tag_renderer.call(
+        slot,
+        source_id: source_id,
+        template_name: template_name,
+        name: name,
+        line: line,
+        output: output,
+      )
+    end
 
     def lookup(key)
       key = key.to_s unless key.is_a?(String)
@@ -90,6 +124,9 @@ module LiquidIL
       scope.resource_limits = @resource_limits
       scope.partial_provider = @partial_provider
       scope.external_partial_cache = @external_partial_cache
+      scope.prefer_custom_filters = @prefer_custom_filters
+      scope.host_tag_renderer = @host_tag_renderer
+      scope.partial_render_observer = @partial_render_observer
       scope
     end
 
@@ -102,6 +139,9 @@ module LiquidIL
       scope.resource_limits = @resource_limits
       scope.partial_provider = @partial_provider
       scope.external_partial_cache = @external_partial_cache
+      scope.prefer_custom_filters = @prefer_custom_filters
+      scope.host_tag_renderer = @host_tag_renderer
+      scope.partial_render_observer = @partial_render_observer
       scope
     end
 
@@ -212,7 +252,8 @@ module LiquidIL
     def scopes; @scopes || [@root_scope]; end
     attr_accessor :file_system, :disable_include, :render_errors, :current_file,
                   :strict_variables, :strict_filters, :custom_filters, :resource_limits,
-                  :dynamic_name_cache, :partial_provider, :external_partial_cache
+                  :dynamic_name_cache, :partial_provider, :external_partial_cache,
+                  :prefer_custom_filters, :host_tag_renderer, :partial_render_observer
 
     MAX_RENDER_DEPTH = 100
 
@@ -262,6 +303,9 @@ module LiquidIL
       # → callable) so an external {% render %} in a loop resolves the provider
       # once. Lazy-allocated by the runtime helper on first external call.
       @external_partial_cache = nil
+      @prefer_custom_filters = false
+      @host_tag_renderer = nil
+      @partial_render_observer = nil
       # Lazy-init: only allocate when used
       @assigned_vars = nil
       @interrupts = nil
@@ -592,6 +636,36 @@ module LiquidIL
 
     # --- Custom filter dispatch ---
 
+    def prefer_custom_filters? = @prefer_custom_filters
+
+    def partial_rendered(name)
+      @partial_render_observer&.call(name)
+    end
+
+    def contextualize_lookup(value)
+      value.to_liquid
+    rescue LiquidIL::NoMethodError
+      nil
+    end
+
+    def render_host_tag(slot, source_id:, template_name:, name:, line:, output:)
+      unless @host_tag_renderer
+        raise LiquidIL::RuntimeError.new(
+          "host tag #{name.inspect} has no render callback",
+          file: template_name,
+          line: line,
+        )
+      end
+      @host_tag_renderer.call(
+        slot,
+        source_id: source_id,
+        template_name: template_name,
+        name: name,
+        line: line,
+        output: output,
+      )
+    end
+
     def apply_custom_filter(name, input, args)
       return nil unless @custom_filters
       info = @custom_filters[name]
@@ -616,6 +690,9 @@ module LiquidIL
       scope.resource_limits = @resource_limits
       scope.partial_provider = @partial_provider
       scope.external_partial_cache = @external_partial_cache
+      scope.prefer_custom_filters = @prefer_custom_filters
+      scope.host_tag_renderer = @host_tag_renderer
+      scope.partial_render_observer = @partial_render_observer
       scope
     end
 
@@ -628,6 +705,9 @@ module LiquidIL
       scope.resource_limits = @resource_limits
       scope.partial_provider = @partial_provider
       scope.external_partial_cache = @external_partial_cache
+      scope.prefer_custom_filters = @prefer_custom_filters
+      scope.host_tag_renderer = @host_tag_renderer
+      scope.partial_render_observer = @partial_render_observer
       scope
     end
 
