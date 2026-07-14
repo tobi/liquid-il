@@ -21,7 +21,7 @@ module LiquidIL
     # Everything here decides on the IL (`@instructions`); nothing scans emitted
     # Ruby. v1 scope: main template body, at top level or inside IF branches —
     # never inside loops (loop bodies interact with @loop_var_aliases and the
-    # effects frame) and never templates that use break/continue (interrupt
+    # effects frame) and never templates that can interrupt rendering (output
     # guards would leak into lambda bodies).
     module StatementDedup
       # A parameter reference spliced into an abstracted sequence body in place
@@ -123,10 +123,11 @@ module LiquidIL
       # Rewrites @instructions in place and registers sequences in @sequences.
       def dedup_statement_runs
         return unless dedup_enabled?
-        # Templates with break/continue: PUSH_INTERRUPT is not in the allowlist,
-        # but a run could still sit after a top-level interrupt; @uses_interrupts
-        # also makes emitted writes carry `unless _S.has_interrupt?` guards we do
-        # not want to reproduce inside a lambda. Skip wholesale — cheap and safe.
+        # Interrupt-capable templates: PUSH_INTERRUPT/HOST_TAG are not in the
+        # allowlist, but a run could still sit after a top-level interrupt;
+        # @uses_interrupts also makes emitted writes carry
+        # `unless _S.has_interrupt?` guards we do not want to reproduce inside
+        # a lambda. Skip wholesale — cheap and safe.
         return if @uses_interrupts
 
         groups = cached_dedup_groups

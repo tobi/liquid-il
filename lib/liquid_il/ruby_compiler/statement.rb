@@ -317,7 +317,8 @@ module LiquidIL
           if @instructions[@pc]&.[](0) == IL::ASSIGN
             var = @instructions[@pc][1]
             @pc += 1
-            "#{prefix}__captured__ = _O; _O = _cst.pop; _S.assign(#{var.inspect}, __captured__)\n"
+            limit_check = @has_resource_limits ? "_S.increment_assign_score!(__captured__); " : ""
+            "#{prefix}__captured__ = _O; _O = _cst.pop; #{limit_check}_S.assign(#{var.inspect}, __captured__)\n"
           elsif @instructions[@pc]&.[](0) == IL::IFCHANGED_CHECK
             @uses_ifchanged = true
             tag_id = @instructions[@pc][1]
@@ -420,7 +421,8 @@ module LiquidIL
             @pc += 2 # Consume POP_CAPTURE and ASSIGN
             if @loop_depth > 0
               # Inside loop: complete the capture assignment before breaking
-              code << "#{prefix}__captured__ = _O; _O = _cst.pop; _S.assign(#{var.inspect}, __captured__)\n"
+              limit_check = @has_resource_limits ? "_S.increment_assign_score!(__captured__); " : ""
+              code << "#{prefix}__captured__ = _O; _O = _cst.pop; #{limit_check}_S.assign(#{var.inspect}, __captured__)\n"
             else
               # Outside loop: just restore output, discard captured content
               code << "#{prefix}_O = _cst.pop\n"
@@ -494,15 +496,16 @@ module LiquidIL
 
       def generate_host_tag(inst, indent)
         @pc += 1
-        # A host node can read any lexical local (notably `render block`) and
-        # can assign through the real Liquid context, so optimized loops must
-        # publish their bindings into Scope before invoking it.
-        record_dynamic_read
+        # Opaque scope reads can observe any lexical local (notably `render
+        # block`), so optimized loops must publish their bindings. Tags that
+        # explicitly declare themselves scope-independent stay on the fast
+        # unsynchronized loop path.
+        record_dynamic_read if IL.host_tag_reads_scope?(inst)
         prefix = @indent[indent]
-        source_id, slot, name, line = inst[1], inst[2], inst[3], inst[4]
+        source_id, slot, name, line, source = inst[1], inst[2], inst[3], inst[4], inst[5]
         "#{prefix}_S.render_host_tag(#{slot}, source_id: #{source_id.inspect}, " \
           "template_name: #{@current_file_lit.inspect}, name: #{name.inspect}, " \
-          "line: #{line}, output: _O)\n"
+          "line: #{line}, source: #{source.inspect}, output: _O)\n"
       end
 
       # Build expression until we hit STORE_TEMP
@@ -550,12 +553,12 @@ module LiquidIL
       def emit_assign_statement(var, expr_ruby, prefix, temp_code, local:)
         if var.is_a?(StatementDedup::SeqRef)
           name_l = "_sqp#{var.slot}__"
-          af = local ? "afl" : "af"
+          af = local ? "afl" : (@has_resource_limits ? "afr" : "af")
           if var.dual
             vl = "_sqv#{var.slot}__"
             return temp_code + "#{prefix}#{vl} = #{expr_ruby}\n#{prefix}_H.#{af}(_S, #{name_l}, #{vl})\n"
           elsif expr_ruby.filter_dispatch_inner
-            aff = local ? "affl" : "aff"
+            aff = local ? "affl" : (@has_resource_limits ? "affr" : "aff")
             return temp_code + "#{prefix}_H.#{aff}(_S, #{name_l}, #{expr_ruby.filter_dispatch_inner})\n"
           else
             return temp_code + "#{prefix}_H.#{af}(_S, #{name_l}, #{expr_ruby})\n"
@@ -564,10 +567,10 @@ module LiquidIL
 
         # Normal named assign: single known-filter call fuses into one _H.aff send.
         if expr_ruby.filter_dispatch_inner
-          aff = local ? "affl" : "aff"
+          aff = local ? "affl" : (@has_resource_limits ? "affr" : "aff")
           temp_code + "#{prefix}_H.#{aff}(_S, #{var.inspect}, #{expr_ruby.filter_dispatch_inner})\n"
         else
-          af = local ? "afl" : "af"
+          af = local ? "afl" : (@has_resource_limits ? "afr" : "af")
           temp_code + "#{prefix}_H.#{af}(_S, #{var.inspect}, #{expr_ruby})\n"
         end
       end

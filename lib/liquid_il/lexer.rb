@@ -139,14 +139,16 @@ module LiquidIL
     # of the same name are balanced, while raw/comment contents are skipped so
     # delimiter-looking text inside them cannot terminate the outer block.
     #
-    # Returns [closed, closing_trim_left, closing_trim_right].
+    # Returns [closed, closing_trim_left, closing_trim_right, body_source].
     def scan_opaque_block(start_tag, end_tag)
       depth = 1
+      body_start = @scanner.pos
 
       loop do
         type = next_token
         if type == EOF
-          return [false, false, false]
+          body = @source.byteslice(body_start, @source.bytesize - body_start)
+          return [false, false, false, body]
         end
         next unless type == TAG
 
@@ -162,7 +164,8 @@ module LiquidIL
         elsif name == end_tag
           depth -= 1
           if depth.zero?
-            return [true, @trim_left, @trim_right]
+            body = @source.byteslice(body_start, @token_start - body_start)
+            return [true, @trim_left, @trim_right, body]
           end
         end
       end

@@ -78,6 +78,7 @@ module LiquidIL
 
       def emit_filter_call(filter_name, input_ruby, args, line)
         input_fragment = CodeFragment.wrap(input_ruby)
+        prefer_custom = @context&.prefer_custom_filter?(filter_name)
         value_type = if STRING_OUTPUT_FILTERS[filter_name]
           :string
         elsif NUMERIC_OUTPUT_FILTERS[filter_name]
@@ -90,7 +91,7 @@ module LiquidIL
         # plus:0/times:1 coerce strings to numbers (e.g. "6-3" | plus:0 => 6).
         # A prior dispatch can produce ErrorMarker; the structured may_error bit
         # keeps the rest of that chain in dispatcher-land without inspecting Ruby.
-        unless input_fragment.may_error || @context&.prefer_custom_filters?
+        unless input_fragment.may_error || prefer_custom
           if SAFE_DIRECT_FILTERS[filter_name]
             source = if NUMERIC_OUTPUT_FILTERS[filter_name] && args.length > 0 && args.all? { |a| a.match?(INT_LITERAL_RE) }
               "(#{input_fragment} || 0).to_f.#{filter_name}(#{args.join(', ')})"
@@ -106,7 +107,7 @@ module LiquidIL
           end
         end
 
-        source, fusion_inner = if Filters.valid_filter_methods[filter_name] && !@context&.prefer_custom_filters?
+        source, fusion_inner = if Filters.valid_filter_methods[filter_name] && !prefer_custom
           emit_filter_dispatch("cff", filter_name, input_fragment, args, line)
         else
           emit_filter_dispatch("cf", filter_name, input_fragment, args, line)

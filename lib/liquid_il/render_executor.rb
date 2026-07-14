@@ -29,6 +29,7 @@ module LiquidIL
       scope.strict_variables = strict_variables.nil? ? (context&.strict_variables || false) : strict_variables
       scope.strict_filters = strict_filters.nil? ? (context&.strict_filters || false) : strict_filters
       scope.prefer_custom_filters = context&.prefer_custom_filters? || false
+      scope.custom_filter_overrides = context&.custom_filter_overrides || EMPTY_HASH
       scope.host_tag_renderer = regs["host_tag_renderer"] || regs[:host_tag_renderer]
       scope.partial_render_observer = regs["partial_render_observer"] || regs[:partial_render_observer]
 
@@ -47,14 +48,17 @@ module LiquidIL
     end
 
     def call(compiled_proc, scope, partial_constants = nil, output: nil)
+      output ||= +""
       result = if partial_constants
-        compiled_proc.call(scope, partial_constants)
+        compiled_proc.call(scope, partial_constants, output)
       else
-        compiled_proc.call(scope)
+        compiled_proc.call(scope, output)
       end
-      output ? (output << result) : result
+      scope.check_output_limit!(result)
+      result
     rescue LiquidIL::ResourceLimitError => e
       raise unless scope.render_errors
+      e.partial_output = nil if e.partial_output.equal?(output)
       return scope.handle_render_error(e, output: output) if scope.respond_to?(:handle_render_error)
 
       append_error(output, (e.partial_output || "") + "Liquid error: #{LiquidIL.clean_error_message(e.message)}")
@@ -73,7 +77,7 @@ module LiquidIL
     end
 
     def append_error(output, message)
-      output ? (output << message) : message
+      output << message
     end
     private_class_method :append_error
   end

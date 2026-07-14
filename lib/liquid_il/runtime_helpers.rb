@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "objspace"
+
 # Shared helper lambdas for RubyCompiler-generated code.
 # Created once at module load time, referenced by all compiled templates.
 # This avoids re-parsing ~250 lines of Ruby on every template eval().
@@ -299,15 +301,13 @@ module LiquidIL
         end
       end
       return nil unless cproc
-      # Adapter matches the compiled partial-lambda convention. The external
-      # artifact's proc builds its own `_O` and returns it (entry-artifact
-      # convention); we append it to the caller's buffer. For include the
-      # ipc driver passes the shared scope as `_S`, so scope publication and
-      # interrupt propagation flow through the same object.
+      # Adapter matches the compiled partial-lambda convention. Entry artifacts
+      # receive the caller's output buffer directly, so external partials append
+      # without allocating and copying an intermediate String.
       if cpc
-        ->(_S, _O, _isolated, caller_line: 1, parent_cycle_state: nil) { _O << cproc.call(_S, cpc) }
+        ->(_S, _O, _isolated, caller_line: 1, parent_cycle_state: nil) { cproc.call(_S, cpc, _O) }
       else
-        ->(_S, _O, _isolated, caller_line: 1, parent_cycle_state: nil) { _O << cproc.call(_S) }
+        ->(_S, _O, _isolated, caller_line: 1, parent_cycle_state: nil) { cproc.call(_S, _O) }
       end
     end
 
@@ -359,6 +359,13 @@ module LiquidIL
       scope.assign_local(name, value) unless value.is_a?(LiquidIL::ErrorMarker)
     end
 
+    def self.afr(scope, name, value)
+      return if value.is_a?(LiquidIL::ErrorMarker)
+
+      scope.increment_assign_score!(value)
+      scope.assign(name, value)
+    end
+
     # t: truthy unwrap for conditions — call to_liquid first (NilDrop → nil),
     # then to_liquid_value (BooleanDrop(false) → false). One send instead of
     # the inline _t temp shuffle.
@@ -387,6 +394,17 @@ module LiquidIL
     def self.affl(scope, name, fname, input, args, fscope, file, line)
       v = LiquidIL::Filters.ff(fname, input, args, fscope, file, line)
       scope.assign_local(name, v) unless v.is_a?(LiquidIL::ErrorMarker)
+    rescue LiquidIL::RuntimeError
+      nil
+    end
+
+
+    def self.affr(scope, name, fname, input, args, fscope, file, line)
+      v = LiquidIL::Filters.ff(fname, input, args, fscope, file, line)
+      unless v.is_a?(LiquidIL::ErrorMarker)
+        scope.increment_assign_score!(v)
+        scope.assign(name, v)
+      end
     rescue LiquidIL::RuntimeError
       nil
     end
@@ -492,7 +510,7 @@ module LiquidIL
       return input if input.is_a?(LiquidIL::ErrorMarker)
       # Host renderers may override built-in names or need every filter call to
       # retain request-bound context. Give their dispatcher first refusal.
-      if scope.prefer_custom_filters? && scope.custom_filter?(name)
+      if scope.prefer_custom_filter?(name) && scope.custom_filter?(name)
         return scope.apply_custom_filter(name, input, args)
       end
       # Try built-in filters first
@@ -616,7 +634,7 @@ module LiquidIL
 
         if left_num.nil? || right_num.nil?
           right_str = right.is_a?(Numeric) ? right.to_s : right.class.to_s
-          raise LiquidIL::RuntimeError.new("comparison of #{left.class} with #{right_str} failed", file: current_file, line: 1, partial_output: output&.dup)
+          raise LiquidIL::RuntimeError.new("comparison of #{left.class} with #{right_str} failed", file: current_file, line: 1)
         end
 
         case op
@@ -775,13 +793,14 @@ module LiquidIL
     # include *plus* once per dependency revalidation — dozens of throwaway
     # Method objects per render. The arity is stable for a given file_system,
     # so resolve it once and cache by object identity.
-    @fs_read_arity = {}.compare_by_identity
+    @fs_read_arity = ObjectSpace::WeakMap.new
+    @fs_read_arity_mutex = Mutex.new
 
     def self.read_partial_source(file_system, name, context = nil)
       return nil unless file_system
 
       if file_system.respond_to?(:read_template_file)
-        arity = @fs_read_arity[file_system]
+        arity = @fs_read_arity_mutex.synchronize { @fs_read_arity[file_system] }
         if arity.nil?
           arity = begin
             file_system.method(:read_template_file).arity
@@ -789,7 +808,7 @@ module LiquidIL
             # Some proxies don't expose #method cleanly; fall back to trial call.
             :trial
           end
-          @fs_read_arity[file_system] = arity
+          @fs_read_arity_mutex.synchronize { @fs_read_arity[file_system] = arity }
         end
 
         begin
@@ -847,7 +866,6 @@ module LiquidIL
       raise  # Resource limits abort the whole render — never recovered inline
     rescue LiquidIL::RuntimeError => e
       raise unless scope.render_errors
-      output << (e.partial_output || "")
       location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
       output << "Liquid error (#{location}): #{e.message}"
     rescue LiquidIL::FilterRuntimeError => e
@@ -901,7 +919,12 @@ module LiquidIL
         # Load source
         source = read_partial_source(fs, name, scope)
         unless source
-          message = "Could not find asset #{name}"
+          asset_name = if fs.respond_to?(:canonical_name)
+            fs.canonical_name(name)
+          else
+            name
+          end
+          message = "Could not find asset #{asset_name}"
           if scope.render_errors
             location = scope.current_file ? "#{scope.current_file} line #{caller_line}" : "line #{caller_line}"
             output << "Liquid error (#{location}): #{message}"
@@ -919,7 +942,7 @@ module LiquidIL
       if scope.render_depth_exceeded?(strict: isolated)
         scope.current_file = prev_file
         scope.pop_render_depth
-        raise LiquidIL::RuntimeError.new("Nesting too deep", file: partial_file, line: 1, partial_output: output.dup)
+        raise LiquidIL::RuntimeError.new("Nesting too deep", file: partial_file, line: 1)
       end
 
       begin
@@ -932,15 +955,13 @@ module LiquidIL
         child_scope.render_errors = scope.render_errors
         # Execute the compiled proc directly with the child scope
         pc = compiled.instance_variable_get(:@partial_constants)
-        result = if pc
-          compiled.instance_variable_get(:@compiled_proc).call(child_scope, pc)
+        if pc
+          compiled.instance_variable_get(:@compiled_proc).call(child_scope, pc, output)
         else
-          compiled.instance_variable_get(:@compiled_proc).call(child_scope)
+          compiled.instance_variable_get(:@compiled_proc).call(child_scope, output)
         end
-        output << result
       rescue LiquidIL::RuntimeError => e
         raise unless scope.render_errors
-        output << (e.partial_output || "")
         location = e.file ? "#{e.file} line #{e.line}" : "line #{e.line}"
         output << "Liquid error (#{location}): #{e.message}"
       rescue LiquidIL::SyntaxError => e

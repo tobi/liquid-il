@@ -743,6 +743,20 @@ class ResourceLimitsTest < Minitest::Test
     assert_includes result, "Memory limits exceeded"
   end
 
+  def test_output_limit_checks_templates_without_loops
+    ctx = LiquidIL::Context.new(resource_limits: { output_limit: 3 })
+    result = ctx.render("hello")
+    assert_includes result, "Memory limits exceeded"
+  end
+
+  def test_assign_and_capture_score_limits
+    assign = LiquidIL::Context.new(resource_limits: { assign_score_limit: 3 })
+    capture = LiquidIL::Context.new(resource_limits: { assign_score_limit: 1 })
+
+    assert_raises(LiquidIL::ResourceLimitError) { assign.parse("{% assign x = 'four' %}").render! }
+    assert_raises(LiquidIL::ResourceLimitError) { capture.parse("{% capture x %}hi{% endcapture %}").render! }
+  end
+
   def test_output_limit_in_partial
     fs = SimpleFS.new("loop" => "{% for i in (1..100) %}x{% endfor %}")
     ctx = LiquidIL::Context.new(file_system: fs, resource_limits: { output_limit: 30 })

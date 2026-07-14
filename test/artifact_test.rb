@@ -7,6 +7,8 @@ require_relative "../lib/liquid_il"
 # The framed artifact envelope: the persisted compiled-template string
 # (memcache/DB) loaded by a process that never saw the template source.
 class ArtifactTest < Minitest::Test
+  HostCompileProduct = Struct.new(:tag_name, :source, keyword_init: true)
+
   class StubFS
     def initialize(templates) = @templates = templates
     def read_template_file(name, _ctx = nil) = @templates[name.to_s]
@@ -115,5 +117,68 @@ class ArtifactTest < Minitest::Test
     restored = LiquidIL::Artifact.load(template.to_artifact)
     assigns = { "ps" => [{ "name" => "a", "price" => 3 }, { "name" => "b", "price" => 4 }] }
     assert_equal template.render(assigns), restored.render(assigns)
+  end
+
+  def test_host_tag_compile_product_roundtrips_without_recompiling
+    compile_count = 0
+    compiler = lambda do |name:, source:, **|
+      compile_count += 1
+      HostCompileProduct.new(tag_name: name, source: source)
+    end
+    LiquidIL::Tags.register_host(
+      "artifact_host",
+      compiler: compiler,
+      compiler_cache_key: "artifact-test-v1",
+    )
+
+    template = LiquidIL::Context.new.parse(
+      "{% artifact_host value %}",
+      template_name: "template",
+    )
+    restored = LiquidIL::Artifact.load(template.to_artifact)
+    product = restored.host_tag_metadata.fetch("template").first.last
+
+    assert_equal 1, compile_count
+    assert_equal "artifact_host", product.tag_name
+    assert_equal "{% artifact_host value %}", product.source
+  end
+
+  def test_compiler_can_omit_host_tag_source_from_runtime_artifact
+    compiled_sources = []
+    LiquidIL::Tags.register_host(
+      "artifact_host_without_runtime_source",
+      end_tag: "endartifact_host_without_runtime_source",
+      compiler: lambda do |source:, **|
+        compiled_sources << source
+        "compiled-host-plan"
+      end,
+      compiler_cache_key: "artifact-test-without-runtime-source-v1",
+    )
+    marker = "host_body_source_marker_7f3e"
+    partial_source = <<~LIQUID.chomp
+      {% artifact_host_without_runtime_source %}#{marker}{% endartifact_host_without_runtime_source %}
+    LIQUID
+    context = LiquidIL::Context.new(
+      file_system: StubFS.new("host_partial" => partial_source),
+    )
+    template = context.parse(
+      "{% render 'host_partial' %}",
+      template_name: "template",
+      host_tag_runtime_source: false,
+    )
+    blob = template.to_artifact
+    runtime_sources = []
+    scope = LiquidIL::Scope.new
+    scope.host_tag_renderer = lambda do |_slot, source_id:, template_name:, name:, line:, source:, output:|
+      runtime_sources << source
+      output << "[host]"
+    end
+
+    output = LiquidIL::Artifact.load_compiled(blob).render_scope(scope)
+
+    assert_equal "[host]", output
+    assert_equal [partial_source], compiled_sources
+    assert_equal [nil], runtime_sources
+    refute_includes blob, marker
   end
 end

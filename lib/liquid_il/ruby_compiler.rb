@@ -49,16 +49,19 @@ module LiquidIL
 
     class CompilationResult
       attr_reader :proc, :source, :can_compile, :partials, :partial_constants,
-                  :partial_dependencies
+                  :partial_dependencies, :template_metadata, :host_tag_metadata
 
       def initialize(proc:, source:, can_compile:, partials: {}, partial_constants: nil,
-                     partial_dependencies: nil)
+                     partial_dependencies: nil, template_metadata: nil,
+                     host_tag_metadata: nil)
         @proc = proc
         @source = source
         @can_compile = can_compile
         @partials = partials
         @partial_constants = partial_constants
         @partial_dependencies = partial_dependencies
+        @template_metadata = template_metadata
+        @host_tag_metadata = host_tag_metadata
       end
     end
 
@@ -77,9 +80,11 @@ module LiquidIL
     # INDENT so any INDENT[indent+k] index resolves identically.
     EMPTY_INDENT = Array.new(20) { "" }.freeze
 
-    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil, hoist_data: nil, pretty: false, optimize: true, partial_index: nil)
+    def initialize(instructions, context: nil, partials: nil, partial_names_in_progress: nil, hoist_data: nil, pretty: false, optimize: true, partial_index: nil, captured_tags: nil, capture_tags: nil, host_tags: nil, compile_options: nil, template_name: nil)
       @instructions = instructions
       @context = context
+      @compile_options = compile_options || EMPTY_HASH
+      @hoist_scope_lookups = context ? context.hoist_scope_lookups? : @compile_options.fetch(:hoist_scope_lookups, true)
       # Digest index (name -> content_digest, plus optional bytesize/inline?/
       # external? hooks) for the external-partial compile mode. When present,
       # partials the index knows about are resolved to EXISTENCE + identity
@@ -92,6 +97,9 @@ module LiquidIL
       # host can build a composite cache key and know which external artifacts
       # to prefetch. Metadata only — never affects emission.
       @partial_dependencies = {}
+      @captured_tags = captured_tags
+      @host_tags = host_tags
+      @capture_tags = Array(capture_tags).map(&:to_s).sort.freeze
       # Memoized index.digest(name) lookups (also used as emitted literals).
       @index_digests = {}
       # Optimizer-provided hoisted-lookup census [counts, written, blocked],
@@ -109,10 +117,10 @@ module LiquidIL
       @loop_depth = 0 # Track nested loop depth for parentloop support
       @inline_scope_counter = 0
       @partial_arg_locals = {}
-      # Compile-time current file (nil for the main template, the partial
-      # name inside partial compilations — see compile_partial). Baked into
-      # emitted error-location literals — no runtime tracking in the code.
-      @current_file_lit = nil
+      # Compile-time current file (nil for an unnamed main template, the
+      # logical name otherwise). Baked into emitted error-location and host-tag
+      # literals — no runtime tracking in the code.
+      @current_file_lit = template_name
       # Loop-local naming offset. 0 for the main template; partials get a
       # unique base (compile_partial) so their loop locals (__i0__, _fl0__,
       # _c0__, ...) never collide with a call site's when inlined.
@@ -151,13 +159,17 @@ module LiquidIL
 
     # Check if template uses break/continue
     def detect_uses_interrupts
-      @instructions.any? { |inst| inst[0] == IL::PUSH_INTERRUPT || inst[0] == IL::HOST_TAG }
+      @instructions.any? do |inst|
+        inst[0] == IL::PUSH_INTERRUPT ||
+          (inst[0] == IL::HOST_TAG && IL.host_tag_can_interrupt?(inst))
+      end
     end
 
     def compile
       code = generate_ruby
       compiled_proc = eval_ruby(code)
       raise "Failed to eval generated Ruby code" unless compiled_proc
+      host_tag_metadata = compiled_host_tag_metadata
 
       CompilationResult.new(
         proc: compiled_proc,
@@ -165,10 +177,71 @@ module LiquidIL
         can_compile: true,
         partial_constants: @partial_constants.empty? ? nil : @partial_constants.freeze,
         partial_dependencies: @partial_dependencies.empty? ? nil : @partial_dependencies.freeze,
+        template_metadata: compiled_template_metadata,
+        host_tag_metadata: host_tag_metadata,
       )
     end
 
     private
+
+    def compiled_template_metadata
+      metadata = {}
+      if @captured_tags && !@captured_tags.empty? && @current_file_lit
+        metadata[@current_file_lit] = @captured_tags
+      end
+      @partials.each do |name, info|
+        tags = info[:captured_tags]
+        metadata[name] = tags if tags && !tags.empty?
+      end
+      metadata.empty? ? nil : metadata.freeze
+    end
+
+    def compiled_host_tag_metadata
+      metadata = {}
+      if @host_tags && !@host_tags.empty? && @current_file_lit
+        metadata[@current_file_lit] = compile_host_tags(@current_file_lit, @host_tags)
+      end
+      @partials.each do |name, info|
+        tags = info[:host_tags]
+        metadata[name] = compile_host_tags(name, tags) if tags && !tags.empty?
+      end
+      metadata.empty? ? nil : metadata.freeze
+    end
+
+    def compile_host_tags(template_name, tags)
+      error_mode = @context&.error_mode || :lax
+      tags.map do |source_id, slot, name, line, source, body_source, body_trim_left, body_trim_right|
+        definition = Tags.host_definition(name)
+        payload = if definition
+          definition.compile(
+            source_id: source_id,
+            slot: slot,
+            template_name: template_name,
+            name: name,
+            line: line,
+            source: source,
+            body_source: body_source,
+            body_trim_left: body_trim_left,
+            body_trim_right: body_trim_right,
+            error_mode: error_mode,
+            compile_context: @context,
+            compile_options: @compile_options,
+          )
+        else
+          source
+        end
+        merge_host_partial_dependencies(payload)
+        [source_id, slot, name, line, payload].freeze
+      end.freeze
+    end
+
+    def merge_host_partial_dependencies(payload)
+      return unless payload.respond_to?(:partial_dependencies)
+
+      payload.partial_dependencies&.each do |name, info|
+        @partial_dependencies[name] = info
+      end
+    end
 
     # Generate Ruby code from IL
     def generate_ruby
@@ -208,7 +281,9 @@ module LiquidIL
       # emission consults @hoisted_lookups through scope_lookup. The optimizer
       # already walked every instruction and handed us the census (@hoist_data);
       # only re-walk when it didn't run (optimize: false).
-      @hoisted_lookups = if @hoist_data
+      @hoisted_lookups = if !@hoist_scope_lookups
+        EMPTY_HOISTS
+      elsif @hoist_data
         derive_hoisted_lookups(*@hoist_data)
       else
         compute_hoisted_lookups
@@ -231,9 +306,9 @@ module LiquidIL
       has_pc = !@partial_constants.empty?
       code << "# frozen_string_literal: true\n"
       if has_pc
-        code << "proc do |_S, _pc|\n"
+        code << "proc do |_S, _pc, _O|\n"
       else
-        code << "proc do |_S|\n"
+        code << "proc do |_S, _O|\n"
       end
       code << "  _H = LiquidIL::RuntimeHelpers\n"
       code << "  _U = LiquidIL::Utils\n" if @required_helpers.include?(:utils)
@@ -243,7 +318,6 @@ module LiquidIL
       code << generate_frozen_array_constants
       code << seq_code
       code << partial_code
-      code << "  _O = +\"\"\n"
       # Pre-initialize filter caches to avoid ||= check per iteration
       @required_filter_caches.each do |cache_var|
         code << "  #{cache_var} = {}\n"
@@ -296,6 +370,8 @@ module LiquidIL
           opts = opts.merge(
             bug_compatible_whitespace_trimming: context.bug_compatible_whitespace_trimming,
             prefer_custom_filters: context.prefer_custom_filters?,
+            custom_filter_overrides: context.custom_filter_overrides,
+            hoist_scope_lookups: context.hoist_scope_lookups?,
           )
         end
         warnings = []
@@ -313,12 +389,14 @@ module LiquidIL
           hoist_data: result[:hoist],
           pretty: pretty,
           optimize: opts.fetch(:optimize, true),
+          captured_tags: result[:captured_tags],
+          capture_tags: result[:capture_tags],
+          host_tags: result[:host_tags],
+          compile_options: opts,
+          template_name: options[:template_name],
           # Direct compile option wins over the context's; nil => today's path.
           partial_index: options[:partial_index] || context&.partial_index
         )
-        if options[:template_name]
-          ruby_compiler.instance_variable_set(:@current_file_lit, options[:template_name])
-        end
         compiled_result = ruby_compiler.compile
 
         template = Template.new(source, instructions, context, compiled_result)

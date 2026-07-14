@@ -663,11 +663,12 @@ module LiquidIL
 
         liquid_input = begin
           input.to_liquid
-        rescue LiquidIL::NoMethodError
+        rescue ::NoMethodError
           input
         end
         liquid_value = liquid_input.to_liquid_value
-        false_check = allow_false ? liquid_input.nil? : !liquid_truthy?(liquid_value)
+        literal_blank = liquid_value.is_a?(EmptyLiteral) || liquid_value.is_a?(BlankLiteral)
+        false_check = literal_blank || (allow_false ? liquid_input.nil? : !liquid_truthy?(liquid_value))
         false_check || (liquid_input.respond_to?(:empty?) && liquid_input.empty?) ? default_value : liquid_input
       end
 
@@ -876,7 +877,7 @@ module LiquidIL
           # pass through (reference liquid iterates without raising).
           e = begin
             e.to_liquid
-          rescue LiquidIL::NoMethodError
+          rescue ::NoMethodError
             e
           end
           e.context = @context if @context && e.respond_to?(:context=)

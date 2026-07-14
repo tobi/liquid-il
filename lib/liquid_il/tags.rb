@@ -18,20 +18,50 @@ module LiquidIL
   #
   module Tags
     TagDef = Struct.new(:name, :end_tag, :mode, :setup, :teardown, keyword_init: true)
-    HostTagDef = Struct.new(:name, :end_tag, :selector, :cache_key, keyword_init: true) do
-      def selected?(markup)
+    HostTagDef = Struct.new(
+      :name,
+      :end_tag,
+      :selector,
+      :cache_key,
+      :compiler,
+      :compiler_cache_key,
+      :reads_scope,
+      :writes_scope,
+      :can_interrupt,
+      keyword_init: true,
+    ) do
+      def selected?(markup, error_mode: nil)
         case selector
         when :always
           true
         when :non_literal, :non_literal_first_argument
           !Tags.literal_first_argument?(markup)
         else
-          selector.call(markup)
+          selector.arity == 1 ? selector.call(markup) : selector.call(markup, error_mode)
         end
       end
 
       def selector_fingerprint
         selector.is_a?(Symbol) ? selector.to_s : cache_key
+      end
+
+      def compiler_fingerprint
+        compiler && compiler_cache_key
+      end
+
+      # Compact effect metadata carried by HOST_TAG IL. Defaults are supplied
+      # by register_host and remain fully conservative; hosts must explicitly
+      # opt into narrower semantics before codegen can retain optimizations.
+      def effect_bits
+        bits = 0
+        bits |= IL::HOST_TAG_READS_SCOPE unless reads_scope == false
+        bits |= IL::HOST_TAG_WRITES_SCOPE unless writes_scope == false
+        bits |= IL::HOST_TAG_CAN_INTERRUPT unless can_interrupt == false
+        bits
+      end
+
+      def compile(**metadata)
+        compiler ? compiler.call(**metadata) : metadata.fetch(:source)
       end
     end
 
@@ -71,7 +101,16 @@ module LiquidIL
       #   Tags.register_host("include", select: :non_literal)
       #   Tags.register_host("form", end_tag: "endform")
       #
-      def register_host(name, end_tag: nil, select: :always, cache_key: nil, &predicate)
+      # Host effects default to fully opaque. A host may explicitly narrow
+      # them when its implementation is known not to observe or mutate Liquid
+      # scope and/or not to propagate break/continue:
+      #
+      #   Tags.register_host("asset", reads_scope: false,
+      #     writes_scope: false, can_interrupt: false)
+      #
+      def register_host(name, end_tag: nil, select: :always, cache_key: nil,
+                        compiler: nil, compiler_cache_key: nil, reads_scope: true,
+                        writes_scope: true, can_interrupt: true, &predicate)
         if predicate
           unless select == :always
             raise ArgumentError, "pass either select: or a predicate block, not both"
@@ -87,6 +126,20 @@ module LiquidIL
           raise ArgumentError, "unknown host tag selector #{select.inspect}"
         end
 
+        if compiler && (compiler_cache_key.nil? || compiler_cache_key.to_s.empty?)
+          raise ArgumentError, "host tag compilers require a stable compiler_cache_key"
+        end
+
+        {
+          reads_scope: reads_scope,
+          writes_scope: writes_scope,
+          can_interrupt: can_interrupt,
+        }.each do |effect, value|
+          unless value == true || value == false
+            raise ArgumentError, "#{effect} must be true or false"
+          end
+        end
+
         name = name.to_s.freeze
         end_tag = end_tag.to_s.freeze if end_tag
         @host_registry[name] = HostTagDef.new(
@@ -94,6 +147,11 @@ module LiquidIL
           end_tag: end_tag,
           selector: select,
           cache_key: cache_key&.to_s&.freeze,
+          compiler: compiler,
+          compiler_cache_key: compiler_cache_key&.to_s&.freeze,
+          reads_scope: reads_scope,
+          writes_scope: writes_scope,
+          can_interrupt: can_interrupt,
         ).freeze
         rebuild_end_tags!
         @version += 1
@@ -121,9 +179,9 @@ module LiquidIL
         @host_registry[name.to_s]
       end
 
-      def host_for(name, markup)
+      def host_for(name, markup, error_mode: nil)
         definition = host_definition(name)
-        definition if definition&.selected?(markup.to_s)
+        definition if definition&.selected?(markup.to_s, error_mode:)
       end
 
       def host?(name, markup = "")
@@ -183,7 +241,15 @@ module LiquidIL
           [name, definition.end_tag, definition.mode.to_s]
         end
         host_defs = @host_registry.sort_by { |name, _| name }.map do |name, definition|
-          [name, definition.end_tag, definition.selector_fingerprint]
+          [
+            name,
+            definition.end_tag,
+            definition.selector_fingerprint,
+            definition.compiler_fingerprint,
+            definition.reads_scope,
+            definition.writes_scope,
+            definition.can_interrupt,
+          ]
         end
         [@version, static_defs, host_defs].freeze
       end

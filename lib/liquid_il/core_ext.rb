@@ -1,13 +1,10 @@
 # frozen_string_literal: true
 
-# Liquid protocol: every object responds to to_liquid/to_liquid_value —
-# call sites invoke them unconditionally, never respond_to?-check. The
-# DEFAULT raises: a plain object that never opted into the protocol fails
-# loudly (LiquidIL::NoMethodError, matching reference liquid's genuine
-# NoMethodError) the moment a template touches it, instead of silently
-# leaking or hiding. That raise is the drop-protocol security boundary
-# (see liquid-spec's security_drops suite). Liquid-safe core types and
-# drops opt in via IdentityToLiquid or their own overrides.
+# Liquid protocol call sites invoke to_liquid/to_liquid_value unconditionally.
+# Plain objects deliberately do not receive a default #to_liquid: Ruby's native
+# missing-method dispatch is the drop-protocol security boundary, and leaving
+# the method absent preserves proxy objects that expose it through
+# #respond_to_missing?/#method_missing (as reference Liquid does).
 #
 # Guarded with method_defined? so we don't overwrite existing definitions
 # (e.g., from the liquid gem or user code).
@@ -31,12 +28,6 @@ end
 end
 
 class Object
-  unless method_defined?(:to_liquid)
-    def to_liquid
-      raise LiquidIL::NoMethodError, "undefined method 'to_liquid' for an instance of #{self.class}"
-    end
-  end
-
   unless method_defined?(:to_liquid_value)
     # Identity, NOT delegation to to_liquid: to_liquid_value is a LiquidIL
     # extension (drops override it), and reference liquid counts to_liquid
@@ -49,8 +40,8 @@ class Object
 
   # Liquid stringification — converts any value to its Liquid string
   # representation. Override for types with special rendering (Hash, Array, Drops).
-  # Default: call to_liquid then to_s. For non-Liquid objects this raises
-  # via to_liquid — same as reference liquid at output time.
+  # Default: call to_liquid then to_s. For non-Liquid objects this raises via
+  # Ruby's missing-method dispatch — same as reference Liquid at output time.
   unless method_defined?(:to_liquid_s)
     def to_liquid_s
       v = to_liquid

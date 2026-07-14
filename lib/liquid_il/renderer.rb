@@ -24,19 +24,31 @@ module LiquidIL
     DEFAULT_PRELOAD_KEYS = 256
     LOCK_STRIPES = 64
 
-    attr_reader :namespace, :context_options, :remote_cache_options, :max_preload_keys
+    attr_reader :namespace, :context_options, :remote_cache_options, :max_preload_keys,
+      :max_local_heads
 
     def initialize(remote_cache: nil, max_local_bytes: 64 * 1024 * 1024,
                    namespace: "liquid-il", context_options: {},
                    remote_cache_options: {}, max_preload_keys: DEFAULT_PRELOAD_KEYS,
-                   instrumenter: nil)
+                   max_local_heads: MAX_LOCAL_HEADS, instrumenter: nil,
+                   collect_stats: true, template_metadata_compiler: nil,
+                   template_metadata_compiler_key: nil)
       @remote = RemoteCache.new(remote_cache, remote_cache_options)
       @live = TemplateCache.new(max_bytes: max_local_bytes)
       @namespace = namespace.to_s.freeze
       @context_options = context_options.dup.freeze
       @remote_cache_options = remote_cache_options.dup.freeze
       @max_preload_keys = Integer(max_preload_keys)
+      raise ArgumentError, "max_preload_keys must not be negative" if @max_preload_keys.negative?
+      @max_local_heads = Integer(max_local_heads)
+      raise ArgumentError, "max_local_heads must not be negative" if @max_local_heads.negative?
       @instrumenter = instrumenter
+      @collect_stats = !!collect_stats
+      if template_metadata_compiler && template_metadata_compiler_key.to_s.empty?
+        raise ArgumentError, "template_metadata_compiler_key is required with template_metadata_compiler"
+      end
+      @template_metadata_compiler = template_metadata_compiler
+      @template_metadata_compiler_key = template_metadata_compiler_key&.to_s&.freeze
       @heads = {}
       @heads_mutex = Mutex.new
       @locks = Array.new(LOCK_STRIPES) { Mutex.new }
@@ -47,14 +59,22 @@ module LiquidIL
       @configuration_digest = digest_key(canonical_json([
         @context_options,
         Tags.compilation_cache_fingerprint,
+        @template_metadata_compiler_key,
       ]))
     end
 
     # With a block, closes the request session automatically and returns the
     # block's value. Without a block, the caller must invoke #close.
-    def session(templates:, preload_key: nil, fingerprint: nil, parse_options: {}, cache_vary: nil)
+    def session(templates:, preload_key: nil, fingerprint: nil, parse_options: {}, cache_vary: nil,
+                remote_cache: nil, remote_cache_options: nil, source_snapshot: nil,
+                trust_source_snapshot: false)
       if preload_key && fingerprint && preload_key != fingerprint
         raise ArgumentError, "preload_key and fingerprint disagree"
+      end
+      remote = if remote_cache
+        RemoteCache.new(remote_cache, remote_cache_options || @remote_cache_options)
+      else
+        @remote
       end
       session = RenderSession.new(
         self,
@@ -62,6 +82,9 @@ module LiquidIL
         preload_key: preload_key || fingerprint,
         parse_options: parse_options,
         cache_vary: cache_vary,
+        remote: remote,
+        source_snapshot: source_snapshot,
+        trust_source_snapshot: trust_source_snapshot,
       )
       return session unless block_given?
 
@@ -76,22 +99,57 @@ module LiquidIL
       @live.get(key)
     end
 
+    def local_artifact_resident?(key)
+      @live.resident?(key)
+    end
+
     def load_local_artifact(key, bytes)
       @live.fetch(key, bytes)
     end
 
+    def store_local_artifact(key, artifact)
+      @live.store(key, artifact)
+    end
+
     def local_head(key)
-      @heads_mutex.synchronize { @heads[key] }
+      return if @max_local_heads.zero?
+
+      @heads_mutex.synchronize do
+        plan = @heads.delete(key)
+        @heads[key] = plan if plan
+        plan
+      end
+    end
+
+    def local_head_resident?(key)
+      return false if @max_local_heads.zero?
+
+      @heads_mutex.synchronize { @heads.key?(key) }
+    end
+
+    def local_key_resident?(key)
+      if key.start_with?("lqil:head:")
+        local_head_resident?(key)
+      elsif key.start_with?("lqil:artifact:")
+        local_artifact_resident?(key)
+      else
+        local_head_resident?(key) || local_artifact_resident?(key)
+      end
     end
 
     def store_local_head(key, plan)
+      return plan if @max_local_heads.zero?
+
       @heads_mutex.synchronize do
-        @heads.clear if @heads.size >= MAX_LOCAL_HEADS
+        @heads.delete(key)
+        @heads.shift if @heads.size >= @max_local_heads
         @heads[key] = plan
       end
     end
 
     def delete_local_head(key)
+      return if @max_local_heads.zero?
+
       @heads_mutex.synchronize { @heads.delete(key) }
     end
 
@@ -125,8 +183,24 @@ module LiquidIL
       nil
     end
 
-    def head_key(name, root_digest, vary)
-      cache_key("head", [name, root_digest, vary])
+    def instrumented?
+      !@instrumenter.nil?
+    end
+
+    def collect_stats?
+      @collect_stats
+    end
+
+    def compile_template_metadata(template, parse_options)
+      return template unless @template_metadata_compiler && template.template_metadata
+
+      template.transform_template_metadata! do |metadata|
+        @template_metadata_compiler.call(metadata, parse_options)
+      end
+    end
+
+    def head_key(name, root_digest, vary, source_snapshot = nil)
+      cache_key("head", [name, root_digest, vary, source_snapshot])
     end
 
     def artifact_key(name, root_digest, vary, dependencies)
@@ -140,8 +214,8 @@ module LiquidIL
       cache_key("artifact", [name, root_digest, vary, embedded])
     end
 
-    def preload_storage_key(preload_key)
-      cache_key("preload", preload_key.to_s)
+    def preload_storage_key(preload_key, vary = nil)
+      cache_key("preload", [preload_key.to_s, vary])
     end
 
     def parse_vary(parse_options, explicit)
@@ -266,34 +340,47 @@ module LiquidIL
   class RenderSession
     attr_reader :stats
 
-    def initialize(renderer, templates:, preload_key:, parse_options:, cache_vary:)
+    def initialize(renderer, templates:, preload_key:, parse_options:, cache_vary:, remote:,
+                   source_snapshot:, trust_source_snapshot:)
       @renderer = renderer
+      @remote = remote
       @source = TemplateSource.new(templates, self)
       @preload_key = preload_key&.to_s
       @parse_options = parse_options.dup.freeze
       @vary = renderer.parse_vary(@parse_options, cache_vary)
+      @source_snapshot = source_snapshot&.to_s&.freeze
+      @trust_source_snapshot = !!trust_source_snapshot
+      if @trust_source_snapshot && @source_snapshot.nil?
+        raise ArgumentError, "trust_source_snapshot requires source_snapshot"
+      end
       @memo = {}
-      @preloaded = {}
+      @preloaded = EMPTY_HASH
       @preload_loaded = false
-      @touched = []
-      @stats = Hash.new(0)
+      @preload_manifest_loaded = false
+      @preload_manifest_keys = EMPTY_ARRAY
+      @touched = [] if @preload_key
+      @collect_stats = renderer.collect_stats?
+      @instrument = renderer.instrumented?
+      @stats = @collect_stats ? Hash.new(0) : EMPTY_HASH
       @closed = false
       @provider = ->(name, _baked_digest) { fetch_artifact(name) }
-      emit("session.start", preload_key: @preload_key)
+      emit("session.start", preload_key: @preload_key) if @instrument
     end
 
     # Look up a named template and return a session-bound renderable. This is
     # useful for an individual template lookup or explicit prewarming.
-    def fetch(name)
-      SessionTemplate.new(fetch_artifact(name), @provider)
+    def fetch(name, around_compile: nil)
+      SessionTemplate.new(fetch_artifact(name, around_compile:), @provider)
     end
     alias template fetch
 
     def render(name, assigns = {}, **options)
-      started = monotonic
+      started = monotonic if @instrument
       output = fetch_artifact(name).render(assigns, **options.merge(partial_provider: @provider))
-      @stats[:renders] += 1
-      emit("render", template: canonical_name(name), duration: monotonic - started)
+      @stats[:renders] += 1 if @collect_stats
+      if @instrument
+        emit("render", template: canonical_name(name), duration: monotonic - started)
+      end
       output
     end
 
@@ -311,24 +398,32 @@ module LiquidIL
       return @stats if @closed
       @closed = true
 
-      if @preload_key && @touched.any?
-        key = @renderer.preload_storage_key(@preload_key)
-        bytes = @renderer.encode_preload(@touched.uniq)
-        write_remote(key, bytes, kind: :preload)
+      # Never introduce remote I/O solely to maintain the manifest: a request
+      # satisfied entirely by the local head/artifact LRUs must remain entirely
+      # local. Cold and remote paths load the manifest in #ensure_preloaded!,
+      # and only those sessions merge their observed keys back into it.
+      if @preload_manifest_loaded && @touched&.any? && @renderer.max_preload_keys.positive?
+        touched = @touched.uniq
+        merged = (touched + @preload_manifest_keys).uniq.first(@renderer.max_preload_keys)
+        unless merged == @preload_manifest_keys
+          bytes = @renderer.encode_preload(merged)
+          write_remote(preload_storage_key, bytes, kind: :preload)
+          @preload_manifest_keys = merged
+        end
       end
-      emit("session.finish", stats: @stats.dup)
+      emit("session.finish", stats: @stats.dup) if @instrument
       @stats
     end
 
     # Internal hooks used by TemplateSource for complete lookup telemetry.
     def source_lookup(name, kind)
-      @stats[:"source_#{kind}"] += 1
-      emit("source.lookup", template: name, kind: kind)
+      @stats[:"source_#{kind}"] += 1 if @collect_stats
+      emit("source.lookup", template: name, kind: kind) if @instrument
     end
 
     private
 
-    def fetch_artifact(raw_name)
+    def fetch_artifact(raw_name, around_compile: nil)
       raise "render session is closed" if @closed
       name = canonical_name(raw_name)
       root_digest = @source.digest(name)
@@ -341,7 +436,7 @@ module LiquidIL
       end
       lookup(:request, false, name)
 
-      head_key = @renderer.head_key(name, root_digest, @vary)
+      head_key = @renderer.head_key(name, root_digest, @vary, @source_snapshot)
       artifact = resolve_from_plan(name, root_digest, head_key, @renderer.local_head(head_key), :local)
       artifact ||= resolve_remote(name, root_digest, head_key)
       artifact ||= @renderer.synchronize(head_key) do
@@ -349,7 +444,7 @@ module LiquidIL
         # waiting on the singleflight stripe.
         resolve_from_plan(name, root_digest, head_key, @renderer.local_head(head_key), :local) ||
           resolve_remote(name, root_digest, head_key) ||
-          compile(name, root_digest, head_key)
+          compile(name, root_digest, head_key, around_compile:)
       end
 
       @memo[memo_key] = artifact
@@ -371,12 +466,12 @@ module LiquidIL
       return nil unless plan
       unless valid_plan?(plan, name, root_digest)
         @renderer.delete_local_head(head_key)
-        @stats[:stale_plans] += 1
-        emit("cache.stale", tier: tier, kind: :head, template: name)
+        @stats[:stale_plans] += 1 if @collect_stats
+        emit("cache.stale", tier: tier, kind: :head, template: name) if @instrument
         return nil
       end
 
-      @renderer.store_local_head(head_key, plan)
+      @renderer.store_local_head(head_key, plan) unless tier == :local
       artifact_key = plan.fetch("artifact_key")
       touch(head_key)
       touch(artifact_key)
@@ -397,8 +492,10 @@ module LiquidIL
         lookup(bytes_tier || :remote, true, name, kind: :artifact)
         artifact
       rescue StaleArtifactError, CorruptArtifactError, ArgumentError, TypeError
-        @stats[:invalid_artifacts] += 1
-        emit("artifact.invalid", template: name, tier: bytes_tier || :remote)
+        @stats[:invalid_artifacts] += 1 if @collect_stats
+        if @instrument
+          emit("artifact.invalid", template: name, tier: bytes_tier || :remote)
+        end
         nil
       end
     end
@@ -406,6 +503,8 @@ module LiquidIL
     def valid_plan?(plan, name, root_digest)
       return false unless plan["name"] == name && plan["root_digest"] == root_digest
       return false unless plan["vary"] == @vary
+      return false unless plan["source_snapshot"] == @source_snapshot
+      return true if @trust_source_snapshot
 
       plan.fetch("dependencies").all? do |dep|
         dep_name = dep["name"]
@@ -423,11 +522,17 @@ module LiquidIL
       false
     end
 
-    def compile(name, expected_digest, head_key)
+    def compile(name, expected_digest, head_key, around_compile: nil)
+      if around_compile
+        return around_compile.call do
+          compile(name, expected_digest, head_key)
+        end
+      end
+
       attempts = 0
       begin
         attempts += 1
-        started = monotonic
+        started = monotonic if @instrument
         body = @source.read(name)
         raise LiquidIL::Error, "template #{name.inspect} was not found" if body.nil?
         raise SourceChanged if @source.digest(name) != expected_digest
@@ -447,6 +552,7 @@ module LiquidIL
         )
         parser_options = @parse_options.reject { |key, _| key.to_s == "error_mode" }
         template = context.parse(body, **parser_options.transform_keys(&:to_sym), template_name: name)
+        @renderer.compile_template_metadata(template, @parse_options)
         dependencies = normalize_dependencies(template.partial_dependencies)
         raise SourceChanged unless compile_snapshot_valid?(name, expected_digest, dependencies)
 
@@ -457,6 +563,7 @@ module LiquidIL
           "name" => name,
           "root_digest" => expected_digest,
           "vary" => @vary,
+          "source_snapshot" => @source_snapshot,
           "artifact_key" => artifact_key,
           "dependencies" => dependencies,
         }
@@ -466,16 +573,23 @@ module LiquidIL
         write_remote(artifact_key, artifact_bytes, kind: :artifact, template: name)
         write_remote(head_key, @renderer.encode_plan(plan), kind: :head, template: name)
         @renderer.store_local_head(head_key, plan)
-        artifact = @renderer.load_local_artifact(artifact_key, artifact_bytes)
+        artifact = @renderer.store_local_artifact(
+          artifact_key,
+          template.to_compiled_artifact(artifact_bytes),
+        )
         touch(head_key)
         touch(artifact_key)
-        @stats[:compiles] += 1
-        emit("compile", template: name, duration: monotonic - started,
-          artifact_bytes: artifact_bytes.bytesize, dependencies: dependencies.length)
+        @stats[:compiles] += 1 if @collect_stats
+        if @instrument
+          emit("compile", template: name, duration: monotonic - started,
+            artifact_bytes: artifact_bytes.bytesize, dependencies: dependencies.length)
+        end
         artifact
       rescue SourceChanged
         expected_digest = @source.digest(name)
-        head_key = @renderer.head_key(name, expected_digest, @vary) if expected_digest
+        if expected_digest
+          head_key = @renderer.head_key(name, expected_digest, @vary, @source_snapshot)
+        end
         retry if expected_digest && attempts < 3
         raise LiquidIL::Error, "template #{name.inspect} changed repeatedly while compiling"
       end
@@ -496,6 +610,7 @@ module LiquidIL
 
     def compile_snapshot_valid?(name, root_digest, dependencies)
       return false unless @source.digest(name) == root_digest
+      return true if @trust_source_snapshot
 
       dependencies.all? do |dep|
         digest = @source.digest(dep.fetch("name"))
@@ -510,13 +625,28 @@ module LiquidIL
       return if @preload_loaded
       @preload_loaded = true
       return unless @preload_key
+      return if @renderer.max_preload_keys.zero?
 
-      key = @renderer.preload_storage_key(@preload_key)
-      bytes = read_remote(key, kind: :preload)
-      keys = bytes ? @renderer.decode_preload(bytes) : []
-      @preloaded = @renderer.remote_read_multi(keys)
-      @stats[:preload_keys] += @preloaded.size
-      emit("cache.preload", key_count: keys.length, hit_count: @preloaded.size)
+      ensure_preload_manifest!
+      keys = @preload_manifest_keys.reject { |key| @renderer.local_key_resident?(key) }
+      @preloaded = @remote.read_multi(keys)
+      @stats[:preload_keys] += @preloaded.size if @collect_stats
+      if @instrument
+        emit("cache.preload", key_count: keys.length, hit_count: @preloaded.size)
+      end
+    end
+
+    def ensure_preload_manifest!
+      return if @preload_manifest_loaded
+      @preload_manifest_loaded = true
+      return unless @preload_key
+
+      bytes = read_remote(preload_storage_key, kind: :preload)
+      @preload_manifest_keys = bytes ? @renderer.decode_preload(bytes) : EMPTY_ARRAY
+    end
+
+    def preload_storage_key
+      @preload_storage_key ||= @renderer.preload_storage_key(@preload_key, @vary)
     end
 
     def cached_bytes(key)
@@ -526,31 +656,43 @@ module LiquidIL
     end
 
     def read_remote(key, kind:, template: nil)
-      bytes = @renderer.remote_read(key)
-      @stats[bytes ? :remote_hits : :remote_misses] += 1
-      emit("cache.lookup", tier: :remote, kind: kind, hit: !bytes.nil?, template: template)
+      bytes = @remote.read(key)
+      @stats[bytes ? :remote_hits : :remote_misses] += 1 if @collect_stats
+      if @instrument
+        emit("cache.lookup", tier: :remote, kind: kind, hit: !bytes.nil?, template: template)
+      end
       bytes
     end
 
     def write_remote(key, bytes, kind:, template: nil)
-      written = @renderer.remote_write(key, bytes)
-      @stats[written ? :remote_writes : :remote_write_failures] += 1
-      @stats[:remote_bytes_written] += bytes.bytesize if written
-      emit("cache.write", kind: kind, success: !!written, bytes: bytes.bytesize, template: template)
+      written = @remote.write(key, bytes)
+      if @collect_stats
+        @stats[written ? :remote_writes : :remote_write_failures] += 1
+        @stats[:remote_bytes_written] += bytes.bytesize if written
+      end
+      if @instrument
+        emit("cache.write", kind: kind, success: !!written, bytes: bytes.bytesize,
+          template: template)
+      end
       written
     end
 
     def lookup(tier, hit, template, kind: :template)
-      @stats[:"#{tier}_#{hit ? 'hits' : 'misses'}"] += 1
-      emit("cache.lookup", tier: tier, kind: kind, hit: hit, template: template)
+      return unless @collect_stats || @instrument
+
+      @stats[:"#{tier}_#{hit ? 'hits' : 'misses'}"] += 1 if @collect_stats
+      emit("cache.lookup", tier: tier, kind: kind, hit: hit, template: template) if @instrument
     end
 
     def touch(key)
-      @touched << key
+      @touched << key if @touched
     end
 
     def emit(event, payload = {})
-      @renderer.instrument(event, payload.merge(session_id: object_id))
+      return unless @instrument
+
+      payload[:session_id] = object_id
+      @renderer.instrument(event, payload)
     end
 
     def canonical_name(name)

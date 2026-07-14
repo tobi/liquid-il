@@ -33,17 +33,19 @@ module LiquidIL
   #       type 2: JSON partial constants (only when non-empty)
   #       type 3: JSON external partial dependencies (only when non-empty)
   #       type 4: packed literal pool (count + encoding-tagged strings)
+  #       type 5: JSON template metadata captured during compilation
+  #       type 6: Marshal host-tag compile products (trusted artifacts only)
   #
-  # Metadata uses JSON rather than Marshal so envelope decoding never performs
-  # arbitrary object construction. Legacy pre-v1 Marshal cache payloads remain
-  # readable during migration, but callers should only load trusted artifacts:
-  # an ISeq is executable code and must be authenticated if the cache can be
-  # written by an untrusted party.
+  # Portable metadata uses JSON. Host-tag compile products are deliberately
+  # opaque Ruby objects and use Marshal; this does not introduce a new trust
+  # boundary because the same artifact already carries executable Ruby ISeq.
+  # Artifacts must be authenticated if their cache can be written by an
+  # untrusted party.
   module Artifact
     MAGIC = "LQIL".b.freeze
     VERSION = 2
     RUNTIME_ABI = 1
-    COMPILER_ABI = 2
+    COMPILER_ABI = 10
     RUBY_STAMP = "#{RUBY_VERSION}.#{RUBY_PATCHLEVEL}/#{RUBY_PLATFORM}".freeze
     ABI_STAMP = "runtime-#{RUNTIME_ABI}/compiler-#{COMPILER_ABI}".freeze
 
@@ -51,6 +53,8 @@ module LiquidIL
     SEG_PARTIAL_CONSTANTS = 2
     SEG_PARTIAL_DEPS = 3
     SEG_LITERAL_POOL = 4
+    SEG_TEMPLATE_METADATA = 5
+    SEG_HOST_TAG_METADATA = 6
 
     MAX_SEGMENTS = 32
     MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
@@ -60,6 +64,8 @@ module LiquidIL
         iseq = template.iseq_binary
         partial_constants = template.partial_constants
         ext_deps = external_deps(template.respond_to?(:partial_dependencies) ? template.partial_dependencies : nil)
+        template_metadata = template.respond_to?(:template_metadata) ? template.template_metadata : nil
+        host_tag_metadata = template.respond_to?(:host_tag_metadata) ? template.host_tag_metadata : nil
 
         segments = [[SEG_ISEQ, iseq]]
         if partial_constants && !partial_constants.empty?
@@ -71,6 +77,12 @@ module LiquidIL
         end
         if ext_deps && !ext_deps.empty?
           segments << [SEG_PARTIAL_DEPS, encode_json(ext_deps)]
+        end
+        if template_metadata && !template_metadata.empty?
+          segments << [SEG_TEMPLATE_METADATA, encode_json(template_metadata)]
+        end
+        if host_tag_metadata && !host_tag_metadata.empty?
+          segments << [SEG_HOST_TAG_METADATA, Marshal.dump(host_tag_metadata)]
         end
 
         payload = String.new(capacity: 1 + segments.sum { |_type, bytes| 5 + bytes.bytesize }, encoding: Encoding::BINARY)
@@ -119,7 +131,8 @@ module LiquidIL
       end
 
       # Decode the envelope into:
-      #   [iseq_bytes, partial_constants, payload_digest, partial_deps, literal_pool]
+      #   [iseq_bytes, partial_constants, payload_digest, partial_deps,
+      #    literal_pool, template_metadata, host_tag_metadata]
       def decode_segments(blob)
         raise CorruptArtifactError, "not a LiquidIL artifact" unless artifact?(blob)
         raise CorruptArtifactError, "artifact exceeds maximum size" if blob.bytesize > MAX_ARTIFACT_BYTES
@@ -159,6 +172,8 @@ module LiquidIL
         partial_constants = nil
         partial_deps = nil
         literal_pool = nil
+        template_metadata = nil
+        host_tag_metadata = nil
         seen = {}
 
         seg_count.times do
@@ -169,7 +184,7 @@ module LiquidIL
           bytes = read_exact(payload, payload_pos, len)
           payload_pos += len
 
-          if type.between?(SEG_ISEQ, SEG_LITERAL_POOL)
+          if type.between?(SEG_ISEQ, SEG_HOST_TAG_METADATA)
             raise CorruptArtifactError, "duplicate artifact segment type #{type}" if seen[type]
             seen[type] = true
           end
@@ -183,6 +198,14 @@ module LiquidIL
             partial_deps = normalize_partial_deps(JSON.parse(bytes, create_additions: false))
           when SEG_LITERAL_POOL
             literal_pool = decode_literal_pool(bytes)
+          when SEG_TEMPLATE_METADATA
+            value = JSON.parse(bytes, create_additions: false)
+            raise CorruptArtifactError, "template metadata must be an object" unless value.is_a?(Hash)
+            template_metadata = deep_freeze(value)
+          when SEG_HOST_TAG_METADATA
+            value = Marshal.load(bytes)
+            raise CorruptArtifactError, "host tag metadata must be an object" unless value.is_a?(Hash)
+            host_tag_metadata = value
           end
           # Unknown segment types are skipped for forward-compatible readers.
         rescue JSON::ParserError => e
@@ -194,7 +217,8 @@ module LiquidIL
         raise CorruptArtifactError, "artifact ISeq length mismatch" unless iseq.bytesize == iseq_len
 
         partial_constants ||= literal_pool
-        [iseq, partial_constants, expected_digest, partial_deps, literal_pool]
+        [iseq, partial_constants, expected_digest, partial_deps, literal_pool,
+         template_metadata, host_tag_metadata]
       rescue CorruptArtifactError, StaleArtifactError
         raise
       rescue StandardError => e
@@ -203,8 +227,14 @@ module LiquidIL
 
       def load(blob)
         if artifact?(blob)
-          iseq, partial_constants, = decode_segments(blob)
-          Template.from_iseq_binary(iseq, partial_constants: partial_constants)
+          iseq, partial_constants, _digest, _partial_deps, _literal_pool,
+            template_metadata, host_tag_metadata = decode_segments(blob)
+          Template.from_iseq_binary(
+            iseq,
+            partial_constants: partial_constants,
+            template_metadata: template_metadata,
+            host_tag_metadata: host_tag_metadata,
+          )
         else
           # Trusted transition-only compatibility path for pre-v1 Marshal hash payloads.
           Template.from_cache(**Marshal.load(blob))
@@ -213,10 +243,11 @@ module LiquidIL
 
       def load_compiled(blob)
         if artifact?(blob)
-          iseq, partial_constants, payload_digest, partial_deps = decode_segments(blob)
+          iseq, partial_constants, payload_digest, partial_deps, _literal_pool,
+            template_metadata, host_tag_metadata = decode_segments(blob)
           compiled_proc = RubyVM::InstructionSequence.load_from_binary(iseq).eval
           CompiledArtifact.new(compiled_proc, partial_constants, blob.bytesize,
-            payload_digest, partial_deps)
+            payload_digest, partial_deps, template_metadata, host_tag_metadata)
         else
           data = Marshal.load(blob)
           compiled_proc = RubyVM::InstructionSequence.load_from_binary(data[:iseq_binary]).eval

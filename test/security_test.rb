@@ -921,6 +921,22 @@ class ToLiquidProtocolTest < Minitest::Test
     assert_blocked '{{ o.class }}', "o" => obj
   end
 
+  def test_to_liquid_honors_the_ruby_method_missing_proxy_protocol
+    proxy = Class.new do
+      def respond_to_missing?(name, include_private = false)
+        name == :to_liquid || super
+      end
+
+      def method_missing(name, ...)
+        return { "name" => "proxied" } if name == :to_liquid
+
+        super
+      end
+    end.new
+
+    assert_equal "proxied", render('{{ o.name }}', "o" => proxy)
+  end
+
   def test_drop_to_liquid_returns_self
     drop = VictimDrop.new
     assert_equal drop, drop.to_liquid

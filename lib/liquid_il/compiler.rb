@@ -10,7 +10,7 @@ module LiquidIL
       IL::LABEL, IL::JUMP, IL::JUMP_IF_EMPTY, IL::JUMP_IF_INTERRUPT,
       IL::IF, IL::ELSE, IL::END_IF,
       IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END, IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
-      IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HOST_TAG, IL::HALT,
+      IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HALT,
       IL::ASSIGN, IL::ASSIGN_LOCAL,
       IL::INCREMENT, IL::DECREMENT
     ].to_set.freeze
@@ -29,7 +29,7 @@ module LiquidIL
       IL::IF, IL::ELSE, IL::END_IF,
       IL::FOR_INIT, IL::FOR_NEXT, IL::FOR_END,
       IL::TABLEROW_INIT, IL::TABLEROW_NEXT, IL::TABLEROW_END,
-      IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL, IL::HOST_TAG
+      IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
     ].each_with_object({}) { |op, h| h[op] = true }.freeze
 
     def initialize(source, **options)
@@ -50,6 +50,11 @@ module LiquidIL
         # supplies :strict2 for the main template.
         error_mode: @options[:error_mode] || :lax,
         bug_compatible_whitespace_trimming: @options[:bug_compatible_whitespace_trimming] || false,
+        host_literal_partials: @options[:host_literal_partials] || false,
+        capture_tags: @options[:capture_tags],
+        template_name: @options[:template_name],
+        host_source_name: @options[:host_source_name],
+        host_tag_runtime_source: @options.fetch(:host_tag_runtime_source, true),
         warnings: @options[:warnings]
       )
       instructions = parser.parse
@@ -81,7 +86,13 @@ module LiquidIL
       # RubyCompiler#compute_hoisted_lookups.
       hoist = @hoist_ran ? [@hoist_counts, @hoist_written, @hoist_blocked] : nil
 
-      { instructions: instructions, hoist: hoist }
+      {
+        instructions: instructions,
+        hoist: hoist,
+        captured_tags: parser.captured_tags.empty? ? nil : parser.captured_tags.freeze,
+        host_tags: parser.host_tags.empty? ? nil : parser.host_tags.freeze,
+        capture_tags: @options[:capture_tags],
+      }
     end
 
     private
@@ -205,8 +216,9 @@ module LiquidIL
               end
             elsif opcode == IL::ASSIGN_LOCAL || opcode == IL::INCREMENT || opcode == IL::DECREMENT
               known.delete(inst[1])
-            elsif PROPAGATION_BARRIERS[opcode]
-              # Control flow or partial render — variables could change
+            elsif PROPAGATION_BARRIERS[opcode] ||
+                  (opcode == IL::HOST_TAG && host_tag_lookup_barrier?(inst))
+              # Control flow, partial render, or an effectful host tag.
               known.clear
             end
           end
@@ -439,15 +451,13 @@ module LiquidIL
     end
 
     def fold_const_filters(instructions)
-      return if @options[:prefer_custom_filters]
-
       i = 0
       while i < instructions.length
         inst = instructions[i]
         if inst[0] == IL::CALL_FILTER
           name = inst[1].to_s
           argc = inst[2]
-          if SAFE_FOLD_FILTERS.include?(name)
+          if SAFE_FOLD_FILTERS.include?(name) && !prefer_custom_filter?(name)
             collected = collect_const_values(instructions, i - 1, argc + 1)
             if collected
               values, start_idx = collected
@@ -470,6 +480,13 @@ module LiquidIL
         end
         i += 1
       end
+    end
+
+    def prefer_custom_filter?(name)
+      return true if @options[:prefer_custom_filters]
+
+      overrides = @options[:custom_filter_overrides]
+      overrides.respond_to?(:key?) ? overrides.key?(name) : Array(overrides).include?(name)
     end
 
     def collect_const_values(instructions, end_idx, count)
@@ -641,6 +658,11 @@ module LiquidIL
           written_vars << inst[1]
         when IL::INCREMENT, IL::DECREMENT
           written_vars << inst[1]
+        when IL::HOST_TAG
+          # A scope-writing tag can invalidate any lookup, while an
+          # interrupting tag can prevent a later lookup from happening at all.
+          # In either case moving reads ahead of the tag is not semantics-safe.
+          return if host_tag_lookup_barrier?(inst)
         end
       end
 
@@ -787,6 +809,8 @@ module LiquidIL
             hw[parts.last] = true
           when IL::INCLUDE_PARTIAL, IL::CONST_INCLUDE, :SHOPIFY_SECTION_RENDER
             hoist_active = false
+          when IL::HOST_TAG
+            hoist_active = false if host_tag_lookup_barrier?(inst)
           else
             hoist_active = false unless RubyCompiler::HOIST_NEUTRAL_OPS[opcode]
           end
@@ -872,7 +896,8 @@ module LiquidIL
       instructions.any? do |inst|
         # Included partials share the caller's scope, so break/continue inside
         # them propagates out — assume interrupts are possible.
-        inst[0] == IL::PUSH_INTERRUPT || inst[0] == IL::INCLUDE_PARTIAL || inst[0] == IL::HOST_TAG
+        inst[0] == IL::PUSH_INTERRUPT || inst[0] == IL::INCLUDE_PARTIAL ||
+          (inst[0] == IL::HOST_TAG && IL.host_tag_can_interrupt?(inst))
       end
     end
 
@@ -970,7 +995,15 @@ module LiquidIL
     end
 
     def control_flow_boundary?(inst)
-      CONTROL_FLOW_OPCODES.include?(inst[0])
+      CONTROL_FLOW_OPCODES.include?(inst[0]) ||
+        (inst[0] == IL::HOST_TAG && host_tag_lookup_barrier?(inst))
+    end
+
+    # Scope writes invalidate cached values. Interrupts are also lookup
+    # barriers because moving a lazy lookup before a tag that stops rendering
+    # can introduce evaluation (and errors/side effects) that never occurred.
+    def host_tag_lookup_barrier?(inst)
+      IL.host_tag_writes_scope?(inst) || IL.host_tag_can_interrupt?(inst)
     end
 
     # Find the maximum temp index used in the instructions
