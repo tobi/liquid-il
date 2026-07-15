@@ -434,6 +434,14 @@ module LiquidIL
       render(assigns, render_errors: false, **options)
     end
 
+    # Execute this freshly compiled template against a host-owned Scope.
+    # CompiledArtifact exposes the same seam for cache hits; keeping it on
+    # Template as well lets hosts use an identical context bridge on compile
+    # misses without serializing and reloading the template first.
+    def render_scope(scope, output: nil)
+      RenderExecutor.call(@compiled_proc, scope, @partial_constants, output: output)
+    end
+
     # Render, appending into a caller-provided String buffer instead of
     # returning a fresh one; returns the buffer. The storefront renderer's
     # contract (renderable_template.rb) expects this shape (a 16KB preallocated

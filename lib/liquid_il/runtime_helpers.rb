@@ -688,16 +688,20 @@ module LiquidIL
       when Hash
         value.map { |k, v| [k, v] }
       else
-        if value.respond_to?(:to_a)
+        # Reference Liquid materializes arbitrary collections by calling #each
+        # with a one-argument block. This matters for hash-like Drops whose
+        # #each yields key and value: the loop item is the key, whereas #to_a
+        # would turn every yield into a [key, value] pair.
+        if value.respond_to?(:each)
+          result = []
+          value.each { |item| result << item }
+          result
+        elsif value.respond_to?(:to_a)
           begin
             value.to_a
           rescue
             [value]
           end
-        elsif value.respond_to?(:each)
-          result = []
-          value.each { |item| result << item }
-          result
         else
           [value]
         end

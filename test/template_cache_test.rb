@@ -27,6 +27,17 @@ class TemplateCacheTest < Minitest::Test
     assert_equal template.render(assigns), LiquidIL.load_and_render(template.to_artifact, assigns)
   end
 
+  def test_fresh_template_can_render_against_a_host_owned_scope
+    template = LiquidIL::Template.parse("Hello {{ name }}!")
+    scope = LiquidIL::Scope.new({ "name" => "Ada" })
+    output = +"prefix:"
+
+    returned = template.render_scope(scope, output: output)
+
+    assert_same output, returned
+    assert_equal "prefix:Hello Ada!", output
+  end
+
   def test_cache_loads_once_and_reuses
     cache = LiquidIL::TemplateCache.new(max_bytes: 1024 * 1024)
     blob = blob_for("V={{ v }}")
