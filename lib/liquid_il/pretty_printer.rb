@@ -127,6 +127,17 @@ module LiquidIL
         format_simple("NEW_RANGE", [], idx, comment: "pop end, start → range")
       when IL::CALL_FILTER
         format_simple("CALL_FILTER", [format_string(args[0]), args[1].to_s], idx, comment: "#{args[1]} args, line #{args[2]}")
+      when IL::HOST_TAG
+        effects = []
+        effects << "reads_scope" if IL.host_tag_reads_scope?(inst)
+        effects << "writes_scope" if IL.host_tag_writes_scope?(inst)
+        effects << "can_interrupt" if IL.host_tag_can_interrupt?(inst)
+        format_simple(
+          "HOST_TAG",
+          [args[1].to_s, format_string(args[2])],
+          idx,
+          comment: "source #{args[0][0, 12]}, line #{args[3]}, effects #{effects.join('|')}",
+        )
       when IL::FOR_INIT
         format_simple("FOR_INIT", format_for_init_args(args), idx)
       when IL::FOR_NEXT

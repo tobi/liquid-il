@@ -96,6 +96,8 @@ module LiquidIL
           when IL::RENDER_PARTIAL, IL::INCLUDE_PARTIAL
             isolated = inst[0] == IL::RENDER_PARTIAL
             code << generate_partial_call(inst, 1, isolated: isolated)
+          when IL::HOST_TAG
+            code << generate_host_tag(inst, 1)
           when IL::ASSIGN_LOCAL
             @pc += 1
             code << "  _S.assign_local(#{inst[1].inspect}, #{scope_lookup(inst[2])})\n"
@@ -220,10 +222,10 @@ module LiquidIL
             base = scope_lookup_pathed(inst[1])
             guard = @uses_interrupts ? " unless _S.has_interrupt?" : ""
             if path.length == 1
-              "#{prefix}_H.olf(_O, #{base}, #{path[0].to_s.inspect})#{guard}\n"
+              "#{prefix}_H.olf(_O, #{base}, #{path[0].to_s.inspect}, _S)#{guard}\n"
             else
               arr = register_frozen_array(path.map { |k| k.to_s.inspect })
-              "#{prefix}_H.olp(_O, #{base}, #{arr})#{guard}\n"
+              "#{prefix}_H.olp(_O, #{base}, #{arr}, _S)#{guard}\n"
             end
           else
             var_expr = generate_var_path_expr(inst[1], path)
@@ -315,7 +317,8 @@ module LiquidIL
           if @instructions[@pc]&.[](0) == IL::ASSIGN
             var = @instructions[@pc][1]
             @pc += 1
-            "#{prefix}__captured__ = _O; _O = _cst.pop; _S.assign(#{var.inspect}, __captured__)\n"
+            limit_check = @has_resource_limits ? "_S.increment_assign_score!(__captured__); " : ""
+            "#{prefix}__captured__ = _O; _O = _cst.pop; #{limit_check}_S.assign(#{var.inspect}, __captured__)\n"
           elsif @instructions[@pc]&.[](0) == IL::IFCHANGED_CHECK
             @uses_ifchanged = true
             tag_id = @instructions[@pc][1]
@@ -418,7 +421,8 @@ module LiquidIL
             @pc += 2 # Consume POP_CAPTURE and ASSIGN
             if @loop_depth > 0
               # Inside loop: complete the capture assignment before breaking
-              code << "#{prefix}__captured__ = _O; _O = _cst.pop; _S.assign(#{var.inspect}, __captured__)\n"
+              limit_check = @has_resource_limits ? "_S.increment_assign_score!(__captured__); " : ""
+              code << "#{prefix}__captured__ = _O; _O = _cst.pop; #{limit_check}_S.assign(#{var.inspect}, __captured__)\n"
             else
               # Outside loop: just restore output, discard captured content
               code << "#{prefix}_O = _cst.pop\n"
@@ -455,6 +459,9 @@ module LiquidIL
         when IL::INCLUDE_PARTIAL
           generate_partial_call(inst, indent, isolated: false)
 
+        when IL::HOST_TAG
+          generate_host_tag(inst, indent)
+
         when :SHOPIFY_SECTION_RENDER
           @pc += 1
           record_open_partial_call
@@ -468,7 +475,7 @@ module LiquidIL
           # Generate runtime paginate setup using helper method
           parts = coll_path.split(".")
           lookup = scope_lookup(parts[0])
-          parts[1..].each { |p| lookup = "_H.l(#{lookup}, #{p.inspect})" }
+          parts[1..].each { |p| lookup = "_H.l(#{lookup}, #{p.inspect}, _S)" }
           # _pgc, not _pc: _pc is the proc's partial-constants parameter
           code = String.new
           code << "#{prefix}_pgc = #{lookup}\n"
@@ -485,6 +492,20 @@ module LiquidIL
         else
           generate_expression_statement(indent)
         end
+      end
+
+      def generate_host_tag(inst, indent)
+        @pc += 1
+        # Opaque scope reads can observe any lexical local (notably `render
+        # block`), so optimized loops must publish their bindings. Tags that
+        # explicitly declare themselves scope-independent stay on the fast
+        # unsynchronized loop path.
+        record_dynamic_read if IL.host_tag_reads_scope?(inst)
+        prefix = @indent[indent]
+        source_id, slot, name, line, source = inst[1], inst[2], inst[3], inst[4], inst[5]
+        "#{prefix}_S.render_host_tag(#{slot}, source_id: #{source_id.inspect}, " \
+          "template_name: #{@current_file_lit.inspect}, name: #{name.inspect}, " \
+          "line: #{line}, source: #{source.inspect}, output: _O)\n"
       end
 
       # Build expression until we hit STORE_TEMP
@@ -532,12 +553,12 @@ module LiquidIL
       def emit_assign_statement(var, expr_ruby, prefix, temp_code, local:)
         if var.is_a?(StatementDedup::SeqRef)
           name_l = "_sqp#{var.slot}__"
-          af = local ? "afl" : "af"
+          af = local ? "afl" : (@has_resource_limits ? "afr" : "af")
           if var.dual
             vl = "_sqv#{var.slot}__"
             return temp_code + "#{prefix}#{vl} = #{expr_ruby}\n#{prefix}_H.#{af}(_S, #{name_l}, #{vl})\n"
           elsif expr_ruby.filter_dispatch_inner
-            aff = local ? "affl" : "aff"
+            aff = local ? "affl" : (@has_resource_limits ? "affr" : "aff")
             return temp_code + "#{prefix}_H.#{aff}(_S, #{name_l}, #{expr_ruby.filter_dispatch_inner})\n"
           else
             return temp_code + "#{prefix}_H.#{af}(_S, #{name_l}, #{expr_ruby})\n"
@@ -546,10 +567,10 @@ module LiquidIL
 
         # Normal named assign: single known-filter call fuses into one _H.aff send.
         if expr_ruby.filter_dispatch_inner
-          aff = local ? "affl" : "aff"
+          aff = local ? "affl" : (@has_resource_limits ? "affr" : "aff")
           temp_code + "#{prefix}_H.#{aff}(_S, #{var.inspect}, #{expr_ruby.filter_dispatch_inner})\n"
         else
-          af = local ? "afl" : "af"
+          af = local ? "afl" : (@has_resource_limits ? "afr" : "af")
           temp_code + "#{prefix}_H.#{af}(_S, #{var.inspect}, #{expr_ruby})\n"
         end
       end
@@ -626,7 +647,7 @@ module LiquidIL
             key_match = expr_str[i..]&.match(/\A[a-zA-Z_]\w*/)
             break unless key_match
             key = key_match[0]
-            result = "_H.lookup(#{result}, #{key.inspect})"
+            result = "_H.lookup(#{result}, #{key.inspect}, _S)"
             i += key.length
           when 91 # [
             close = expr_str.index("]", i + 1)
@@ -639,7 +660,7 @@ module LiquidIL
             else
               generate_var_lookup(inner)
             end
-            result = "_H.lookup(#{result}, #{key_ruby})"
+            result = "_H.lookup(#{result}, #{key_ruby}, _S)"
             i = close + 1
           else
             break

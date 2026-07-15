@@ -134,6 +134,43 @@ module LiquidIL
       end
     end
 
+    # Consume a host-owned block without tokenizing or interpreting its body.
+    # The scanner is positioned immediately after the opening tag. Nested blocks
+    # of the same name are balanced, while raw/comment contents are skipped so
+    # delimiter-looking text inside them cannot terminate the outer block.
+    #
+    # Returns [closed, closing_trim_left, closing_trim_right, body_source].
+    def scan_opaque_block(start_tag, end_tag)
+      depth = 1
+      body_start = @scanner.pos
+
+      loop do
+        type = next_token
+        if type == EOF
+          body = @source.byteslice(body_start, @source.bytesize - body_start)
+          return [false, false, false, body]
+        end
+        next unless type == TAG
+
+        name = tag_name
+        if name == "raw"
+          scan_raw_body
+          next
+        elsif name == "comment"
+          skip_opaque_comment
+          next
+        elsif name == start_tag
+          depth += 1
+        elsif name == end_tag
+          depth -= 1
+          if depth.zero?
+            body = @source.byteslice(body_start, @token_start - body_start)
+            return [true, @trim_left, @trim_right, body]
+          end
+        end
+      end
+    end
+
     # Advance to next token. Returns token type symbol.
     # Access token_start, token_end, trim_left, trim_right, token_content after.
     def next_token
@@ -160,6 +197,27 @@ module LiquidIL
     end
 
     private
+
+    # Comments may nest in reference Liquid and may contain raw blocks. Keep the
+    # opaque-block scanner out of their contents without materializing tokens.
+    def skip_opaque_comment
+      depth = 1
+      while depth.positive?
+        type = next_token
+        return false if type == EOF
+        next unless type == TAG
+
+        name = tag_name
+        if name == "raw"
+          scan_raw_body
+        elsif name == "comment"
+          depth += 1
+        elsif name == "endcomment"
+          depth -= 1
+        end
+      end
+      true
+    end
 
     def scan_raw_token
       start_pos = @scanner.pos

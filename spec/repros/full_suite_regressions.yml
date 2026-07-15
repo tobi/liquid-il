@@ -34,3 +34,31 @@ specs:
   errors:
     render_error:
       - Liquid error
+
+# Root cause: output checks existed only inside generated loop bodies, so a
+# large straight-line template could finish above its render-length limit.
+- name: render_time_output_limit_checks_non_loop_template
+  template: "hello"
+  resource_limits:
+    output_limit: 3
+  errors:
+    render_error:
+      - Liquid error
+
+# Root cause: compiled assign and capture operations did not charge the
+# assignment resource budget used by reference Liquid.
+- name: render_time_assign_limit_counts_assign
+  template: "{% assign value = 'four' %}"
+  resource_limits:
+    assign_score_limit: 3
+  errors:
+    render_error:
+      - Liquid error
+
+- name: render_time_assign_limit_counts_capture
+  template: "{% capture value %}hi{% endcapture %}"
+  resource_limits:
+    assign_score_limit: 1
+  errors:
+    render_error:
+      - Liquid error

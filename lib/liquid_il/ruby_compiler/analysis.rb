@@ -71,6 +71,12 @@ module LiquidIL
             w[parts.last] = true
           when IL::INCLUDE_PARTIAL, IL::CONST_INCLUDE, :SHOPIFY_SECTION_RENDER
             return EMPTY_HOISTS
+          when IL::HOST_TAG
+            # Read-only, noninterrupting host calls cannot change lookup
+            # results or suppress a later lazy lookup. Scope-writing or
+            # interrupting calls remain full hoist barriers.
+            return EMPTY_HOISTS if IL.host_tag_writes_scope?(inst) ||
+              IL.host_tag_can_interrupt?(inst)
           else
             return EMPTY_HOISTS unless HOIST_NEUTRAL_OPS[op]
           end

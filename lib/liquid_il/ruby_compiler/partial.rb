@@ -69,7 +69,9 @@ module LiquidIL
         end
         @compilation_cache_fingerprint = [
           Artifact::COMPILER_ABI, context_fingerprint, @pretty, @optimize,
-          @partial_index&.class&.name, @partial_index&.object_id
+          @partial_index&.class&.name, @partial_index&.object_id, @capture_tags,
+          @compile_options.fetch(:host_literal_partials, false),
+          @compile_options.fetch(:host_tag_runtime_source, true),
         ].freeze
       end
 
@@ -131,7 +133,18 @@ module LiquidIL
         # parse :lax even under a :strict2 context (matches the liquid gem's
         # include behavior).
         begin
-          compiler = LiquidIL::Compiler.new(source, optimize: true, skip_passes: PARTIAL_SKIP_PASSES)
+          compiler = LiquidIL::Compiler.new(
+            source,
+            optimize: true,
+            skip_passes: PARTIAL_SKIP_PASSES,
+            bug_compatible_whitespace_trimming: @context&.bug_compatible_whitespace_trimming,
+            prefer_custom_filters: @context&.prefer_custom_filters?,
+            custom_filter_overrides: @context&.custom_filter_overrides,
+            host_literal_partials: @compile_options.fetch(:host_literal_partials, false),
+            host_tag_runtime_source: @compile_options.fetch(:host_tag_runtime_source, true),
+            capture_tags: @capture_tags,
+            template_name: name,
+          )
           result = compiler.compile
         rescue LiquidIL::SyntaxError => e
           @partial_names_in_progress.delete(name)
@@ -149,7 +162,12 @@ module LiquidIL
           partial_names_in_progress: @partial_names_in_progress,
           hoist_data: result[:hoist],
           pretty: @pretty,
-          partial_index: @partial_index
+          partial_index: @partial_index,
+          captured_tags: result[:captured_tags],
+          capture_tags: @capture_tags,
+          host_tags: result[:host_tags],
+          compile_options: @compile_options,
+          template_name: name,
         )
         # Share frozen array usage map so partial constants are declared in the parent proc
         ruby_compiler.instance_variable_set(:@frozen_arrays, @frozen_arrays)
@@ -164,7 +182,6 @@ module LiquidIL
         loop_key = [Artifact::COMPILER_ABI, name.dup.freeze, source.dup.freeze].freeze
         base = CodegenSymbols::PARTIAL_LOOP_BASES.intern(loop_key)
         ruby_compiler.instance_variable_set(:@loop_name_base, base)
-        ruby_compiler.instance_variable_set(:@current_file_lit, name)
         child_lambda_called = Set.new
         ruby_compiler.instance_variable_set(:@lambda_called, child_lambda_called)
 
@@ -188,6 +205,7 @@ module LiquidIL
           end
         end
 
+        partial_effects = ruby_compiler.instance_variable_get(:@effects).first
         @partials[name] = {
           name: name,
           source: source,
@@ -202,7 +220,13 @@ module LiquidIL
           required_filter_caches: ruby_compiler.instance_variable_get(:@required_filter_caches).to_a.freeze,
           frozen_arrays: ruby_compiler.instance_variable_get(:@frozen_arrays).dup.freeze,
           loop_name_base: base,
-          scope_reads: ruby_compiler.instance_variable_get(:@effects).first.reads&.to_a&.freeze,
+          captured_tags: result[:captured_tags],
+          host_tags: result[:host_tags],
+          # Opaque host tags can inspect any explicit partial argument through
+          # their host context. A nil read set deliberately means "retain every
+          # argument" at the inline call site; named reads can still prune args
+          # for ordinary compiled partials.
+          scope_reads: partial_effects.dynamic ? nil : partial_effects.reads&.to_a&.freeze,
           uses_self: instructions.any? { |instruction| instruction[0] == IL::FIND_SELF }
         }
         @lambda_called.merge(child_lambda_called)
@@ -521,7 +545,9 @@ module LiquidIL
       ].each_with_object({}) { |opcode, out| out[opcode] = true }.freeze
 
       def bound_partial_scope_free?(instructions, bindings)
-        return false if @has_resource_limits
+        # Storefront deliberately accepts skipping resource-limit accounting in
+        # this fast path for now; retaining a full isolated Liquid context costs
+        # substantially more than the bound partial body itself.
         return false if instructions.any? { |instruction| instruction[0] == IL::PUSH_INTERRUPT }
         loop_names = {}
         instructions.each do |instruction|
@@ -587,10 +613,11 @@ module LiquidIL
         emitter = RubyCompiler.new(
           info[:instructions], context: @context, partials: @partials,
           partial_names_in_progress: @partial_names_in_progress,
-          pretty: @pretty, optimize: false, partial_index: @partial_index
+          pretty: @pretty, optimize: false, partial_index: @partial_index,
+          compile_options: @compile_options,
+          template_name: info[:name] || @current_file_lit
         )
         emitter.instance_variable_set(:@scope_bindings, effective_bindings)
-        emitter.instance_variable_set(:@current_file_lit, info[:name] || @current_file_lit)
         emitter.instance_variable_set(:@frozen_arrays, {})
         # Cached bound bodies must not carry parent-relative literal-pool indexes.
         emitter.instance_variable_set(:@pool_literals, false)
@@ -806,6 +833,7 @@ module LiquidIL
         else
           # Simple render
           # For simple isolated partials, inline the body to avoid lambda call overhead
+          code << "#{prefix}_S.partial_rendered(#{name.inspect})\n" if inline_partial
           if inline_partial && !inline_needs_scope
             code << inline_setup << inline_bound_body
           elsif inline_partial

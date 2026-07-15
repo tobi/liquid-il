@@ -21,11 +21,9 @@ module LiquidIL
 
   class Error < StandardError; end
 
-  # Raised by Object#to_liquid / #to_liquid_value for objects that never
-  # opted into the Liquid protocol — the drop-protocol security boundary.
-  # Subclasses ::NoMethodError for reference-liquid parity (there the raise
-  # is a genuine dispatch failure); bare `rescue NoMethodError` inside
-  # LiquidIL code must therefore write ::NoMethodError explicitly.
+  # Retained for callers that raise an explicit LiquidIL protocol error.
+  # Plain objects use Ruby's native missing-method dispatch, matching
+  # reference Liquid and preserving method_missing-based proxy objects.
   class NoMethodError < ::NoMethodError; end
 
   class ErrorMarker
@@ -123,11 +121,16 @@ module LiquidIL
     COMPILE_CACHE_MAX = 500
 
     attr_accessor :file_system, :strict_errors, :registers, :partial_index
-    attr_reader :custom_filters, :strict_variables, :strict_filters, :resource_limits, :error_mode
+    attr_reader :custom_filters, :custom_filter_overrides, :strict_variables, :strict_filters,
+                :resource_limits, :error_mode, :bug_compatible_whitespace_trimming
 
     def initialize(file_system: nil, strict_errors: false, registers: {},
                    strict_variables: false, strict_filters: false,
                    resource_limits: nil, error_mode: :strict2,
+                   prefer_custom_filters: false,
+                   custom_filter_overrides: [],
+                   hoist_scope_lookups: true,
+                   bug_compatible_whitespace_trimming: false,
                    partial_index: nil)
       @file_system = file_system
       # Digest index (name -> content_digest) for the external-partial compile
@@ -138,11 +141,32 @@ module LiquidIL
       @registers = registers
       @strict_variables = strict_variables
       @strict_filters = strict_filters
+      @prefer_custom_filters = prefer_custom_filters
+      override_names = custom_filter_overrides.respond_to?(:each_key) ? custom_filter_overrides.each_key : Array(custom_filter_overrides).each
+      @custom_filter_overrides = override_names.each_with_object({}) { |name, overrides| overrides[name.to_s] = true }.freeze
+      @hoist_scope_lookups = hoist_scope_lookups
+      @bug_compatible_whitespace_trimming = bug_compatible_whitespace_trimming
       @resource_limits = resource_limits  # { output_limit: N, render_score_limit: N }
       @error_mode = error_mode  # :lax, :warn, :strict, :strict2
       # Seed custom filters from global registry; per-context register_filter can override
       global = LiquidIL::Filters.global_registry
       @custom_filters = global.empty? ? {} : global.dup
+    end
+
+    # Host renderers can opt out of LiquidIL's built-in filter fast paths and
+    # route every filter through a request-bound Scope dispatcher instead.
+    # This is required when the host overrides standard filter names (for
+    # example `date` or `json`) or its filters depend on a Liquid context.
+    def prefer_custom_filters?
+      @prefer_custom_filters
+    end
+
+    def prefer_custom_filter?(name)
+      @prefer_custom_filters || @custom_filter_overrides.key?(name.to_s)
+    end
+
+    def hoist_scope_lookups?
+      @hoist_scope_lookups
     end
 
     # Register custom filter methods from a module.
@@ -208,14 +232,14 @@ module LiquidIL
         [name, info[:pure] ? "pure" : "impure", info[:module].name, info[:module].object_id,
          method&.name, method&.source_location&.join(":")]
       end
-      limit_parts = if @resource_limits.is_a?(Hash)
-        @resource_limits.sort_by { |key, _| key.to_s }.flatten
-      else
-        [@resource_limits]
-      end
+      # Generated code only varies on whether checks are emitted. Runtime
+      # limits and mutable cumulative counters must not fragment the cache.
+      limit_parts = [!@resource_limits.nil?]
       [
         Artifact::COMPILER_ABI, @error_mode, @strict_variables, @strict_filters,
-        @strict_errors, Tags.version, @partial_index&.class&.name,
+        @strict_errors, @prefer_custom_filters, @custom_filter_overrides.keys.sort,
+        @hoist_scope_lookups, @bug_compatible_whitespace_trimming,
+        Tags.version, @partial_index&.class&.name,
         @partial_index&.object_id, *limit_parts, *filter_parts
       ].freeze
     end
@@ -262,7 +286,8 @@ module LiquidIL
   #
   class Template
     attr_reader :source, :instructions, :compiled_source, :errors, :warnings,
-                :partial_constants, :partial_dependencies
+                :partial_constants, :partial_dependencies, :template_metadata,
+                :host_tag_metadata
 
     def initialize(source, instructions, context, compiled_result, iseq_binary: nil)
       @source = source
@@ -276,6 +301,11 @@ module LiquidIL
       # know which external artifacts to prefetch. nil when the template has no
       # partials. See RubyCompiler#compute_partial_dependencies.
       @partial_dependencies = compiled_result.respond_to?(:partial_dependencies) ? compiled_result.partial_dependencies : nil
+      # Host-requested tag compile products, grouped by logical template name.
+      # These are produced once on a compile miss and persisted alongside the
+      # ISeq so artifact hits never need to reparse opaque tag source.
+      @template_metadata = compiled_result.respond_to?(:template_metadata) ? compiled_result.template_metadata : nil
+      @host_tag_metadata = compiled_result.respond_to?(:host_tag_metadata) ? compiled_result.host_tag_metadata : nil
       @iseq_binary = iseq_binary
       @errors = []
       @warnings = []
@@ -301,6 +331,8 @@ module LiquidIL
         source: @source,
         iseq_binary: iseq_binary,
         partial_constants: @partial_constants,
+        template_metadata: @template_metadata,
+        host_tag_metadata: @host_tag_metadata,
       }
     end
 
@@ -312,13 +344,16 @@ module LiquidIL
     #
     # spans: is accepted and ignored so legacy Marshal cache_data blobs
     # (which include a :spans key) still splat cleanly.
-    def self.from_cache(source:, iseq_binary:, partial_constants: nil, spans: nil)
+    def self.from_cache(source:, iseq_binary:, partial_constants: nil, template_metadata: nil,
+                        host_tag_metadata: nil, spans: nil)
       compiled_proc = RubyVM::InstructionSequence.load_from_binary(iseq_binary).eval
       result = RubyCompiler::CompilationResult.new(
         proc: compiled_proc,
         source: nil,
         can_compile: true,
         partial_constants: partial_constants,
+        template_metadata: template_metadata,
+        host_tag_metadata: host_tag_metadata,
       )
       new(source, [], nil, result, iseq_binary: iseq_binary)
     end
@@ -326,9 +361,12 @@ module LiquidIL
     # Reconstruct a Template from a raw ISeq binary (the Artifact load path —
     # no source needed: error locations are compile-time literals baked
     # into the emitted code).
-    def self.from_iseq_binary(iseq_binary, partial_constants: nil)
+    def self.from_iseq_binary(iseq_binary, partial_constants: nil, template_metadata: nil,
+                              host_tag_metadata: nil)
       from_cache(source: "", iseq_binary: iseq_binary,
-                 partial_constants: partial_constants)
+                 partial_constants: partial_constants,
+                 template_metadata: template_metadata,
+                 host_tag_metadata: host_tag_metadata)
     end
 
     # Encode this compiled template into the persistable artifact string
@@ -336,6 +374,31 @@ module LiquidIL
     # LiquidIL.load_artifact for the other side).
     def to_artifact
       Artifact.encode(self)
+    end
+
+    # Renderer-owned compile hooks can replace raw captured-tag bodies with a
+    # compact, already-processed representation before the artifact is encoded.
+    # This does not affect the generated ISeq.
+    def transform_template_metadata!
+      @template_metadata = yield(@template_metadata) if @template_metadata
+      self
+    end
+
+    # Build the lightweight renderer object around this template's existing
+    # compiled proc. `artifact_bytes` is still published to remote caches, but
+    # the compiling process does not need to decode and load its own ISeq just
+    # to populate the live-artifact cache.
+    def to_compiled_artifact(artifact_bytes = nil)
+      artifact_bytes ||= to_artifact
+      CompiledArtifact.new(
+        @compiled_proc,
+        @partial_constants,
+        artifact_bytes.bytesize,
+        Artifact.identity(artifact_bytes),
+        Artifact.external_deps(@partial_dependencies),
+        @template_metadata,
+        @host_tag_metadata,
+      )
     end
 
     # Render the template with the given variables.
@@ -371,6 +434,14 @@ module LiquidIL
       render(assigns, render_errors: false, **options)
     end
 
+    # Execute this freshly compiled template against a host-owned Scope.
+    # CompiledArtifact exposes the same seam for cache hits; keeping it on
+    # Template as well lets hosts use an identical context bridge on compile
+    # misses without serializing and reloading the template first.
+    def render_scope(scope, output: nil)
+      RenderExecutor.call(@compiled_proc, scope, @partial_constants, output: output)
+    end
+
     # Render, appending into a caller-provided String buffer instead of
     # returning a fresh one; returns the buffer. The storefront renderer's
     # contract (renderable_template.rb) expects this shape (a 16KB preallocated
@@ -379,11 +450,8 @@ module LiquidIL
     #   buf = +"<html>"
     #   template.render_to_output_buffer({ "x" => 1 }, buf)  # => buf, extended
     #
-    # Note: the compiled proc emits `_O = +""` unconditionally, so it still
-    # allocates its own buffer and we append the result. Threading the buffer
-    # INTO the proc would change emitted source (hence every artifact's bytes),
-    # which the byte-identical-emission gate forbids; the extra append-copy is
-    # the price of that guarantee.
+    # The compiled proc writes directly into this buffer, avoiding an
+    # intermediate full-render String and copy.
     def render_to_output_buffer(context_or_assigns = {}, output = +"", **options)
       render(context_or_assigns, output: output, **options)
     end
@@ -503,15 +571,16 @@ module LiquidIL
             # Match compiler-generated local names used in proc source.
             _S = __scope__
             _pc = __partial_constants__
+            _O = +""
 
         #{indent_body(proc_body, 4)}
 
             _O
           rescue LiquidIL::RuntimeError => e
             raise unless render_errors
-            output = e.partial_output || ""
+            output = defined?(_O) ? _O : +""
             location = e.file ? "\#{e.file} line \#{e.line}" : "line \#{e.line}"
-            output + "Liquid error (\#{location}): \#{e.message}"
+            output << "Liquid error (\#{location}): \#{e.message}"
           rescue StandardError => e
             raise unless render_errors
             "Liquid error (line 1): \#{LiquidIL.clean_error_message(e.message)}"

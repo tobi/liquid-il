@@ -24,11 +24,11 @@ module LiquidIL
       else
         # Call to_liquid first (drops may have stateful to_liquid like
         # ToSDrop). The printability boundary is the protocol raise itself:
-        # Object's default to_liquid raises, and stringification translates
-        # that into "X cannot be printed" — no call-site protocol checks.
+        # A missing to_liquid raises, and stringification translates that into
+        # "X cannot be printed" — no call-site protocol checks.
         obj = begin
           obj.to_liquid
-        rescue LiquidIL::NoMethodError
+        rescue ::NoMethodError
           raise_unprintable(obj)
         end
         obj.to_s
@@ -60,7 +60,7 @@ module LiquidIL
         # objects that never opted into the protocol.
         begin
           obj.to_liquid
-        rescue LiquidIL::NoMethodError
+        rescue ::NoMethodError
           raise_unprintable(obj)
         end
         obj.inspect
@@ -109,6 +109,21 @@ module LiquidIL
         ""
       else
         to_s(value)
+      end
+    end
+
+    # Matches Liquid::Assign's resource accounting. Captures use the same
+    # byte count because their assigned value is always a String.
+    def self.assign_score(value)
+      case value
+      when String
+        value.bytesize
+      when Array
+        value.sum(1) { |child| assign_score(child) }
+      when Hash
+        value.sum(1) { |key, child| assign_score(key) + assign_score(child) }
+      else
+        1
       end
     end
 

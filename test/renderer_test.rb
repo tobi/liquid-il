@@ -63,6 +63,73 @@ class RendererTest < Minitest::Test
     end
   end
 
+  class HostFilterScope < LiquidIL::Scope
+    def initialize(...)
+      super
+      self.prefer_custom_filters = true
+    end
+
+    def custom_filter?(_name)
+      true
+    end
+
+    def apply_custom_filter(name, input, args)
+      "host-#{name}(#{([input] + args).join(',')})"
+    end
+  end
+
+  class HostErrorScope < LiquidIL::Scope
+    attr_reader :handled_error
+
+    def lookup(_key)
+      raise LiquidIL::RuntimeError.new("host lookup failed", line: 1)
+    end
+
+    def handle_render_error(error, output: nil)
+      @handled_error = error
+      output ? output << "host-handled" : "host-handled"
+    end
+  end
+
+  class HostTagScope < LiquidIL::Scope
+    attr_reader :calls
+
+    def initialize(...)
+      super
+      @calls = []
+    end
+
+    def render_host_tag(slot, source_id:, template_name:, name:, line:, source:, output:)
+      @calls << {
+        slot: slot,
+        source_id: source_id,
+        template_name: template_name,
+        name: name,
+        line: line,
+        source: source,
+      }
+      output << "[host:#{slot}]"
+    end
+  end
+
+  class PartialHostTagScope < LiquidIL::Scope
+    attr_reader :seen_values
+
+    def initialize(assigns = {}, seen_values: [])
+      super(assigns, static_environments: {})
+      @seen_values = seen_values
+    end
+
+    def isolated_with(assigns)
+      self.class.new(assigns, seen_values: @seen_values)
+    end
+
+    def render_host_tag(_slot, source_id:, template_name:, name:, line:, source:, output:)
+      @seen_values << lookup("passed")
+      output << "[host:#{lookup("passed")}]"
+    end
+  end
+
   SMALL = "<b>{{ title }}</b>"
   LARGE = "<section>#{"x" * 700} {{ title | upcase }}</section>"
   LAYOUT = "{% render 'small', title: title %}|{% render 'large', title: title %}"
@@ -113,6 +180,35 @@ class RendererTest < Minitest::Test
     assert_equal expected, remote
     assert_equal source_reads_before, @source.reads, "remote artifact hit must avoid body reads"
     assert_operator @remote.reads, :>=, 4
+  end
+
+  def test_session_remote_cache_override_works_without_process_local_artifacts_or_heads
+    default_remote = RailsCache.new
+    request_remote = RailsCache.new
+    renderer = LiquidIL::Renderer.new(
+      remote_cache: default_remote,
+      max_local_bytes: 0,
+      max_local_heads: 0,
+      namespace: "renderer-test:remote-only",
+    )
+
+    first = renderer.session(templates: @source, remote_cache: request_remote) do |session|
+      session.render("layout", "title" => "Ada")
+    end
+    assert_equal expected, first
+    assert_operator request_remote.writes, :>=, 4
+    assert_equal 0, default_remote.writes
+
+    request_remote.reset_stats!
+    source_reads_before = @source.reads.dup
+    second = renderer.session(templates: @source, remote_cache: request_remote) do |session|
+      session.render("layout", "title" => "Ada")
+    end
+
+    assert_equal expected, second
+    assert_equal source_reads_before, @source.reads, "remote artifacts must avoid recompilation"
+    assert_operator request_remote.reads, :>=, 4, "disabled local tiers must read the remote cache"
+    assert_equal 0, default_remote.reads
   end
 
   def test_small_partial_edit_invalidates_entry_but_large_partial_versions_independently
@@ -174,5 +270,137 @@ class RendererTest < Minitest::Test
     assert_operator stats[:preload_keys], :>=, 4
     assert @events.any? { |name, payload| name == "liquid_il.cache.lookup" && payload.key?(:hit) },
       "every cache tier should be available to telemetry"
+  end
+
+  def test_session_template_can_render_to_a_host_scope_and_output_buffer
+    renderer = LiquidIL::Renderer.new(
+      namespace: "renderer-test:host-scope",
+      context_options: { prefer_custom_filters: true },
+    )
+    source = Source.new("template" => "{{ title | upcase }}")
+    scope = HostFilterScope.new({ "title" => "Ada" })
+    output = +"prefix:"
+
+    renderer.session(templates: source) do |session|
+      returned = session.fetch("template").render_scope(scope, output: output)
+
+      assert_same output, returned
+      assert_equal "prefix:host-upcase(Ada)", output
+    end
+  end
+
+  def test_host_scope_can_handle_render_errors
+    renderer = LiquidIL::Renderer.new(namespace: "renderer-test:host-errors")
+    source = Source.new("template" => "{{ value }}")
+    scope = HostErrorScope.new
+    output = +"prefix:"
+
+    renderer.session(templates: source) do |session|
+      returned = session.fetch("template").render_scope(scope, output: output)
+
+      assert_same output, returned
+      assert_equal "prefix:host-handled", output
+      assert_instance_of LiquidIL::RuntimeError, scope.handled_error
+    end
+  end
+
+  def test_registered_host_tags_compile_to_source_local_slots
+    LiquidIL::Tags.register_host("renderer_host", end_tag: "endrenderer_host")
+    source_body = <<~LIQUID
+      before
+      {% renderer_host %}opaque {{ ignored }}{% endrenderer_host %}
+      {% liquid
+        renderer_host
+        endrenderer_host
+      %}
+      after
+    LIQUID
+    renderer = LiquidIL::Renderer.new(namespace: "renderer-test:host-tag")
+    source = Source.new("template" => source_body)
+    scope = HostTagScope.new
+
+    output = renderer.session(templates: source) do |session|
+      session.fetch("template").render_scope(scope)
+    end
+
+    assert_equal "before\n[host:0]\n[host:1]\nafter\n", output
+    assert_equal [0, 1], scope.calls.map { |call| call[:slot] }
+    source_digest = Digest::SHA256.digest(source_body)
+    expected_source_id = Digest::SHA256.hexdigest(
+      ["template".bytesize].pack("Q>") + "template" + source_digest,
+    )
+    assert_equal [expected_source_id], scope.calls.map { |call| call[:source_id] }.uniq
+    assert_equal ["template"], scope.calls.map { |call| call[:template_name] }.uniq
+    assert_equal ["renderer_host"], scope.calls.map { |call| call[:name] }.uniq
+    assert_equal(
+      [
+        "{% renderer_host %}opaque {{ ignored }}{% endrenderer_host %}",
+        "{% renderer_host %}{% endrenderer_host %}",
+      ],
+      scope.calls.map { |call| call[:source] },
+    )
+  end
+
+  def test_artifact_carries_captured_tag_bodies_for_root_and_inlined_partials
+    renderer = LiquidIL::Renderer.new(namespace: "renderer-test:captured-tags")
+    source = Source.new(
+      "template" => "{% schema %}{\"name\":\"root\"}{% endschema %}{% render 'partial' %}",
+      "partial" => "{% schema %}{\"name\":\"partial\"}{% endschema %}",
+    )
+
+    metadata = renderer.session(
+      templates: source,
+      parse_options: { capture_tags: ["schema"] },
+    ) do |session|
+      session.fetch("template").artifact.template_metadata
+    end
+
+    assert_equal(
+      {
+        "template" => [["schema", "", "{\"name\":\"root\"}"]],
+        "partial" => [["schema", "", "{\"name\":\"partial\"}"]],
+      },
+      metadata,
+    )
+  end
+
+  def test_session_can_host_literal_partials_for_custom_host_renderers
+    LiquidIL::Tags.register_host("render", select: :non_literal)
+    renderer = LiquidIL::Renderer.new(namespace: "renderer-test:host-literal-partial")
+    source = Source.new(
+      "template" => "before:{% render 'partial' %}:after",
+      "partial" => "native partial",
+    )
+    scope = HostTagScope.new
+
+    output = renderer.session(
+      templates: source,
+      parse_options: { host_literal_partials: true },
+    ) do |session|
+      session.fetch("template").render_scope(scope)
+    end
+
+    assert_equal "before:[host:0]:after", output
+    assert_equal ["render"], scope.calls.map { |call| call[:name] }
+  end
+
+
+  def test_inlined_partial_keeps_all_explicit_arguments_for_opaque_host_tags
+    # Host tags execute outside LiquidIL and may read arguments that do not
+    # appear as FIND_VAR instructions in the compiled partial body.
+    LiquidIL::Tags.register_host("renderer_host")
+    renderer = LiquidIL::Renderer.new(namespace: "renderer-test:host-partial-args")
+    source = Source.new(
+      "layout" => "{% render 'partial', passed: title, unused: 'ignored' %}",
+      "partial" => "{% renderer_host %}",
+    )
+    scope = PartialHostTagScope.new({ "title" => "Ada" })
+
+    output = renderer.session(templates: source) do |session|
+      session.fetch("layout").render_scope(scope)
+    end
+
+    assert_equal "[host:Ada]", output
+    assert_equal ["Ada"], scope.seen_values
   end
 end

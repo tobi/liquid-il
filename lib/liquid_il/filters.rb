@@ -3,7 +3,6 @@
 require "cgi"
 require "uri"
 require "date"
-require "json"
 require "base64"
 
 require_relative "utils"
@@ -199,10 +198,6 @@ module LiquidIL
       public :args_to_s
       private
 
-      def asset_url(input)
-        Utils.to_s(input)
-      end
-
       def read_current_tags(_input)
         context.lookup("current_tags")
       end
@@ -256,11 +251,6 @@ module LiquidIL
 
       def upcase(input)
         Utils.to_s(input).upcase
-      end
-
-      # Translation filter - wraps string for testing
-      def t(input)
-        "translated-#{Utils.to_s(input)}-"
       end
 
       # Test filter that raises an error
@@ -673,18 +663,13 @@ module LiquidIL
 
         liquid_input = begin
           input.to_liquid
-        rescue LiquidIL::NoMethodError
+        rescue ::NoMethodError
           input
         end
         liquid_value = liquid_input.to_liquid_value
-        false_check = allow_false ? liquid_input.nil? : !liquid_truthy?(liquid_value)
+        literal_blank = liquid_value.is_a?(EmptyLiteral) || liquid_value.is_a?(BlankLiteral)
+        false_check = literal_blank || (allow_false ? liquid_input.nil? : !liquid_truthy?(liquid_value))
         false_check || (liquid_input.respond_to?(:empty?) && liquid_input.empty?) ? default_value : liquid_input
-      end
-
-      def json(input)
-        JSON.generate(input)
-      rescue
-        Utils.to_s(input)
       end
 
       # --- Utility ---
@@ -892,7 +877,7 @@ module LiquidIL
           # pass through (reference liquid iterates without raising).
           e = begin
             e.to_liquid
-          rescue LiquidIL::NoMethodError
+          rescue ::NoMethodError
             e
           end
           e.context = @context if @context && e.respond_to?(:context=)
